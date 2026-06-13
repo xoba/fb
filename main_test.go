@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestServesMarkdownThroughPandoc(t *testing.T) {
@@ -51,6 +52,89 @@ func TestServesNonMarkdownFilesDirectly(t *testing.T) {
 	}
 	if got := rec.Body.String(); got != "plain text\n" {
 		t.Fatalf("body = %q, want plain text", got)
+	}
+}
+
+func TestServesNonMarkdownIgnoresConditionalCache(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "plain.txt"), []byte("fresh text\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/plain.txt", nil)
+	req.Header.Set("If-Modified-Since", time.Now().Add(24*time.Hour).UTC().Format(http.TimeFormat))
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); got != "fresh text\n" {
+		t.Fatalf("body = %q, want fresh text", got)
+	}
+}
+
+func TestServesDirectoryFromConfiguredRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "root-marker.txt"), []byte("root\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store, no-cache, must-revalidate, max-age=0" {
+		t.Fatalf("Cache-Control = %q, want aggressive no-cache policy", got)
+	}
+	if got := rec.Header().Get("Pragma"); got != "no-cache" {
+		t.Fatalf("Pragma = %q, want no-cache", got)
+	}
+	if got := rec.Header().Get("Expires"); got != "0" {
+		t.Fatalf("Expires = %q, want 0", got)
+	}
+	if !strings.Contains(rec.Body.String(), "root-marker.txt") {
+		t.Fatalf("directory listing = %q, want configured root contents", rec.Body.String())
+	}
+}
+
+func TestParseRootArg(t *testing.T) {
+	root, err := parseRootArg([]string{"/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root != "/" {
+		t.Fatalf("parseRootArg returned %q, want /", root)
+	}
+
+	for _, args := range [][]string{
+		nil,
+		{},
+		{"/", "/tmp"},
+		{"--root", "/"},
+		{"-h"},
+		{"--help"},
+	} {
+		if _, err := parseRootArg(args); err == nil {
+			t.Fatalf("parseRootArg(%q) succeeded, want error", args)
+		}
+	}
+}
+
+func TestResolveRootSlash(t *testing.T) {
+	root, err := resolveRoot("/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root != string(os.PathSeparator) {
+		t.Fatalf("resolveRoot(\"/\") = %q, want %q", root, string(os.PathSeparator))
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,10 +17,19 @@ import (
 	"time"
 )
 
-const listenAddr = "localhost:3030"
+const (
+	listenAddr4 = "127.0.0.1:3030"
+	listenAddr6 = "[::1]:3030"
+)
 
 func main() {
-	root, err := os.Getwd()
+	rootArg, err := parseRootArg(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Usage: %s SERVE_PATH\n", filepath.Base(os.Args[0]))
+		os.Exit(2)
+	}
+
+	root, err := resolveRoot(rootArg)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -29,15 +39,70 @@ func main() {
 	}
 
 	fsys := os.DirFS(root)
-	srv := &http.Server{
-		Addr:    listenAddr,
-		Handler: fileServer{fsys: fsys, root: root, pandoc: "pandoc"},
-	}
+	handler := fileServer{fsys: fsys, root: root, pandoc: "pandoc"}
 
-	log.Printf("serving %s at http://%s/", root, listenAddr)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	log.Printf("serving %s at http://localhost:3030/ (%s and %s)", root, listenAddr4, listenAddr6)
+	if err := serveLoopback(handler); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+}
+
+func serveLoopback(handler http.Handler) error {
+	listeners := make([]net.Listener, 0, 2)
+	for _, spec := range []struct {
+		network string
+		addr    string
+	}{
+		{network: "tcp4", addr: listenAddr4},
+		{network: "tcp6", addr: listenAddr6},
+	} {
+		ln, err := net.Listen(spec.network, spec.addr)
+		if err != nil {
+			for _, open := range listeners {
+				_ = open.Close()
+			}
+			return fmt.Errorf("listen %s: %w", spec.addr, err)
+		}
+		listeners = append(listeners, ln)
+	}
+
+	errc := make(chan error, len(listeners))
+	for _, ln := range listeners {
+		srv := &http.Server{Handler: handler}
+		go func() {
+			errc <- srv.Serve(ln)
+		}()
+	}
+
+	return <-errc
+}
+
+func parseRootArg(args []string) (string, error) {
+	if len(args) != 1 || args[0] == "-h" || args[0] == "--help" {
+		return "", errors.New("expected one serve path")
+	}
+	return args[0], nil
+}
+
+func resolveRoot(root string) (string, error) {
+	if root == "" {
+		return "", errors.New("serve path is required")
+	}
+
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s is not a directory", abs)
+	}
+
+	return abs, nil
 }
 
 type fileServer struct {
@@ -47,6 +112,8 @@ type fileServer struct {
 }
 
 func (s fileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	preventCaching(w.Header(), r.Header)
+
 	name := requestName(r.URL.Path)
 
 	if strings.EqualFold(path.Ext(name), ".md") {
@@ -58,6 +125,18 @@ func (s fileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.ServeFileFS(w, r, s.fsys, name)
+}
+
+func preventCaching(response, request http.Header) {
+	response.Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	response.Set("Pragma", "no-cache")
+	response.Set("Expires", "0")
+
+	request.Del("If-Modified-Since")
+	request.Del("If-None-Match")
+	request.Del("If-Match")
+	request.Del("If-Unmodified-Since")
+	request.Del("If-Range")
 }
 
 func requestName(urlPath string) string {
