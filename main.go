@@ -177,7 +177,7 @@ func (s fileServer) renderMarkdown(ctx context.Context, name string) ([]byte, er
 	defer cancel()
 
 	args := []string{
-		"-f", "markdown+footnotes+lists_without_preceding_blankline+hard_line_breaks+tex_math_single_backslash",
+		"-f", "markdown+footnotes+lists_without_preceding_blankline+hard_line_breaks+tex_math_single_backslash+gfm_auto_identifiers",
 		"--mathjax=https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js",
 		"--reference-location=section",
 		"--include-in-header", header,

@@ -146,14 +146,30 @@ func fakePandoc(t *testing.T) string {
 set -eu
 
 header=""
+format=""
 while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-f" ]; then
+    shift
+    format="$1"
+    shift
+    continue
+  fi
   if [ "$1" = "--include-in-header" ]; then
     shift
     header="$1"
-    break
+    shift
+    continue
   fi
   shift
 done
+
+case "$format" in
+  *+gfm_auto_identifiers*) ;;
+  *)
+    echo "missing gfm auto identifiers" >&2
+    exit 4
+    ;;
+esac
 
 if [ -z "$header" ]; then
   echo "missing --include-in-header" >&2
