@@ -482,7 +482,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(`<!DOCTYPE
   a:hover { text-decoration: underline; }
   nav { margin-bottom: 1rem; font-size: 1.1rem; }
   nav a { font-weight: 600; }
-  nav span.sep { color: #57606a; margin: 0 0.25rem; }
+  nav span.sep { color: #57606a; }
   table.listing { border-collapse: collapse; width: 100%; }
   table.listing td { padding: 0.3rem 0.5rem 0.3rem 0; }
   table.listing td.meta {
@@ -497,7 +497,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(`<!DOCTYPE
 </style>
 </head>
 <body>
-<nav>{{range $i, $c := .Crumbs}}{{if $i}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}</nav>
+<nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}</nav>
 <table class="listing">
 {{range .Entries}}<tr><td><a href="{{.Href}}">{{.Name}}</a></td><td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
 {{end}}</table>
