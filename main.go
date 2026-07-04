@@ -307,15 +307,21 @@ func zipFS(f fs.File, info fs.FileInfo) (fs.FS, error) {
 	return zip.NewReader(ra, size)
 }
 
-// maxTarBytes caps how much extracted tar content is loaded into memory.
-// Tars have no index, so unlike zips they are read in full up front; larger
-// archives are served verbatim instead.
-const maxTarBytes = 30 << 20
+const (
+	// maxTarFileBytes gates tar browsing on the raw file size as stored
+	// (compressed or not); larger archives are served verbatim. Tars have no
+	// index, so unlike zips they are read in full up front.
+	maxTarFileBytes = 100 << 20
+
+	// maxTarExtractedBytes is a safety ceiling on the decompressed content
+	// held in memory, so a pathological compression bomb cannot exhaust it.
+	maxTarExtractedBytes = 1 << 30
+)
 
 // tarFS reads an entire (possibly gzip- or bzip2-compressed) tar archive
 // into an in-memory filesystem.
 func tarFS(name string, f fs.File, info fs.FileInfo) (fs.FS, error) {
-	if info.Size() > maxTarBytes {
+	if info.Size() > maxTarFileBytes {
 		return nil, fmt.Errorf("tar too large (%d bytes)", info.Size())
 	}
 
@@ -354,13 +360,13 @@ func tarFS(name string, f fs.File, info fs.FileInfo) (fs.FS, error) {
 		case tar.TypeDir:
 			mfs[member] = &fstest.MapFile{Mode: fs.ModeDir | 0o755, ModTime: hdr.ModTime}
 		case tar.TypeReg:
-			data, err := io.ReadAll(io.LimitReader(tr, maxTarBytes-total+1))
+			data, err := io.ReadAll(io.LimitReader(tr, maxTarExtractedBytes-total+1))
 			if err != nil {
 				return nil, err
 			}
 			total += int64(len(data))
-			if total > maxTarBytes {
-				return nil, fmt.Errorf("tar contents exceed %d bytes", int64(maxTarBytes))
+			if total > maxTarExtractedBytes {
+				return nil, fmt.Errorf("tar contents exceed %d bytes", int64(maxTarExtractedBytes))
 			}
 			mfs[member] = &fstest.MapFile{Data: data, Mode: 0o644, ModTime: hdr.ModTime}
 		}
@@ -516,6 +522,10 @@ func (s fileServer) renderDocument(ctx context.Context, name string, opts render
 
 		args = append(args,
 			"-s",
+			// Reading from stdin leaves pandoc no filename to derive <title>
+			// from (it would fall back to "-"); pagetitle sets the title
+			// element without adding a visible title block.
+			"-V", "pagetitle="+path.Base(name),
 			"--include-in-header", header,
 			"-V", `mainfont=-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif`,
 			"-V", "monofont=ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
@@ -962,7 +972,12 @@ func (s fileServer) serveXLSX(w http.ResponseWriter, r *http.Request, name strin
 		if len(rows) > 0 {
 			header, body = rows[0], rows[1:]
 		}
-		page.Sheets = append(page.Sheets, makeSheet(sheetName, header, body))
+		sheet := makeSheet(sheetName, header, body)
+		if len(sheet.ColNums) > 0 {
+			sheet.Summary = fmt.Sprintf("%d row%s × %d column%s",
+				len(body), plural(len(body)), len(sheet.ColNums), plural(len(sheet.ColNums)))
+		}
+		page.Sheets = append(page.Sheets, sheet)
 	}
 
 	s.renderTablePage(w, r, name, info, page)
@@ -1111,7 +1126,7 @@ func sqliteSheet(db *sql.DB, table string) (sheetView, error) {
 	}
 
 	sheet := makeSheet(table, cols, body)
-	sheet.Summary = fmt.Sprintf("%d row%s", count, plural(int(count)))
+	sheet.Summary = fmt.Sprintf("%d row%s × %d column%s", count, plural(int(count)), len(cols), plural(len(cols)))
 	if count > int64(len(body)) {
 		sheet.Omitted = int(count) - len(body)
 	}

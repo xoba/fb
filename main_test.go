@@ -766,7 +766,7 @@ func TestSQLiteRenderedAsTables(t *testing.T) {
 	for _, want := range []string{
 		"1 table",
 		`<h2 class="sheet">users</h2>`,
-		"2 rows",
+		"2 rows × 3 columns",
 		"<th>name</th><th>email</th><th>age</th>",
 		"<td>mike</td><td>mra@xoba.com</td><td>55</td>",
 		"<td>NULL</td>",
@@ -920,7 +920,7 @@ func TestTarBrowsing(t *testing.T) {
 
 func TestOversizedTarServedVerbatim(t *testing.T) {
 	root := t.TempDir()
-	big := make([]byte, maxTarBytes+1)
+	big := make([]byte, maxTarFileBytes+1)
 	if err := os.WriteFile(filepath.Join(root, "big.tar"), big, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1054,12 +1054,19 @@ header=""
 format=""
 standalone=0
 toc=0
+pagetitle=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -f) shift; format="$1" ;;
     --include-in-header) shift; header="$1" ;;
     -s) standalone=1 ;;
     --toc) toc=1 ;;
+    -V)
+      shift
+      case "$1" in
+        pagetitle=*) pagetitle="${1#pagetitle=}" ;;
+      esac
+      ;;
   esac
   shift
 done
@@ -1091,6 +1098,11 @@ fi
 if [ -z "$header" ]; then
   echo "missing --include-in-header" >&2
   exit 2
+fi
+
+if [ -z "$pagetitle" ]; then
+  echo "missing -V pagetitle" >&2
+  exit 5
 fi
 
 if ! grep -q "color-scheme: light" "$header"; then
