@@ -1,8 +1,11 @@
 package main
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/bzip2"
+	"compress/gzip"
 	"context"
 	"encoding/csv"
 	"embed"
@@ -21,6 +24,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"testing/fstest"
 	"time"
 	"unicode/utf8"
 
@@ -187,7 +191,7 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 			s.serveSource(w, r, name, info)
 			return
 		}
-		if strings.EqualFold(path.Ext(name), ".zip") {
+		if isArchiveName(name) {
 			s.descendArchive(w, r, name, info, ".", depth)
 			return
 		}
@@ -209,7 +213,7 @@ func (s fileServer) routeIntoArchive(w http.ResponseWriter, r *http.Request, nam
 		if info.IsDir() {
 			continue
 		}
-		if strings.EqualFold(path.Ext(prefix), ".zip") {
+		if isArchiveName(prefix) {
 			s.descendArchive(w, r, prefix, info, path.Join(elems[i+1:]...), depth)
 			return
 		}
@@ -227,47 +231,127 @@ const (
 	maxArchiveDepth = 3
 )
 
-// descendArchive serves inner (an fs path within the named zip file) by
+func isArchiveName(name string) bool {
+	return strings.EqualFold(path.Ext(name), ".zip") || isTarName(name)
+}
+
+func isTarName(name string) bool {
+	l := strings.ToLower(name)
+	return strings.HasSuffix(l, ".tar") || strings.HasSuffix(l, ".tar.gz") ||
+		strings.HasSuffix(l, ".tgz") || strings.HasSuffix(l, ".tar.bz2")
+}
+
+// descendArchive serves inner (an fs path within the named archive) by
 // mounting the archive as an fs.FS and routing through the ordinary pipeline,
 // so members get listings, highlighting, and markdown rendering like any
-// other file. An unreadable archive falls back to verbatim serving.
-func (s fileServer) descendArchive(w http.ResponseWriter, r *http.Request, zipName string, info fs.FileInfo, inner string, depth int) {
+// other file. An unreadable or oversized archive falls back to verbatim
+// serving.
+func (s fileServer) descendArchive(w http.ResponseWriter, r *http.Request, arcName string, info fs.FileInfo, inner string, depth int) {
 	if depth >= maxArchiveDepth {
 		http.NotFound(w, r)
 		return
 	}
 
-	f, err := s.fsys.Open(zipName)
+	f, err := s.fsys.Open(arcName)
 	if err != nil {
 		http.Error(w, "cannot read archive", http.StatusInternalServerError)
 		return
 	}
 	defer f.Close()
 
+	var arc fs.FS
+	if isTarName(arcName) {
+		arc, err = tarFS(arcName, f, info)
+	} else {
+		arc, err = zipFS(f, info)
+	}
+	if err != nil {
+		log.Printf("open archive %s: %v", arcName, err)
+		s.serveRaw(w, r, arcName, info)
+		return
+	}
+
+	sub := fileServer{fsys: arc, pandoc: s.pandoc, base: s.base + "/" + arcName}
+	sub.route(w, r, inner, depth+1)
+}
+
+// zipFS mounts a zip file lazily via its central directory; the caller must
+// keep f open while the returned fs.FS is in use.
+func zipFS(f fs.File, info fs.FileInfo) (fs.FS, error) {
 	ra, ok := f.(io.ReaderAt)
 	size := info.Size()
 	if !ok {
 		if size > maxArchiveBytes {
-			http.Error(w, "nested archive too large", http.StatusRequestEntityTooLarge)
-			return
+			return nil, fmt.Errorf("nested archive too large (%d bytes)", size)
 		}
 		data, err := io.ReadAll(f)
 		if err != nil {
-			http.Error(w, "cannot read archive", http.StatusInternalServerError)
-			return
+			return nil, err
 		}
 		ra, size = bytes.NewReader(data), int64(len(data))
 	}
+	return zip.NewReader(ra, size)
+}
 
-	zr, err := zip.NewReader(ra, size)
-	if err != nil {
-		log.Printf("open zip %s: %v", zipName, err)
-		s.serveRaw(w, r, zipName, info)
-		return
+// maxTarBytes caps how much extracted tar content is loaded into memory.
+// Tars have no index, so unlike zips they are read in full up front; larger
+// archives are served verbatim instead.
+const maxTarBytes = 30 << 20
+
+// tarFS reads an entire (possibly gzip- or bzip2-compressed) tar archive
+// into an in-memory filesystem.
+func tarFS(name string, f fs.File, info fs.FileInfo) (fs.FS, error) {
+	if info.Size() > maxTarBytes {
+		return nil, fmt.Errorf("tar too large (%d bytes)", info.Size())
 	}
 
-	sub := fileServer{fsys: zr, pandoc: s.pandoc, base: s.base + "/" + zipName}
-	sub.route(w, r, inner, depth+1)
+	var r io.Reader = f
+	lower := strings.ToLower(name)
+	switch {
+	case strings.HasSuffix(lower, ".gz") || strings.HasSuffix(lower, ".tgz"):
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			return nil, err
+		}
+		defer gz.Close()
+		r = gz
+	case strings.HasSuffix(lower, ".bz2"):
+		r = bzip2.NewReader(f)
+	}
+
+	mfs := fstest.MapFS{}
+	tr := tar.NewReader(r)
+	var total int64
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		member := path.Clean(strings.TrimPrefix(hdr.Name, "/"))
+		if member == "." || !fs.ValidPath(member) {
+			continue
+		}
+
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			mfs[member] = &fstest.MapFile{Mode: fs.ModeDir | 0o755, ModTime: hdr.ModTime}
+		case tar.TypeReg:
+			data, err := io.ReadAll(io.LimitReader(tr, maxTarBytes-total+1))
+			if err != nil {
+				return nil, err
+			}
+			total += int64(len(data))
+			if total > maxTarBytes {
+				return nil, fmt.Errorf("tar contents exceed %d bytes", int64(maxTarBytes))
+			}
+			mfs[member] = &fstest.MapFile{Data: data, Mode: 0o644, ModTime: hdr.ModTime}
+		}
+	}
+	return mfs, nil
 }
 
 // serveRaw serves a file verbatim. Unlike http.ServeFileFS it neither
@@ -884,14 +968,14 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 	page := directoryPage{
 		Title:     "/" + strings.TrimSuffix(strings.TrimPrefix(full+"/", "./"), "/"),
 		Crumbs:    s.breadcrumbs(name),
-		Blurb:     s.findBlurb(name, entries),
+		Blurb:     s.readBlurb(name),
 		SortLinks: sortLinks(key, desc),
 	}
 	if s.base != "" {
 		page.RawHref = (&url.URL{Path: s.base, RawQuery: "raw=1"}).String()
 	}
 	if name != "." || s.base != "" {
-		page.Entries = append(page.Entries, dirEntryView{Name: "..", Href: "../"})
+		page.Entries = append(page.Entries, dirEntryView{Name: "..", Href: "../", IsDir: true})
 	}
 
 	items := make([]dirItem, 0, len(entries))
@@ -907,6 +991,8 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 		if entry.IsDir() {
 			view.Name += "/"
 			view.Href += "/"
+			view.IsDir = true
+			view.Blurb = s.readBlurb(path.Join(name, entry.Name()))
 		} else if item.info != nil {
 			view.Size = humanSize(item.info.Size())
 		}
@@ -1082,28 +1168,23 @@ func sortDirItems(items []dirItem, key string, desc bool) {
 	})
 }
 
-// maxBlurbBytes caps the size of a blurb.txt shown atop its directory
-// listing; larger (or non-text) files are simply not inlined.
+// maxBlurbBytes caps the size of a blurb.txt shown in directory listings;
+// larger (or non-text) files are simply not inlined.
 const maxBlurbBytes = 512
 
-// findBlurb returns the trimmed contents of a directory's blurb.txt, or ""
-// when there is none or it is too large or not plain text.
-func (s fileServer) findBlurb(name string, entries []fs.DirEntry) string {
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.EqualFold(entry.Name(), "blurb.txt") {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil || info.Size() > maxBlurbBytes {
-			return ""
-		}
-		text, err := fs.ReadFile(s.fsys, path.Join(name, entry.Name()))
-		if err != nil || !isPlainText(text) {
-			return ""
-		}
-		return strings.TrimSpace(string(text))
+// readBlurb returns the trimmed contents of the blurb.txt directly inside
+// dir, or "" when there is none or it is too large or not plain text.
+func (s fileServer) readBlurb(dir string) string {
+	blurbPath := path.Join(dir, "blurb.txt")
+	info, err := fs.Stat(s.fsys, blurbPath)
+	if err != nil || info.IsDir() || info.Size() > maxBlurbBytes {
+		return ""
 	}
-	return ""
+	text, err := fs.ReadFile(s.fsys, blurbPath)
+	if err != nil || !isPlainText(text) {
+		return ""
+	}
+	return strings.TrimSpace(string(text))
 }
 
 // isPlainText reports whether b is valid UTF-8 free of control characters
@@ -1186,6 +1267,8 @@ type crumb struct {
 type dirEntryView struct {
 	Name    string
 	Href    string
+	IsDir   bool
+	Blurb   string
 	Size    string
 	ModTime string
 }
@@ -1202,7 +1285,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(`<!DOCTYPE
   html { color: #1a1a1a; background-color: #fdfdfd; }
   body {
     margin: 0 auto;
-    max-width: 42em;
+    max-width: 56em;  /* wider than content pages: listings carry name, blurb, and metadata columns */
     padding: 50px;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   }
@@ -1225,12 +1308,49 @@ var directoryTemplate = template.Must(template.New("directory").Parse(`<!DOCTYPE
   }
   table.listing { border-collapse: collapse; width: 100%; }
   table.listing td { padding: 0.3rem 0.5rem 0.3rem 0; }
+  /* Directory rows use separate name and blurb cells; file rows (which never
+     have blurbs) span both with colspan=2, so a long filename neither widens
+     the directory-name column nor leaves an empty blurb gap. Caps live on the
+     anchors, not the cells: a max-width on a td makes its column reserve the
+     cap width even when every name is short. */
+  table.listing td.dname { white-space: nowrap; width: 1%; }
+  table.listing td.dname a,
+  table.listing td.fname a {
+    display: inline-block;
+    max-width: 24em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: bottom;
+  }
+  table.listing td.fname { white-space: nowrap; }
+  /* Let filenames use the combined name+blurb region, but never force the
+     table wider than the window: cap against the viewport with room for the
+     size/date columns. */
+  table.listing td.fname a { max-width: min(42em, calc(100vw - 26em)); }
+  /* width 100% + max-width 0 makes the blurb cell absorb exactly the spare
+     table width (names and dates shrink to content via width 1%), truncating
+     with an ellipsis at whatever space is actually available. */
+  table.listing td.blurb {
+    color: #57606a;
+    font-size: 0.85rem;
+    width: 100%;
+    max-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding-left: 1rem;
+  }
+  /* On narrow windows, tighten the name caps; blurbs shrink on their own. */
+  @media (max-width: 48em) {
+    table.listing td.dname a, table.listing td.fname a { max-width: 14em; }
+  }
   table.listing td.meta {
     color: #57606a;
     font-size: 0.85rem;
     text-align: right;
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
+    width: 1%;
   }
   section.readme { margin-top: 2rem; border-top: 1px solid #d0d7de; }
   section.readme h1.readme-title { font-size: 1rem; color: #57606a; font-weight: 600; }
@@ -1245,7 +1365,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(`<!DOCTYPE
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if .RawHref}}<a class="raw" href="{{.RawHref}}">raw</a>{{end}}</nav>
 {{if .Blurb}}<p class="blurb">{{.Blurb}}</p>
 {{end}}<div class="sort">sort: {{range $i, $l := .SortLinks}}{{if $i}} &middot; {{end}}<a {{if $l.Active}}class="active" {{end}}href="{{$l.Href}}">{{$l.Label}}{{if $l.Active}} {{$l.Arrow}}{{end}}</a>{{end}}</div>
-{{define "rows"}}{{range .}}<tr><td><a href="{{.Href}}">{{.Name}}</a></td><td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
+{{define "rows"}}{{range .}}<tr>{{if .IsDir}}<td class="dname"><a href="{{.Href}}" title="{{.Name}}">{{.Name}}</a></td><td class="blurb"{{with .Blurb}} title="{{.}}"{{end}}>{{.Blurb}}</td>{{else}}<td class="fname" colspan="2"><a href="{{.Href}}" title="{{.Name}}">{{.Name}}</a></td>{{end}}<td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
 {{end}}{{end}}<table class="listing">
 {{template "rows" .Entries}}</table>
 {{if .Dotted}}<details class="dotfiles">

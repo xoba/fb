@@ -1,8 +1,11 @@
 package main
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/gzip"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -415,7 +418,7 @@ func TestDirectoryShowsBlurb(t *testing.T) {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 			}
 			body := rec.Body.String()
-			if got := strings.Contains(body, `class="blurb"`); got != tc.wantSeen {
+			if got := strings.Contains(body, `<p class="blurb">`); got != tc.wantSeen {
 				t.Fatalf("blurb shown = %v, want %v; body: %q", got, tc.wantSeen, body)
 			}
 			if tc.wantSeen && !strings.Contains(body, "summary of this directory") {
@@ -425,6 +428,29 @@ func TestDirectoryShowsBlurb(t *testing.T) {
 				t.Fatalf("body = %q, want blurb.txt still listed as a file", body)
 			}
 		})
+	}
+}
+
+func TestListingShowsChildDirectoryBlurbs(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "proj", "blurb.txt"), []byte("a neat project\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), `<td class="blurb" title="a neat project">a neat project</td>`) {
+		t.Fatalf("body = %q, want child directory blurb in its listing row", rec.Body.String())
 	}
 }
 
@@ -660,6 +686,109 @@ func TestCSVAndTSVRenderedAsTables(t *testing.T) {
 				t.Fatalf("non-browser body = %q, want verbatim file", got)
 			}
 		})
+	}
+}
+
+func TestTarBrowsing(t *testing.T) {
+	makeTar := func(t *testing.T, gzipped bool) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		var w io.Writer = &buf
+		var gzw *gzip.Writer
+		if gzipped {
+			gzw = gzip.NewWriter(&buf)
+			w = gzw
+		}
+		tw := tar.NewWriter(w)
+		if err := tw.WriteHeader(&tar.Header{Name: "docs/", Typeflag: tar.TypeDir, Mode: 0o755}); err != nil {
+			t.Fatal(err)
+		}
+		for name, content := range map[string]string{
+			"docs/notes.txt": "tar notes",
+			"prog.go":        "package main",
+		} {
+			if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(content))}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tw.Write([]byte(content)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if gzw != nil {
+			if err := gzw.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return buf.Bytes()
+	}
+
+	for _, tc := range []struct {
+		file    string
+		gzipped bool
+	}{
+		{file: "bundle.tar", gzipped: false},
+		{file: "bundle.tar.gz", gzipped: true},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			root := t.TempDir()
+			data := makeTar(t, tc.gzipped)
+			if err := os.WriteFile(filepath.Join(root, tc.file), data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+			nav := httptest.NewRequest(http.MethodGet, "/"+tc.file+"/", nil)
+			nav.Header.Set("Sec-Fetch-Dest", "document")
+			rec := httptest.NewRecorder()
+			server.ServeHTTP(rec, nav)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("listing status = %d; body: %s", rec.Code, rec.Body.String())
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, `href="docs/"`) || !strings.Contains(body, `href="prog.go"`) {
+				t.Fatalf("body = %q, want directory-style links into the tar", body)
+			}
+
+			member := httptest.NewRequest(http.MethodGet, "/"+tc.file+"/docs/notes.txt", nil)
+			rec = httptest.NewRecorder()
+			server.ServeHTTP(rec, member)
+			if got := rec.Body.String(); got != "tar notes" {
+				t.Fatalf("member fetch body = %q, want verbatim member contents", got)
+			}
+
+			plain := httptest.NewRequest(http.MethodGet, "/"+tc.file, nil)
+			rec = httptest.NewRecorder()
+			server.ServeHTTP(rec, plain)
+			if !bytes.Equal(rec.Body.Bytes(), data) {
+				t.Fatalf("non-browser fetch returned %d bytes, want verbatim %d-byte tar", rec.Body.Len(), len(data))
+			}
+		})
+	}
+}
+
+func TestOversizedTarServedVerbatim(t *testing.T) {
+	root := t.TempDir()
+	big := make([]byte, maxTarBytes+1)
+	if err := os.WriteFile(filepath.Join(root, "big.tar"), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	nav := httptest.NewRequest(http.MethodGet, "/big.tar/", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (fall back to raw)", rec.Code, http.StatusOK)
+	}
+	if rec.Body.Len() != len(big) {
+		t.Fatalf("body = %d bytes, want verbatim %d-byte tar", rec.Body.Len(), len(big))
 	}
 }
 
