@@ -19,6 +19,11 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/alecthomas/chroma/v2"
+	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
+	"github.com/alecthomas/chroma/v2/lexers"
+	"github.com/alecthomas/chroma/v2/styles"
 )
 
 const (
@@ -145,6 +150,11 @@ func (s fileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if err == nil && strings.EqualFold(path.Ext(name), ".md") {
 		s.serveMarkdown(w, r, name, info)
+		return
+	}
+
+	if err == nil && highlightExts[strings.ToLower(path.Ext(name))] && r.URL.Query().Get("raw") != "1" {
+		s.serveSource(w, r, name, info)
 		return
 	}
 
@@ -320,6 +330,157 @@ func writePandocHeader(stylesheets []string) (string, func(), error) {
 
 	return f.Name(), cleanup, nil
 }
+
+// highlightExts lists source-file extensions served as syntax-highlighted HTML
+// pages. Any of them can still be fetched verbatim with ?raw=1. Extensions the
+// browser renders natively (.html, .css, .js, ...) stay off the list so pages
+// like .localmd.css keep working as real stylesheets.
+var highlightExts = map[string]bool{
+	".c":     true,
+	".cc":    true,
+	".cpp":   true,
+	".go":    true,
+	".h":     true,
+	".hpp":   true,
+	".java":  true,
+	".kt":    true,
+	".py":    true,
+	".rb":    true,
+	".rs":    true,
+	".sh":    true,
+	".sql":   true,
+	".swift": true,
+	".ts":    true,
+	".zig":   true,
+}
+
+// maxHighlightBytes caps how large a file gets the highlighted treatment;
+// anything bigger is served verbatim rather than ballooning into huge HTML.
+const maxHighlightBytes = 2 << 20
+
+func (s fileServer) serveSource(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if info.IsDir() || info.Size() > maxHighlightBytes {
+		http.ServeFileFS(w, r, s.fsys, name)
+		return
+	}
+
+	src, err := fs.ReadFile(s.fsys, name)
+	if err != nil {
+		http.Error(w, "cannot read file", http.StatusInternalServerError)
+		return
+	}
+
+	code, err := highlightSource(path.Base(name), string(src))
+	if err != nil {
+		log.Printf("highlight failed for %s: %v", name, err)
+		http.ServeFileFS(w, r, s.fsys, name)
+		return
+	}
+
+	page := sourcePage{
+		Title:   path.Base(name),
+		Crumbs:  breadcrumbs(path.Dir(name)),
+		RawHref: (&url.URL{Path: path.Base(name), RawQuery: "raw=1"}).String(),
+		Code:    code,
+	}
+
+	var buf bytes.Buffer
+	if err := sourceTemplate.Execute(&buf, page); err != nil {
+		log.Printf("render source %s: %v", name, err)
+		http.Error(w, "cannot render source", http.StatusInternalServerError)
+		return
+	}
+
+	outName := strings.TrimSuffix(path.Base(name), path.Ext(name)) + ".html"
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.ServeContent(w, r, outName, info.ModTime(), bytes.NewReader(buf.Bytes()))
+}
+
+func highlightSource(filename, src string) (template.HTML, error) {
+	lexer := lexers.Match(filename)
+	if lexer == nil {
+		lexer = lexers.Fallback
+	}
+	lexer = chroma.Coalesce(lexer)
+
+	iterator, err := lexer.Tokenise(nil, src)
+	if err != nil {
+		return "", err
+	}
+
+	formatter := chromahtml.New(
+		chromahtml.WithLineNumbers(true),
+		chromahtml.WithLinkableLineNumbers(true, "L"),
+		chromahtml.TabWidth(4),
+	)
+
+	var buf bytes.Buffer
+	if err := formatter.Format(&buf, styles.Get("github"), iterator); err != nil {
+		return "", err
+	}
+	return template.HTML(buf.String()), nil
+}
+
+type sourcePage struct {
+	Title   string
+	Crumbs  []crumb
+	RawHref string
+	Code    template.HTML
+}
+
+var sourceTemplate = template.Must(template.New("source").Parse(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:,">
+<title>{{.Title}}</title>
+<style>
+  :root { color-scheme: light; }
+  html { color: #1a1a1a; background-color: #fdfdfd; }
+  body {
+    margin: 0 auto;
+    max-width: 70em;
+    padding: 50px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  @media (max-width: 600px) { body { padding: 12px; } }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  nav { margin-bottom: 1rem; font-size: 1.1rem; }
+  nav a { font-weight: 600; }
+  nav span.sep { color: #57606a; }
+  nav span.file { font-weight: 600; }
+  nav a.raw { float: right; font-weight: 400; font-size: 0.85rem; }
+  div.source {
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    overflow-x: auto;
+    background-color: #fff;
+  }
+  div.source pre {
+    margin: 0;
+    padding: 0.75rem 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    line-height: 1.45;
+  }
+</style>
+</head>
+<body>
+<nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
+<div class="source">
+{{.Code}}
+</div>
+</body>
+</html>
+`))
 
 func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {

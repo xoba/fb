@@ -55,6 +55,61 @@ func TestServesNonMarkdownFilesDirectly(t *testing.T) {
 	}
 }
 
+func TestServesGoSourceHighlighted(t *testing.T) {
+	root := t.TempDir()
+	src := "package main\n\nfunc main() {}\n"
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "sub", "prog.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/sub/prog.go", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html", got)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="L1"`) {
+		t.Fatalf("body = %q, want linkable line numbers", body)
+	}
+	if !strings.Contains(body, "package") || !strings.Contains(body, "<span style=") {
+		t.Fatalf("body = %q, want highlighted source tokens", body)
+	}
+	if !strings.Contains(body, `href="prog.go?raw=1"`) {
+		t.Fatalf("body = %q, want raw link", body)
+	}
+}
+
+func TestRawQueryServesSourceVerbatim(t *testing.T) {
+	root := t.TempDir()
+	src := "package main\n"
+	if err := os.WriteFile(filepath.Join(root, "prog.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/prog.go?raw=1", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); got != src {
+		t.Fatalf("body = %q, want verbatim source", got)
+	}
+}
+
 func TestServesNonMarkdownIgnoresConditionalCache(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "plain.txt"), []byte("fresh text\n"), 0o644); err != nil {
