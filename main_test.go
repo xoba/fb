@@ -68,6 +68,8 @@ func TestServesGoSourceHighlighted(t *testing.T) {
 	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
 
 	req := httptest.NewRequest(http.MethodGet, "/sub/prog.go", nil)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 
@@ -86,6 +88,105 @@ func TestServesGoSourceHighlighted(t *testing.T) {
 	}
 	if !strings.Contains(body, `href="prog.go?raw=1"`) {
 		t.Fatalf("body = %q, want raw link", body)
+	}
+}
+
+func TestExtensionlessNamesHighlighted(t *testing.T) {
+	root := t.TempDir()
+	src := "all:\n\tgo build\n"
+	if err := os.WriteFile(filepath.Join(root, "Makefile"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+
+	nav := httptest.NewRequest(http.MethodGet, "/Makefile", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Fatalf("navigation Content-Type = %q, want highlighted text/html", got)
+	}
+
+	plain := httptest.NewRequest(http.MethodGet, "/Makefile", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, plain)
+	if got := rec.Body.String(); got != src {
+		t.Fatalf("non-browser body = %q, want verbatim Makefile", got)
+	}
+}
+
+func TestSourceServedVerbatimToNonBrowserClients(t *testing.T) {
+	root := t.TempDir()
+	src := "package main\n"
+	if err := os.WriteFile(filepath.Join(root, "prog.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/prog.go", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); got != src {
+		t.Fatalf("body = %q, want verbatim source for a request without browser headers", got)
+	}
+}
+
+func TestCSSHighlightedOnlyForNavigations(t *testing.T) {
+	root := t.TempDir()
+	src := "body { color: red; }\n"
+	if err := os.WriteFile(filepath.Join(root, "style.css"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+
+	nav := httptest.NewRequest(http.MethodGet, "/style.css", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	nav.Header.Set("Accept", "text/html,application/xhtml+xml")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Fatalf("navigation Content-Type = %q, want highlighted text/html", got)
+	}
+
+	link := httptest.NewRequest(http.MethodGet, "/style.css", nil)
+	link.Header.Set("Sec-Fetch-Dest", "style")
+	link.Header.Set("Accept", "text/css,*/*;q=0.1")
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, link)
+	if got := rec.Body.String(); got != src {
+		t.Fatalf("stylesheet fetch body = %q, want verbatim css", got)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/css") {
+		t.Fatalf("stylesheet fetch Content-Type = %q, want text/css", got)
+	}
+}
+
+func TestIndexHTMLServedInPlace(t *testing.T) {
+	root := t.TempDir()
+	content := "<html><body>hello</body></html>\n"
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/index.html", nil)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (no redirect back to the directory)", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); got != content {
+		t.Fatalf("body = %q, want index.html contents", got)
 	}
 }
 
@@ -259,6 +360,30 @@ func TestDirectoryListingGroupsAndRendersReadme(t *testing.T) {
 	}
 	if !strings.Contains(body, "<p>rendered readme</p>") {
 		t.Fatalf("body = %q, want inline rendered README", body)
+	}
+}
+
+func TestDirectoryRendersReadmeTxtFallback(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "readme.txt"), []byte("plain notes & things\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "readme.txt") {
+		t.Fatalf("body = %q, want readme.txt section title", body)
+	}
+	if !strings.Contains(body, "plain notes &amp; things") {
+		t.Fatalf("body = %q, want escaped readme.txt contents inline", body)
 	}
 }
 

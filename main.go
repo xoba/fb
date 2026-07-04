@@ -153,12 +153,38 @@ func (s fileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err == nil && highlightExts[strings.ToLower(path.Ext(name))] && r.URL.Query().Get("raw") != "1" {
+	if err == nil && highlightable(name) &&
+		r.URL.Query().Get("raw") != "1" && wantsDocument(r.Header) {
 		s.serveSource(w, r, name, info)
 		return
 	}
 
+	// http.ServeFileFS canonicalizes any request ending in /index.html into a
+	// redirect back to its directory, which would make the listing link a
+	// no-op loop. Serve the file by hand instead.
+	if err == nil && !info.IsDir() && path.Base(name) == "index.html" {
+		content, readErr := fs.ReadFile(s.fsys, name)
+		if readErr != nil {
+			http.Error(w, "cannot read file", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		http.ServeContent(w, r, path.Base(name), info.ModTime(), bytes.NewReader(content))
+		return
+	}
+
 	http.ServeFileFS(w, r, s.fsys, name)
+}
+
+// wantsDocument reports whether a request is a browser navigation, as opposed
+// to a subresource fetch (<link rel="stylesheet">, <script>, ...) or a
+// non-browser client like curl. Only navigations get highlighted HTML; other
+// fetches need the file verbatim.
+func wantsDocument(h http.Header) bool {
+	if dest := h.Get("Sec-Fetch-Dest"); dest != "" {
+		return dest == "document"
+	}
+	return strings.Contains(h.Get("Accept"), "text/html")
 }
 
 // serveAsset serves resources compiled into the binary. They change only when
@@ -332,26 +358,92 @@ func writePandocHeader(stylesheets []string) (string, func(), error) {
 }
 
 // highlightExts lists source-file extensions served as syntax-highlighted HTML
-// pages. Any of them can still be fetched verbatim with ?raw=1. Extensions the
-// browser renders natively (.html, .css, .js, ...) stay off the list so pages
-// like .localmd.css keep working as real stylesheets.
+// pages when a browser navigates to them. Subresource fetches and non-browser
+// clients (see wantsDocument), plus anything requested with ?raw=1, get the
+// file verbatim — so .localmd.css and stylesheets referenced by served HTML
+// keep working as real stylesheets. Deliberately absent: .md (pandoc), .html
+// and .svg (the browser renders those), and .txt (prose reads better plain).
 var highlightExts = map[string]bool{
-	".c":     true,
-	".cc":    true,
-	".cpp":   true,
-	".go":    true,
-	".h":     true,
-	".hpp":   true,
-	".java":  true,
-	".kt":    true,
-	".py":    true,
-	".rb":    true,
-	".rs":    true,
-	".sh":    true,
-	".sql":   true,
-	".swift": true,
-	".ts":    true,
-	".zig":   true,
+	".awk":     true,
+	".bash":    true,
+	".bat":     true,
+	".c":       true,
+	".cc":      true,
+	".clj":     true,
+	".cpp":     true,
+	".cs":      true,
+	".css":     true,
+	".csv":     true,
+	".dart":    true,
+	".diff":    true,
+	".el":      true,
+	".erl":     true,
+	".ex":      true,
+	".exs":     true,
+	".fish":    true,
+	".go":      true,
+	".gradle":  true,
+	".graphql": true,
+	".groovy":  true,
+	".h":       true,
+	".hcl":     true,
+	".hpp":     true,
+	".hs":      true,
+	".ini":     true,
+	".java":    true,
+	".jl":      true,
+	".js":      true,
+	".json":    true,
+	".jsx":     true,
+	".kt":      true,
+	".lisp":    true,
+	".lua":     true,
+	".mjs":     true,
+	".nix":     true,
+	".patch":   true,
+	".php":     true,
+	".pl":      true,
+	".proto":   true,
+	".ps1":     true,
+	".py":      true,
+	".r":       true,
+	".rb":      true,
+	".rs":      true,
+	".scala":   true,
+	".scss":    true,
+	".sh":      true,
+	".sql":     true,
+	".svelte":  true,
+	".swift":   true,
+	".tex":     true,
+	".tf":      true,
+	".toml":    true,
+	".ts":      true,
+	".tsx":     true,
+	".vue":     true,
+	".xml":     true,
+	".yaml":    true,
+	".yml":     true,
+	".zig":     true,
+	".zsh":     true,
+}
+
+// highlightNames lists exact basenames without a useful extension that also
+// get the highlighted treatment. (go.mod is deliberately absent: chroma
+// mis-matches *.mod to its AMPL lexer.)
+var highlightNames = map[string]bool{
+	".bashrc":        true,
+	".zshrc":         true,
+	"CMakeLists.txt": true,
+	"Dockerfile":     true,
+	"GNUmakefile":    true,
+	"Makefile":       true,
+	"makefile":       true,
+}
+
+func highlightable(name string) bool {
+	base := path.Base(name)
+	return highlightNames[base] || highlightExts[strings.ToLower(path.Ext(base))]
 }
 
 // maxHighlightBytes caps how large a file gets the highlighted treatment;
@@ -524,12 +616,20 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 	}
 
 	if readme := findReadme(entries); readme != "" {
-		html, err := s.renderMarkdown(r.Context(), path.Join(name, readme), renderOptions{})
-		if err != nil {
-			log.Printf("pandoc failed for %s: %v", path.Join(name, readme), err)
-		} else {
+		full := path.Join(name, readme)
+		if strings.EqualFold(path.Ext(readme), ".md") {
+			html, err := s.renderMarkdown(r.Context(), full, renderOptions{})
+			if err != nil {
+				log.Printf("pandoc failed for %s: %v", full, err)
+			} else {
+				page.ReadmeName = readme
+				page.Readme = template.HTML(html)
+			}
+		} else if text, err := fs.ReadFile(s.fsys, full); err == nil {
 			page.ReadmeName = readme
-			page.Readme = template.HTML(html)
+			page.ReadmeText = string(text)
+		} else {
+			log.Printf("read %s: %v", full, err)
 		}
 	}
 
@@ -567,9 +667,11 @@ func sortDirEntries(entries []fs.DirEntry) {
 }
 
 func findReadme(entries []fs.DirEntry) string {
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.EqualFold(entry.Name(), "README.md") {
-			return entry.Name()
+	for _, want := range []string{"README.md", "README.txt"} {
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.EqualFold(entry.Name(), want) {
+				return entry.Name()
+			}
 		}
 	}
 	return ""
@@ -608,6 +710,7 @@ type directoryPage struct {
 	Entries    []dirEntryView
 	ReadmeName string
 	Readme     template.HTML
+	ReadmeText string
 }
 
 type crumb struct {
@@ -655,6 +758,11 @@ var directoryTemplate = template.Must(template.New("directory").Parse(`<!DOCTYPE
   }
   section.readme { margin-top: 2rem; border-top: 1px solid #d0d7de; }
   section.readme h1.readme-title { font-size: 1rem; color: #57606a; font-weight: 600; }
+  section.readme pre.readme-text {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+  }
 </style>
 </head>
 <body>
@@ -662,9 +770,9 @@ var directoryTemplate = template.Must(template.New("directory").Parse(`<!DOCTYPE
 <table class="listing">
 {{range .Entries}}<tr><td><a href="{{.Href}}">{{.Name}}</a></td><td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
 {{end}}</table>
-{{if .Readme}}<section class="readme">
+{{if .ReadmeName}}<section class="readme">
 <h1 class="readme-title">{{.ReadmeName}}</h1>
-{{.Readme}}
+{{if .Readme}}{{.Readme}}{{else}}<pre class="readme-text">{{.ReadmeText}}</pre>{{end}}
 </section>{{end}}
 </body>
 </html>
