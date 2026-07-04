@@ -19,7 +19,7 @@ func TestServesMarkdownThroughPandoc(t *testing.T) {
 	}
 
 	pandoc := fakePandoc(t)
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: pandoc}
+	server := fileServer{fsys: os.DirFS(root), pandoc: pandoc}
 
 	req := httptest.NewRequest(http.MethodGet, "/note.md", nil)
 	rec := httptest.NewRecorder()
@@ -43,7 +43,7 @@ func TestServesNonMarkdownFilesDirectly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
 	req := httptest.NewRequest(http.MethodGet, "/plain.txt", nil)
 	rec := httptest.NewRecorder()
@@ -67,7 +67,7 @@ func TestServesGoSourceHighlighted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
 	req := httptest.NewRequest(http.MethodGet, "/sub/prog.go", nil)
 	req.Header.Set("Sec-Fetch-Dest", "document")
@@ -100,7 +100,7 @@ func TestExtensionlessNamesHighlighted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
 	nav := httptest.NewRequest(http.MethodGet, "/Makefile", nil)
 	nav.Header.Set("Sec-Fetch-Dest", "document")
@@ -125,7 +125,7 @@ func TestSourceServedVerbatimToNonBrowserClients(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
 	req := httptest.NewRequest(http.MethodGet, "/prog.go", nil)
 	rec := httptest.NewRecorder()
@@ -146,7 +146,7 @@ func TestCSSHighlightedOnlyForNavigations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
 	nav := httptest.NewRequest(http.MethodGet, "/style.css", nil)
 	nav.Header.Set("Sec-Fetch-Dest", "document")
@@ -177,7 +177,7 @@ func TestIndexHTMLServedInPlace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
 	req := httptest.NewRequest(http.MethodGet, "/index.html", nil)
 	req.Header.Set("Sec-Fetch-Dest", "document")
@@ -199,7 +199,7 @@ func TestRawQueryServesSourceVerbatim(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
 	req := httptest.NewRequest(http.MethodGet, "/prog.go?raw=1", nil)
 	rec := httptest.NewRecorder()
@@ -219,7 +219,7 @@ func TestServesNonMarkdownIgnoresConditionalCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
 	req := httptest.NewRequest(http.MethodGet, "/plain.txt", nil)
 	req.Header.Set("If-Modified-Since", time.Now().Add(24*time.Hour).UTC().Format(http.TimeFormat))
@@ -240,7 +240,7 @@ func TestServesDirectoryFromConfiguredRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -269,7 +269,7 @@ func TestTocQueryAddsTableOfContents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: fakePandoc(t)}
+	server := fileServer{fsys: os.DirFS(root), pandoc: fakePandoc(t)}
 
 	for _, tc := range []struct {
 		target  string
@@ -305,7 +305,7 @@ func TestLocalCSSLinkedOutermostFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: fakePandoc(t)}
+	server := fileServer{fsys: os.DirFS(root), pandoc: fakePandoc(t)}
 
 	req := httptest.NewRequest(http.MethodGet, "/sub/note.md", nil)
 	rec := httptest.NewRecorder()
@@ -340,7 +340,7 @@ func TestDirectoryListingGroupsAndRendersReadme(t *testing.T) {
 		}
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: fakePandoc(t)}
+	server := fileServer{fsys: os.DirFS(root), pandoc: fakePandoc(t)}
 
 	req := httptest.NewRequest(http.MethodGet, "/?sort=name", nil)
 	rec := httptest.NewRecorder()
@@ -371,7 +371,7 @@ func TestDirectoryRendersReadmeTxtFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -405,7 +405,7 @@ func TestDirectoryShowsBlurb(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+			server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			rec := httptest.NewRecorder()
@@ -439,7 +439,7 @@ func TestDotEntriesCollapsed(t *testing.T) {
 		}
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -474,7 +474,7 @@ func TestDirectoriesShowModTime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -500,7 +500,7 @@ func TestSortNewestByDefault(t *testing.T) {
 		}
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
 	for _, tc := range []struct {
 		target    string
@@ -508,6 +508,8 @@ func TestSortNewestByDefault(t *testing.T) {
 	}{
 		{target: "/", wantFirst: "zzz-new.txt"},
 		{target: "/?sort=name", wantFirst: "aaa-old.txt"},
+		{target: "/?sort=name&dir=desc", wantFirst: "zzz-new.txt"},
+		{target: "/?sort=time&dir=asc", wantFirst: "aaa-old.txt"},
 	} {
 		req := httptest.NewRequest(http.MethodGet, tc.target, nil)
 		rec := httptest.NewRecorder()
@@ -552,24 +554,52 @@ func TestZipListing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
-	nav := httptest.NewRequest(http.MethodGet, "/bundle.zip", nil)
-	nav.Header.Set("Sec-Fetch-Dest", "document")
-	rec := httptest.NewRecorder()
-	server.ServeHTTP(rec, nav)
-	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
-		t.Fatalf("navigation Content-Type = %q, want zip listing as text/html", got)
+	nav := func(target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		req.Header.Set("Accept", "text/html,application/xhtml+xml")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := nav("/bundle.zip")
+	if rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/bundle.zip/" {
+		t.Fatalf("GET /bundle.zip = %d %q, want redirect to /bundle.zip/", rec.Code, rec.Header().Get("Location"))
+	}
+
+	rec = nav("/bundle.zip/")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("zip listing status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "docs/notes.txt") || !strings.Contains(body, "prog.go") {
-		t.Fatalf("body = %q, want zip member names", body)
+	if !strings.Contains(body, `href="docs/"`) || !strings.Contains(body, `href="prog.go"`) {
+		t.Fatalf("body = %q, want directory-style links into the archive", body)
 	}
-	if !strings.Contains(body, "2 entries") {
-		t.Fatalf("body = %q, want entry-count summary", body)
+	if !strings.Contains(body, `href="/bundle.zip?raw=1"`) {
+		t.Fatalf("body = %q, want raw download link for the archive", body)
 	}
-	if !strings.Contains(body, `href="bundle.zip?raw=1"`) {
-		t.Fatalf("body = %q, want raw link", body)
+
+	rec = nav("/bundle.zip/docs/")
+	if !strings.Contains(rec.Body.String(), `href="notes.txt"`) {
+		t.Fatalf("nested listing = %q, want notes.txt link", rec.Body.String())
+	}
+
+	rec = nav("/bundle.zip/prog.go")
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Fatalf("member navigation Content-Type = %q, want highlighted text/html", got)
+	}
+	if !strings.Contains(rec.Body.String(), `id="L1"`) {
+		t.Fatalf("member body = %q, want highlighted member source", rec.Body.String())
+	}
+
+	plainMember := httptest.NewRequest(http.MethodGet, "/bundle.zip/docs/notes.txt", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, plainMember)
+	if got := rec.Body.String(); got != "some notes" {
+		t.Fatalf("member fetch body = %q, want verbatim member contents", got)
 	}
 
 	plain := httptest.NewRequest(http.MethodGet, "/bundle.zip", nil)
@@ -580,13 +610,45 @@ func TestZipListing(t *testing.T) {
 	}
 }
 
+func TestMarkdownInsideZipRendered(t *testing.T) {
+	root := t.TempDir()
+	var zbuf bytes.Buffer
+	zw := zip.NewWriter(&zbuf)
+	f, err := zw.Create("doc.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte("# Hello\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "bundle.zip"), zbuf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: fakePandoc(t)}
+
+	req := httptest.NewRequest(http.MethodGet, "/bundle.zip/doc.md", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "<p>rendered markdown</p>") {
+		t.Fatalf("body = %q, want markdown inside zip rendered through pandoc", rec.Body.String())
+	}
+}
+
 func TestDirectoryWithoutTrailingSlashRedirects(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
 	req := httptest.NewRequest(http.MethodGet, "/sub", nil)
 	rec := httptest.NewRecorder()
@@ -601,7 +663,7 @@ func TestDirectoryWithoutTrailingSlashRedirects(t *testing.T) {
 }
 
 func TestServesEmbeddedMathJax(t *testing.T) {
-	server := fileServer{fsys: os.DirFS(t.TempDir()), root: "unused", pandoc: "unused"}
+	server := fileServer{fsys: os.DirFS(t.TempDir()), pandoc: "unused"}
 
 	req := httptest.NewRequest(http.MethodGet, "/_localmd/mathjax/tex-mml-chtml.js", nil)
 	rec := httptest.NewRecorder()

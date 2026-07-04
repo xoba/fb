@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -62,7 +63,7 @@ func main() {
 	}
 
 	fsys := os.DirFS(root)
-	handler := fileServer{fsys: fsys, root: root, pandoc: "pandoc"}
+	handler := fileServer{fsys: fsys, pandoc: "pandoc"}
 
 	log.Printf("serving %s at http://localhost:3030/ (%s and %s)", root, listenAddr4, listenAddr6)
 	if err := serveLoopback(handler); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -130,8 +131,12 @@ func resolveRoot(root string) (string, error) {
 
 type fileServer struct {
 	fsys   fs.FS
-	root   string
 	pandoc string
+
+	// base is the URL path prefix at which fsys is mounted: "" for the serve
+	// root, or the archive's own URL path (e.g. "/notes/bundle.zip") when
+	// fsys is the contents of a zip file.
+	base string
 }
 
 func (s fileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -144,44 +149,148 @@ func (s fileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	preventCaching(w.Header(), r.Header)
 
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.route(w, r, name, 0)
+}
+
+// route dispatches a request for name within s.fsys, descending into zip
+// archives as if they were directories.
+func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, depth int) {
 	info, err := fs.Stat(s.fsys, name)
-	if err == nil && info.IsDir() {
+	if err != nil {
+		s.routeIntoArchive(w, r, name, depth)
+		return
+	}
+
+	if info.IsDir() {
 		s.serveDirectory(w, r, name)
 		return
 	}
 
-	if err == nil && strings.EqualFold(path.Ext(name), ".md") {
+	if strings.EqualFold(path.Ext(name), ".md") {
 		s.serveMarkdown(w, r, name, info)
 		return
 	}
 
-	if err == nil && highlightable(name) &&
-		r.URL.Query().Get("raw") != "1" && wantsDocument(r.Header) {
-		s.serveSource(w, r, name, info)
-		return
-	}
-
-	if err == nil && strings.EqualFold(path.Ext(name), ".zip") &&
-		r.URL.Query().Get("raw") != "1" && wantsDocument(r.Header) {
-		s.serveZip(w, r, name)
-		return
-	}
-
-	// http.ServeFileFS canonicalizes any request ending in /index.html into a
-	// redirect back to its directory, which would make the listing link a
-	// no-op loop. Serve the file by hand instead.
-	if err == nil && !info.IsDir() && path.Base(name) == "index.html" {
-		content, readErr := fs.ReadFile(s.fsys, name)
-		if readErr != nil {
-			http.Error(w, "cannot read file", http.StatusInternalServerError)
+	if r.URL.Query().Get("raw") != "1" && wantsDocument(r.Header) {
+		if highlightable(name) {
+			s.serveSource(w, r, name, info)
 			return
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		http.ServeContent(w, r, path.Base(name), info.ModTime(), bytes.NewReader(content))
+		if strings.EqualFold(path.Ext(name), ".zip") {
+			s.descendArchive(w, r, name, info, ".", depth)
+			return
+		}
+	}
+
+	s.serveRaw(w, r, name, info)
+}
+
+// routeIntoArchive handles paths that do not exist directly in s.fsys by
+// checking whether some prefix of them is a zip file to descend into.
+func (s fileServer) routeIntoArchive(w http.ResponseWriter, r *http.Request, name string, depth int) {
+	elems := strings.Split(name, "/")
+	for i := range elems[:len(elems)-1] {
+		prefix := path.Join(elems[:i+1]...)
+		info, err := fs.Stat(s.fsys, prefix)
+		if err != nil {
+			break
+		}
+		if info.IsDir() {
+			continue
+		}
+		if strings.EqualFold(path.Ext(prefix), ".zip") {
+			s.descendArchive(w, r, prefix, info, path.Join(elems[i+1:]...), depth)
+			return
+		}
+		break
+	}
+	http.NotFound(w, r)
+}
+
+const (
+	// maxArchiveBytes caps how much of a non-seekable file (an archive member,
+	// including a nested archive) is buffered in memory for serving.
+	maxArchiveBytes = 128 << 20
+
+	// maxArchiveDepth bounds zip-within-zip nesting.
+	maxArchiveDepth = 3
+)
+
+// descendArchive serves inner (an fs path within the named zip file) by
+// mounting the archive as an fs.FS and routing through the ordinary pipeline,
+// so members get listings, highlighting, and markdown rendering like any
+// other file. An unreadable archive falls back to verbatim serving.
+func (s fileServer) descendArchive(w http.ResponseWriter, r *http.Request, zipName string, info fs.FileInfo, inner string, depth int) {
+	if depth >= maxArchiveDepth {
+		http.NotFound(w, r)
 		return
 	}
 
-	http.ServeFileFS(w, r, s.fsys, name)
+	f, err := s.fsys.Open(zipName)
+	if err != nil {
+		http.Error(w, "cannot read archive", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	ra, ok := f.(io.ReaderAt)
+	size := info.Size()
+	if !ok {
+		if size > maxArchiveBytes {
+			http.Error(w, "nested archive too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		data, err := io.ReadAll(f)
+		if err != nil {
+			http.Error(w, "cannot read archive", http.StatusInternalServerError)
+			return
+		}
+		ra, size = bytes.NewReader(data), int64(len(data))
+	}
+
+	zr, err := zip.NewReader(ra, size)
+	if err != nil {
+		log.Printf("open zip %s: %v", zipName, err)
+		s.serveRaw(w, r, zipName, info)
+		return
+	}
+
+	sub := fileServer{fsys: zr, pandoc: s.pandoc, base: s.base + "/" + zipName}
+	sub.route(w, r, inner, depth+1)
+}
+
+// serveRaw serves a file verbatim. Unlike http.ServeFileFS it neither
+// redirects index.html requests back to their directory nor requires a
+// seekable file (zip members are not); non-seekable content is buffered.
+func (s fileServer) serveRaw(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
+	f, err := s.fsys.Open(name)
+	if err != nil {
+		http.Error(w, "cannot read file", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	if rs, ok := f.(io.ReadSeeker); ok {
+		http.ServeContent(w, r, path.Base(name), info.ModTime(), rs)
+		return
+	}
+
+	data, err := io.ReadAll(io.LimitReader(f, maxArchiveBytes+1))
+	if err != nil {
+		http.Error(w, "cannot read file", http.StatusInternalServerError)
+		return
+	}
+	if int64(len(data)) > maxArchiveBytes {
+		http.Error(w, "archive member too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	http.ServeContent(w, r, path.Base(name), info.ModTime(), bytes.NewReader(data))
 }
 
 // wantsDocument reports whether a request is a browser navigation, as opposed
@@ -223,12 +332,6 @@ func requestName(urlPath string) string {
 }
 
 func (s fileServer) serveMarkdown(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	html, err := s.renderMarkdown(r.Context(), name, renderOptions{
 		standalone: true,
 		toc:        r.URL.Query().Get("toc") == "1",
@@ -254,6 +357,13 @@ type renderOptions struct {
 func (s fileServer) renderMarkdown(ctx context.Context, name string, opts renderOptions) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+
+	// Feed the source through stdin rather than as a file path so markdown
+	// works from any fs.FS, including the inside of zip archives.
+	content, err := fs.ReadFile(s.fsys, name)
+	if err != nil {
+		return nil, err
+	}
 
 	args := []string{
 		"-f", "markdown+footnotes+lists_without_preceding_blankline+tex_math_single_backslash+gfm_auto_identifiers+autolink_bare_uris+emoji",
@@ -283,10 +393,8 @@ func (s fileServer) renderMarkdown(ctx context.Context, name string, opts render
 		)
 	}
 
-	args = append(args, localPath(s.root, name))
-
 	cmd := exec.CommandContext(ctx, s.pandoc, args...)
-	cmd.Dir = filepath.Dir(localPath(s.root, name))
+	cmd.Stdin = bytes.NewReader(content)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -304,7 +412,7 @@ func (s fileServer) renderMarkdown(ctx context.Context, name string, opts render
 }
 
 // stylesheetLinks returns URL paths of every .localmd.css found between the
-// serve root and the markdown file's directory, outermost first.
+// filesystem root and the markdown file's directory, outermost first.
 func (s fileServer) stylesheetLinks(name string) []string {
 	var dirs []string
 	for dir := path.Dir(name); dir != "."; dir = path.Dir(dir) {
@@ -316,17 +424,10 @@ func (s fileServer) stylesheetLinks(name string) []string {
 	for i := len(dirs) - 1; i >= 0; i-- {
 		cssPath := path.Join(dirs[i], localCSSName)
 		if info, err := fs.Stat(s.fsys, cssPath); err == nil && !info.IsDir() {
-			hrefs = append(hrefs, (&url.URL{Path: "/" + cssPath}).String())
+			hrefs = append(hrefs, (&url.URL{Path: s.base + "/" + cssPath}).String())
 		}
 	}
 	return hrefs
-}
-
-func localPath(root, name string) string {
-	if name == "." {
-		return root
-	}
-	return filepath.Join(root, filepath.FromSlash(name))
 }
 
 // writePandocHeader writes the shared header include, followed by stylesheet
@@ -459,14 +560,8 @@ func highlightable(name string) bool {
 const maxHighlightBytes = 2 << 20
 
 func (s fileServer) serveSource(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if info.IsDir() || info.Size() > maxHighlightBytes {
-		http.ServeFileFS(w, r, s.fsys, name)
+	if info.Size() > maxHighlightBytes {
+		s.serveRaw(w, r, name, info)
 		return
 	}
 
@@ -479,13 +574,13 @@ func (s fileServer) serveSource(w http.ResponseWriter, r *http.Request, name str
 	code, err := highlightSource(path.Base(name), string(src))
 	if err != nil {
 		log.Printf("highlight failed for %s: %v", name, err)
-		http.ServeFileFS(w, r, s.fsys, name)
+		s.serveRaw(w, r, name, info)
 		return
 	}
 
 	page := sourcePage{
 		Title:   path.Base(name),
-		Crumbs:  breadcrumbs(path.Dir(name)),
+		Crumbs:  s.breadcrumbs(path.Dir(name)),
 		RawHref: (&url.URL{Path: path.Base(name), RawQuery: "raw=1"}).String(),
 		Code:    code,
 	}
@@ -582,129 +677,7 @@ var sourceTemplate = template.Must(template.New("source").Parse(`<!DOCTYPE html>
 </html>
 `))
 
-// maxZipListEntries caps how many archive members a zip listing shows; the
-// remainder is summarized as a count.
-const maxZipListEntries = 2000
-
-func (s fileServer) serveZip(w http.ResponseWriter, r *http.Request, name string) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	zr, err := zip.OpenReader(localPath(s.root, name))
-	if err != nil {
-		log.Printf("open zip %s: %v", name, err)
-		http.ServeFileFS(w, r, s.fsys, name)
-		return
-	}
-	defer zr.Close()
-
-	page := zipPage{
-		Title:   path.Base(name),
-		Crumbs:  breadcrumbs(path.Dir(name)),
-		RawHref: (&url.URL{Path: path.Base(name), RawQuery: "raw=1"}).String(),
-	}
-
-	var total uint64
-	for _, f := range zr.File {
-		total += f.UncompressedSize64
-		if len(page.Entries) == maxZipListEntries {
-			continue
-		}
-		view := zipEntryView{
-			Name:    f.Name,
-			ModTime: f.Modified.Format("2006-01-02 15:04"),
-		}
-		if !strings.HasSuffix(f.Name, "/") {
-			view.Size = humanSize(int64(f.UncompressedSize64))
-		}
-		page.Entries = append(page.Entries, view)
-	}
-	page.Omitted = len(zr.File) - len(page.Entries)
-	page.Summary = fmt.Sprintf("%d entries, %s uncompressed", len(zr.File), humanSize(int64(total)))
-
-	var buf bytes.Buffer
-	if err := zipTemplate.Execute(&buf, page); err != nil {
-		log.Printf("render zip %s: %v", name, err)
-		http.Error(w, "cannot render zip listing", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(buf.Bytes()))
-}
-
-type zipPage struct {
-	Title   string
-	Crumbs  []crumb
-	RawHref string
-	Summary string
-	Entries []zipEntryView
-	Omitted int
-}
-
-type zipEntryView struct {
-	Name    string
-	Size    string
-	ModTime string
-}
-
-var zipTemplate = template.Must(template.New("zip").Parse(`<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="icon" href="data:,">
-<title>{{.Title}}</title>
-<style>
-  :root { color-scheme: light; }
-  html { color: #1a1a1a; background-color: #fdfdfd; }
-  body {
-    margin: 0 auto;
-    max-width: 42em;
-    padding: 50px;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-  }
-  @media (max-width: 600px) { body { padding: 12px; } }
-  a { color: #0969da; text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  nav { margin-bottom: 1rem; font-size: 1.1rem; }
-  nav a { font-weight: 600; }
-  nav span.sep { color: #57606a; }
-  nav span.file { font-weight: 600; }
-  nav a.raw { float: right; font-weight: 400; font-size: 0.85rem; }
-  p.summary { color: #57606a; font-size: 0.85rem; }
-  table.listing { border-collapse: collapse; width: 100%; }
-  table.listing td { padding: 0.3rem 0.5rem 0.3rem 0; overflow-wrap: anywhere; }
-  table.listing td.meta {
-    color: #57606a;
-    font-size: 0.85rem;
-    text-align: right;
-    white-space: nowrap;
-    font-variant-numeric: tabular-nums;
-  }
-</style>
-</head>
-<body>
-<nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
-<p class="summary">{{.Summary}}</p>
-<table class="listing">
-{{range .Entries}}<tr><td>{{.Name}}</td><td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
-{{end}}</table>
-{{if .Omitted}}<p class="summary">&hellip; and {{.Omitted}} more entries</p>{{end}}
-</body>
-</html>
-`))
-
 func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name string) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	if !strings.HasSuffix(r.URL.Path, "/") {
 		u := *r.URL
 		u.Path += "/"
@@ -718,13 +691,18 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 		return
 	}
 
+	key, desc := normalizeSort(r.URL.Query())
+	full := s.displayPath(name)
 	page := directoryPage{
-		Title:  "/" + strings.TrimSuffix(strings.TrimPrefix(name+"/", "./"), "/"),
-		Crumbs: breadcrumbs(name),
-		Blurb:  s.findBlurb(name, entries),
-		Sort:   normalizeSort(r.URL.Query().Get("sort")),
+		Title:     "/" + strings.TrimSuffix(strings.TrimPrefix(full+"/", "./"), "/"),
+		Crumbs:    s.breadcrumbs(name),
+		Blurb:     s.findBlurb(name, entries),
+		SortLinks: sortLinks(key, desc),
 	}
-	if name != "." {
+	if s.base != "" {
+		page.RawHref = (&url.URL{Path: s.base, RawQuery: "raw=1"}).String()
+	}
+	if name != "." || s.base != "" {
 		page.Entries = append(page.Entries, dirEntryView{Name: "..", Href: "../"})
 	}
 
@@ -733,7 +711,7 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 		info, _ := entry.Info()
 		items = append(items, dirItem{entry: entry, info: info})
 	}
-	sortDirItems(items, page.Sort)
+	sortDirItems(items, key, desc)
 
 	for _, item := range items {
 		entry := item.entry
@@ -744,7 +722,7 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 		} else if item.info != nil {
 			view.Size = humanSize(item.info.Size())
 		}
-		if item.info != nil {
+		if item.info != nil && !item.info.ModTime().IsZero() {
 			view.ModTime = item.info.ModTime().Format("2006-01-02 15:04")
 		}
 		if strings.HasPrefix(entry.Name(), ".") {
@@ -785,18 +763,65 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 
 // Sort keys accepted in the ?sort= query parameter.
 const (
-	sortNewest = "newest"
-	sortName   = "name"
-	sortSize   = "size"
+	sortTime = "time"
+	sortName = "name"
+	sortSize = "size"
 )
 
-func normalizeSort(v string) string {
-	switch v {
-	case sortName, sortSize:
-		return v
+// normalizeSort maps ?sort= and ?dir= query values to a sort key and
+// direction. Each key has a natural default direction: time newest-first,
+// size largest-first, name A-Z. "newest" is accepted as a legacy alias.
+func normalizeSort(q url.Values) (key string, desc bool) {
+	switch q.Get("sort") {
+	case sortName:
+		key = sortName
+	case sortSize:
+		key = sortSize
 	default:
-		return sortNewest
+		key = sortTime
 	}
+	switch q.Get("dir") {
+	case "asc":
+		desc = false
+	case "desc":
+		desc = true
+	default:
+		desc = key != sortName
+	}
+	return key, desc
+}
+
+type sortLink struct {
+	Label  string
+	Href   string
+	Active bool
+	Arrow  string
+}
+
+// sortLinks builds the sort selector: clicking the active key reverses its
+// direction, clicking any other switches to it in its natural direction.
+func sortLinks(key string, desc bool) []sortLink {
+	dir := func(d bool) string {
+		if d {
+			return "desc"
+		}
+		return "asc"
+	}
+	mk := func(k string, defDesc bool) sortLink {
+		l := sortLink{Label: k}
+		if k == key {
+			l.Active = true
+			l.Arrow = "▴" // ▴ ascending
+			if desc {
+				l.Arrow = "▾" // ▾ descending
+			}
+			l.Href = "?sort=" + k + "&dir=" + dir(!desc)
+		} else {
+			l.Href = "?sort=" + k + "&dir=" + dir(defDesc)
+		}
+		return l
+	}
+	return []sortLink{mk(sortTime, true), mk(sortName, false), mk(sortSize, true)}
 }
 
 // dirItem pairs a directory entry with its FileInfo (nil when Stat failed) so
@@ -807,10 +832,10 @@ type dirItem struct {
 }
 
 // sortDirItems orders a listing. Directories always come first; within that,
-// the key decides: newest by modification time (the default), name
-// alphabetical (with markdown before other files — the original reading
-// order), or size largest-first. Name breaks all ties, case-insensitively.
-func sortDirItems(items []dirItem, key string) {
+// the requested key and direction apply (with markdown grouped before other
+// files under name sort — the original reading order). Name breaks all
+// remaining ties, ascending and case-insensitively.
+func sortDirItems(items []dirItem, key string, desc bool) {
 	rank := func(it dirItem) int {
 		switch {
 		case it.entry.IsDir():
@@ -827,23 +852,43 @@ func sortDirItems(items []dirItem, key string) {
 		}
 		return it.info.ModTime()
 	}
-	sort.SliceStable(items, func(i, j int) bool {
-		a, b := items[i], items[j]
-		ra, rb := rank(a), rank(b)
-		if ra != rb {
-			return ra < rb
-		}
+	compare := func(a, b dirItem) int {
 		switch key {
 		case sortName:
+			return strings.Compare(strings.ToLower(a.entry.Name()), strings.ToLower(b.entry.Name()))
 		case sortSize:
-			if !a.entry.IsDir() && a.info != nil && b.info != nil && a.info.Size() != b.info.Size() {
-				return a.info.Size() > b.info.Size()
+			if a.entry.IsDir() || a.info == nil || b.info == nil {
+				return 0
 			}
-		default: // sortNewest
+			switch {
+			case a.info.Size() < b.info.Size():
+				return -1
+			case a.info.Size() > b.info.Size():
+				return 1
+			}
+			return 0
+		default: // sortTime
 			ta, tb := modTime(a), modTime(b)
-			if !ta.Equal(tb) {
-				return ta.After(tb)
+			switch {
+			case ta.Before(tb):
+				return -1
+			case tb.Before(ta):
+				return 1
 			}
+			return 0
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i], items[j]
+		if ra, rb := rank(a), rank(b); ra != rb {
+			return ra < rb
+		}
+		c := compare(a, b)
+		if desc {
+			c = -c
+		}
+		if c != 0 {
+			return c < 0
 		}
 		return strings.ToLower(a.entry.Name()) < strings.ToLower(b.entry.Name())
 	})
@@ -898,14 +943,21 @@ func findReadme(entries []fs.DirEntry) string {
 	return ""
 }
 
-func breadcrumbs(name string) []crumb {
+// displayPath is name as seen from the serve root, including any enclosing
+// zip archives ("." at the root itself).
+func (s fileServer) displayPath(name string) string {
+	return path.Join(strings.TrimPrefix(s.base, "/"), name)
+}
+
+func (s fileServer) breadcrumbs(name string) []crumb {
 	crumbs := []crumb{{Name: "/", Href: "/"}}
-	if name == "." {
+	full := s.displayPath(name)
+	if full == "." || full == "" {
 		return crumbs
 	}
 
 	href := "/"
-	for _, seg := range strings.Split(name, "/") {
+	for _, seg := range strings.Split(full, "/") {
 		href += (&url.URL{Path: seg}).String() + "/"
 		crumbs = append(crumbs, crumb{Name: seg, Href: href})
 	}
@@ -929,7 +981,8 @@ type directoryPage struct {
 	Title      string
 	Crumbs     []crumb
 	Blurb      string
-	Sort       string
+	SortLinks  []sortLink
+	RawHref    string
 	Entries    []dirEntryView
 	Dotted     []dirEntryView
 	ReadmeName string
@@ -973,7 +1026,8 @@ var directoryTemplate = template.Must(template.New("directory").Parse(`<!DOCTYPE
   nav span.sep { color: #57606a; }
   p.blurb { margin: -0.5rem 0 1rem; color: #57606a; }
   div.sort { margin-bottom: 0.5rem; font-size: 0.85rem; color: #57606a; }
-  div.sort span.active { font-weight: 600; color: #1a1a1a; }
+  div.sort a.active { font-weight: 600; color: #1a1a1a; }
+  nav a.raw { float: right; font-weight: 400; font-size: 0.85rem; }
   details.dotfiles { margin-top: 1rem; }
   details.dotfiles summary {
     cursor: pointer;
@@ -1000,12 +1054,9 @@ var directoryTemplate = template.Must(template.New("directory").Parse(`<!DOCTYPE
 </style>
 </head>
 <body>
-<nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}</nav>
+<nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if .RawHref}}<a class="raw" href="{{.RawHref}}">raw</a>{{end}}</nav>
 {{if .Blurb}}<p class="blurb">{{.Blurb}}</p>
-{{end}}<div class="sort">sort:
-{{if eq .Sort "newest"}}<span class="active">newest</span>{{else}}<a href="?sort=newest">newest</a>{{end}} &middot;
-{{if eq .Sort "name"}}<span class="active">name</span>{{else}}<a href="?sort=name">name</a>{{end}} &middot;
-{{if eq .Sort "size"}}<span class="active">size</span>{{else}}<a href="?sort=size">size</a>{{end}}</div>
+{{end}}<div class="sort">sort: {{range $i, $l := .SortLinks}}{{if $i}} &middot; {{end}}<a {{if $l.Active}}class="active" {{end}}href="{{$l.Href}}">{{$l.Label}}{{if $l.Active}} {{$l.Arrow}}{{end}}</a>{{end}}</div>
 {{define "rows"}}{{range .}}<tr><td><a href="{{.Href}}">{{.Name}}</a></td><td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
 {{end}}{{end}}<table class="listing">
 {{template "rows" .Entries}}</table>
