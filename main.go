@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"embed"
@@ -157,6 +158,12 @@ func (s fileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err == nil && highlightable(name) &&
 		r.URL.Query().Get("raw") != "1" && wantsDocument(r.Header) {
 		s.serveSource(w, r, name, info)
+		return
+	}
+
+	if err == nil && strings.EqualFold(path.Ext(name), ".zip") &&
+		r.URL.Query().Get("raw") != "1" && wantsDocument(r.Header) {
+		s.serveZip(w, r, name)
 		return
 	}
 
@@ -575,6 +582,122 @@ var sourceTemplate = template.Must(template.New("source").Parse(`<!DOCTYPE html>
 </html>
 `))
 
+// maxZipListEntries caps how many archive members a zip listing shows; the
+// remainder is summarized as a count.
+const maxZipListEntries = 2000
+
+func (s fileServer) serveZip(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	zr, err := zip.OpenReader(localPath(s.root, name))
+	if err != nil {
+		log.Printf("open zip %s: %v", name, err)
+		http.ServeFileFS(w, r, s.fsys, name)
+		return
+	}
+	defer zr.Close()
+
+	page := zipPage{
+		Title:   path.Base(name),
+		Crumbs:  breadcrumbs(path.Dir(name)),
+		RawHref: (&url.URL{Path: path.Base(name), RawQuery: "raw=1"}).String(),
+	}
+
+	var total uint64
+	for _, f := range zr.File {
+		total += f.UncompressedSize64
+		if len(page.Entries) == maxZipListEntries {
+			continue
+		}
+		view := zipEntryView{
+			Name:    f.Name,
+			ModTime: f.Modified.Format("2006-01-02 15:04"),
+		}
+		if !strings.HasSuffix(f.Name, "/") {
+			view.Size = humanSize(int64(f.UncompressedSize64))
+		}
+		page.Entries = append(page.Entries, view)
+	}
+	page.Omitted = len(zr.File) - len(page.Entries)
+	page.Summary = fmt.Sprintf("%d entries, %s uncompressed", len(zr.File), humanSize(int64(total)))
+
+	var buf bytes.Buffer
+	if err := zipTemplate.Execute(&buf, page); err != nil {
+		log.Printf("render zip %s: %v", name, err)
+		http.Error(w, "cannot render zip listing", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(buf.Bytes()))
+}
+
+type zipPage struct {
+	Title   string
+	Crumbs  []crumb
+	RawHref string
+	Summary string
+	Entries []zipEntryView
+	Omitted int
+}
+
+type zipEntryView struct {
+	Name    string
+	Size    string
+	ModTime string
+}
+
+var zipTemplate = template.Must(template.New("zip").Parse(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:,">
+<title>{{.Title}}</title>
+<style>
+  :root { color-scheme: light; }
+  html { color: #1a1a1a; background-color: #fdfdfd; }
+  body {
+    margin: 0 auto;
+    max-width: 42em;
+    padding: 50px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  @media (max-width: 600px) { body { padding: 12px; } }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  nav { margin-bottom: 1rem; font-size: 1.1rem; }
+  nav a { font-weight: 600; }
+  nav span.sep { color: #57606a; }
+  nav span.file { font-weight: 600; }
+  nav a.raw { float: right; font-weight: 400; font-size: 0.85rem; }
+  p.summary { color: #57606a; font-size: 0.85rem; }
+  table.listing { border-collapse: collapse; width: 100%; }
+  table.listing td { padding: 0.3rem 0.5rem 0.3rem 0; overflow-wrap: anywhere; }
+  table.listing td.meta {
+    color: #57606a;
+    font-size: 0.85rem;
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+</head>
+<body>
+<nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
+<p class="summary">{{.Summary}}</p>
+<table class="listing">
+{{range .Entries}}<tr><td>{{.Name}}</td><td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
+{{end}}</table>
+{{if .Omitted}}<p class="summary">&hellip; and {{.Omitted}} more entries</p>{{end}}
+</body>
+</html>
+`))
+
 func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
@@ -599,22 +722,36 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 		Title:  "/" + strings.TrimSuffix(strings.TrimPrefix(name+"/", "./"), "/"),
 		Crumbs: breadcrumbs(name),
 		Blurb:  s.findBlurb(name, entries),
+		Sort:   normalizeSort(r.URL.Query().Get("sort")),
 	}
 	if name != "." {
 		page.Entries = append(page.Entries, dirEntryView{Name: "..", Href: "../"})
 	}
 
-	sortDirEntries(entries)
+	items := make([]dirItem, 0, len(entries))
 	for _, entry := range entries {
+		info, _ := entry.Info()
+		items = append(items, dirItem{entry: entry, info: info})
+	}
+	sortDirItems(items, page.Sort)
+
+	for _, item := range items {
+		entry := item.entry
 		view := dirEntryView{Name: entry.Name(), Href: (&url.URL{Path: entry.Name()}).String()}
 		if entry.IsDir() {
 			view.Name += "/"
 			view.Href += "/"
-		} else if info, err := entry.Info(); err == nil {
-			view.Size = humanSize(info.Size())
-			view.ModTime = info.ModTime().Format("2006-01-02 15:04")
+		} else if item.info != nil {
+			view.Size = humanSize(item.info.Size())
 		}
-		page.Entries = append(page.Entries, view)
+		if item.info != nil {
+			view.ModTime = item.info.ModTime().Format("2006-01-02 15:04")
+		}
+		if strings.HasPrefix(entry.Name(), ".") {
+			page.Dotted = append(page.Dotted, view)
+		} else {
+			page.Entries = append(page.Entries, view)
+		}
 	}
 
 	if readme := findReadme(entries); readme != "" {
@@ -646,25 +783,69 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(buf.Bytes()))
 }
 
-// sortDirEntries orders a listing for reading: directories, then markdown
-// files, then everything else, each group alphabetical and case-insensitive.
-func sortDirEntries(entries []fs.DirEntry) {
-	rank := func(e fs.DirEntry) int {
+// Sort keys accepted in the ?sort= query parameter.
+const (
+	sortNewest = "newest"
+	sortName   = "name"
+	sortSize   = "size"
+)
+
+func normalizeSort(v string) string {
+	switch v {
+	case sortName, sortSize:
+		return v
+	default:
+		return sortNewest
+	}
+}
+
+// dirItem pairs a directory entry with its FileInfo (nil when Stat failed) so
+// sorting and rendering don't repeat the lookup.
+type dirItem struct {
+	entry fs.DirEntry
+	info  fs.FileInfo
+}
+
+// sortDirItems orders a listing. Directories always come first; within that,
+// the key decides: newest by modification time (the default), name
+// alphabetical (with markdown before other files — the original reading
+// order), or size largest-first. Name breaks all ties, case-insensitively.
+func sortDirItems(items []dirItem, key string) {
+	rank := func(it dirItem) int {
 		switch {
-		case e.IsDir():
+		case it.entry.IsDir():
 			return 0
-		case strings.EqualFold(path.Ext(e.Name()), ".md"):
+		case key == sortName && strings.EqualFold(path.Ext(it.entry.Name()), ".md"):
 			return 1
 		default:
 			return 2
 		}
 	}
-	sort.SliceStable(entries, func(i, j int) bool {
-		ri, rj := rank(entries[i]), rank(entries[j])
-		if ri != rj {
-			return ri < rj
+	modTime := func(it dirItem) time.Time {
+		if it.info == nil {
+			return time.Time{}
 		}
-		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
+		return it.info.ModTime()
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i], items[j]
+		ra, rb := rank(a), rank(b)
+		if ra != rb {
+			return ra < rb
+		}
+		switch key {
+		case sortName:
+		case sortSize:
+			if !a.entry.IsDir() && a.info != nil && b.info != nil && a.info.Size() != b.info.Size() {
+				return a.info.Size() > b.info.Size()
+			}
+		default: // sortNewest
+			ta, tb := modTime(a), modTime(b)
+			if !ta.Equal(tb) {
+				return ta.After(tb)
+			}
+		}
+		return strings.ToLower(a.entry.Name()) < strings.ToLower(b.entry.Name())
 	})
 }
 
@@ -748,7 +929,9 @@ type directoryPage struct {
 	Title      string
 	Crumbs     []crumb
 	Blurb      string
+	Sort       string
 	Entries    []dirEntryView
+	Dotted     []dirEntryView
 	ReadmeName string
 	Readme     template.HTML
 	ReadmeText string
@@ -789,6 +972,15 @@ var directoryTemplate = template.Must(template.New("directory").Parse(`<!DOCTYPE
   nav a { font-weight: 600; }
   nav span.sep { color: #57606a; }
   p.blurb { margin: -0.5rem 0 1rem; color: #57606a; }
+  div.sort { margin-bottom: 0.5rem; font-size: 0.85rem; color: #57606a; }
+  div.sort span.active { font-weight: 600; color: #1a1a1a; }
+  details.dotfiles { margin-top: 1rem; }
+  details.dotfiles summary {
+    cursor: pointer;
+    color: #57606a;
+    font-size: 0.85rem;
+    margin-bottom: 0.3rem;
+  }
   table.listing { border-collapse: collapse; width: 100%; }
   table.listing td { padding: 0.3rem 0.5rem 0.3rem 0; }
   table.listing td.meta {
@@ -810,9 +1002,18 @@ var directoryTemplate = template.Must(template.New("directory").Parse(`<!DOCTYPE
 <body>
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}</nav>
 {{if .Blurb}}<p class="blurb">{{.Blurb}}</p>
-{{end}}<table class="listing">
-{{range .Entries}}<tr><td><a href="{{.Href}}">{{.Name}}</a></td><td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
-{{end}}</table>
+{{end}}<div class="sort">sort:
+{{if eq .Sort "newest"}}<span class="active">newest</span>{{else}}<a href="?sort=newest">newest</a>{{end}} &middot;
+{{if eq .Sort "name"}}<span class="active">name</span>{{else}}<a href="?sort=name">name</a>{{end}} &middot;
+{{if eq .Sort "size"}}<span class="active">size</span>{{else}}<a href="?sort=size">size</a>{{end}}</div>
+{{define "rows"}}{{range .}}<tr><td><a href="{{.Href}}">{{.Name}}</a></td><td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
+{{end}}{{end}}<table class="listing">
+{{template "rows" .Entries}}</table>
+{{if .Dotted}}<details class="dotfiles">
+<summary>{{len .Dotted}} dot-file{{if ne (len .Dotted) 1}}s{{end}}</summary>
+<table class="listing">
+{{template "rows" .Dotted}}</table>
+</details>{{end}}
 {{if .ReadmeName}}<section class="readme">
 <h1 class="readme-title">{{.ReadmeName}}</h1>
 {{if .Readme}}{{.Readme}}{{else}}<pre class="readme-text">{{.ReadmeText}}</pre>{{end}}

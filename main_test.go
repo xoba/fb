@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -340,7 +342,7 @@ func TestDirectoryListingGroupsAndRendersReadme(t *testing.T) {
 
 	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: fakePandoc(t)}
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/?sort=name", nil)
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 
@@ -423,6 +425,158 @@ func TestDirectoryShowsBlurb(t *testing.T) {
 				t.Fatalf("body = %q, want blurb.txt still listed as a file", body)
 			}
 		})
+	}
+}
+
+func TestDotEntriesCollapsed(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".hidden.txt", "visible.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	details := strings.Index(body, "<details")
+	visible := strings.Index(body, `href="visible.txt"`)
+	hidden := strings.Index(body, `href=".hidden.txt"`)
+	gitDir := strings.Index(body, `href=".git/"`)
+	if details < 0 || visible < 0 || hidden < 0 || gitDir < 0 {
+		t.Fatalf("body = %q, want details section plus all three entries", body)
+	}
+	if visible > details {
+		t.Fatalf("visible.txt at %d after <details> at %d, want it in the main listing", visible, details)
+	}
+	if hidden < details || gitDir < details {
+		t.Fatalf("dot entries at %d,%d before <details> at %d, want them collapsed", hidden, gitDir, details)
+	}
+	if !strings.Contains(body, "2 dot-files") {
+		t.Fatalf("body = %q, want dot-file count in summary", body)
+	}
+}
+
+func TestDirectoriesShowModTime(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Date(2020, 3, 4, 5, 6, 0, 0, time.Local)
+	if err := os.Chtimes(filepath.Join(root, "sub"), stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if !strings.Contains(rec.Body.String(), "2020-03-04 05:06") {
+		t.Fatalf("body = %q, want directory mod time in listing", rec.Body.String())
+	}
+}
+
+func TestSortNewestByDefault(t *testing.T) {
+	root := t.TempDir()
+	old := time.Now().Add(-48 * time.Hour)
+	for name, when := range map[string]time.Time{
+		"aaa-old.txt": old,
+		"zzz-new.txt": time.Now(),
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(filepath.Join(root, name), when, when); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+
+	for _, tc := range []struct {
+		target    string
+		wantFirst string
+	}{
+		{target: "/", wantFirst: "zzz-new.txt"},
+		{target: "/?sort=name", wantFirst: "aaa-old.txt"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, tc.target, nil)
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+
+		body := rec.Body.String()
+		newer := strings.Index(body, `href="zzz-new.txt"`)
+		older := strings.Index(body, `href="aaa-old.txt"`)
+		if newer < 0 || older < 0 {
+			t.Fatalf("GET %s body = %q, want both files listed", tc.target, body)
+		}
+		first := "zzz-new.txt"
+		if older < newer {
+			first = "aaa-old.txt"
+		}
+		if first != tc.wantFirst {
+			t.Fatalf("GET %s lists %s first, want %s", tc.target, first, tc.wantFirst)
+		}
+	}
+}
+
+func TestZipListing(t *testing.T) {
+	root := t.TempDir()
+	var zbuf bytes.Buffer
+	zw := zip.NewWriter(&zbuf)
+	for name, content := range map[string]string{
+		"docs/notes.txt": "some notes",
+		"prog.go":        "package main",
+	} {
+		f, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "bundle.zip"), zbuf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+
+	nav := httptest.NewRequest(http.MethodGet, "/bundle.zip", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Fatalf("navigation Content-Type = %q, want zip listing as text/html", got)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "docs/notes.txt") || !strings.Contains(body, "prog.go") {
+		t.Fatalf("body = %q, want zip member names", body)
+	}
+	if !strings.Contains(body, "2 entries") {
+		t.Fatalf("body = %q, want entry-count summary", body)
+	}
+	if !strings.Contains(body, `href="bundle.zip?raw=1"`) {
+		t.Fatalf("body = %q, want raw link", body)
+	}
+
+	plain := httptest.NewRequest(http.MethodGet, "/bundle.zip", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, plain)
+	if !bytes.Equal(rec.Body.Bytes(), zbuf.Bytes()) {
+		t.Fatalf("non-browser fetch returned %d bytes, want verbatim %d-byte zip", rec.Body.Len(), zbuf.Len())
 	}
 }
 
