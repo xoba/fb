@@ -639,14 +639,18 @@ func TestCSVAndTSVRenderedAsTables(t *testing.T) {
 			}
 			body := rec.Body.String()
 			for _, want := range []string{
-				"<th>city</th><th>population</th>",
-				"<td>new orleans</td><td>364136</td>",
+				`<th class="corner">row</th><th>city</th><th>population</th>`,
+				`<tr class="coords"><td class="rownum"></td><td class="colnum">1</td><td class="colnum">2</td></tr>`,
+				`<td class="rownum">1</td><td>new orleans</td><td>364136</td>`,
 				"1 rows × 2 columns",
 				`href="` + tc.file + `?raw=1"`,
 			} {
 				if !strings.Contains(body, want) {
 					t.Fatalf("body = %q, want %q", body, want)
 				}
+			}
+			if strings.Index(body, `class="coords"`) > strings.Index(body, `<th class="corner">`) {
+				t.Fatalf("body = %q, want column-number row above the header row", body)
 			}
 
 			plain := httptest.NewRequest(http.MethodGet, "/"+tc.file, nil)

@@ -725,13 +725,32 @@ func (s fileServer) serveTable(w http.ResponseWriter, r *http.Request, name stri
 		rows = rows[:maxTableRows]
 	}
 
+	// Column numbers span the widest displayed row so coordinates stay
+	// meaningful even when rows are ragged.
+	maxCols := len(header)
+	for _, cells := range rows {
+		if len(cells) > maxCols {
+			maxCols = len(cells)
+		}
+	}
+	colNums := make([]int, maxCols)
+	for i := range colNums {
+		colNums[i] = i + 1
+	}
+
+	viewRows := make([]tableRow, len(rows))
+	for i, cells := range rows {
+		viewRows[i] = tableRow{N: i + 1, Cells: cells}
+	}
+
 	page := tablePage{
 		Title:   path.Base(name),
 		Crumbs:  s.breadcrumbs(path.Dir(name)),
 		RawHref: (&url.URL{Path: path.Base(name), RawQuery: "raw=1"}).String(),
 		Summary: fmt.Sprintf("%d rows × %d columns", len(records)-1, len(header)),
 		Header:  header,
-		Rows:    rows,
+		ColNums: colNums,
+		Rows:    viewRows,
 		Omitted: omitted,
 	}
 
@@ -753,8 +772,14 @@ type tablePage struct {
 	RawHref string
 	Summary string
 	Header  []string
-	Rows    [][]string
+	ColNums []int
+	Rows    []tableRow
 	Omitted int
+}
+
+type tableRow struct {
+	N     int
+	Cells []string
 }
 
 var tableTemplate = template.Must(template.New("table").Parse(`<!DOCTYPE html>
@@ -782,19 +807,47 @@ var tableTemplate = template.Must(template.New("table").Parse(`<!DOCTYPE html>
   nav span.file { font-weight: 600; }
   nav a.raw { float: right; font-weight: 400; font-size: 0.85rem; }
   p.summary { color: #57606a; font-size: 0.85rem; }
-  div.tablewrap { overflow-x: auto; }
+  div.tablewrap { overflow: auto; max-height: 85vh; border: 1px solid #d0d7de; }
+  /* Sticky cells need border-collapse: separate — collapsed borders stay
+     behind when a cell is stuck — and opaque backgrounds to cover the data
+     scrolling beneath them. */
   table.data {
-    border-collapse: collapse;
+    border-collapse: separate;
+    border-spacing: 0;
     font-size: 0.85rem;
     font-variant-numeric: tabular-nums;
   }
   table.data th, table.data td {
-    border: 1px solid #d0d7de;
+    border-right: 1px solid #d0d7de;
+    border-bottom: 1px solid #d0d7de;
     padding: 0.3rem 0.6rem;
     text-align: left;
     vertical-align: top;
+    background-color: #fff;
   }
-  table.data th { background-color: #f6f8fa; font-weight: 600; }
+  table.data th {
+    position: sticky;
+    top: 2rem;                /* pinned just below the coords row */
+    z-index: 2;
+    white-space: nowrap;
+    background-color: #f6f8fa;
+    font-weight: 600;
+  }
+  table.data td.rownum, table.data td.colnum {
+    background-color: #f6f8fa;
+    color: #57606a;
+    text-align: right;
+  }
+  table.data tr.coords td {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    height: 2rem;             /* fixed so the header row can pin right below */
+    box-sizing: border-box;
+  }
+  table.data td.rownum { position: sticky; left: 0; z-index: 1; }
+  table.data th.corner { left: 0; z-index: 3; }
+  table.data tr.coords td.rownum { left: 0; z-index: 3; }
 </style>
 </head>
 <body>
@@ -802,8 +855,9 @@ var tableTemplate = template.Must(template.New("table").Parse(`<!DOCTYPE html>
 <p class="summary">{{.Summary}}</p>
 <div class="tablewrap">
 <table class="data">
-<tr>{{range .Header}}<th>{{.}}</th>{{end}}</tr>
-{{range .Rows}}<tr>{{range .}}<td>{{.}}</td>{{end}}</tr>
+<tr class="coords"><td class="rownum"></td>{{range .ColNums}}<td class="colnum">{{.}}</td>{{end}}</tr>
+<tr><th class="corner">row</th>{{range .Header}}<th>{{.}}</th>{{end}}</tr>
+{{range .Rows}}<tr><td class="rownum">{{.N}}</td>{{range .Cells}}<td>{{.}}</td>{{end}}</tr>
 {{end}}</table>
 </div>
 {{if .Omitted}}<p class="summary">&hellip; and {{.Omitted}} more rows</p>{{end}}
