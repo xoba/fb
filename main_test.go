@@ -5,6 +5,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"database/sql"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/xuri/excelize/v2"
 )
 
 func TestServesMarkdownThroughPandoc(t *testing.T) {
@@ -636,6 +640,150 @@ func TestZipListing(t *testing.T) {
 	}
 }
 
+func TestPandocDocumentFormats(t *testing.T) {
+	for ext, wantFormat := range map[string]string{
+		".ipynb": "ipynb",
+		".docx":  "docx",
+		".odt":   "odt",
+		".rtf":   "rtf",
+		".epub":  "epub",
+	} {
+		t.Run(ext, func(t *testing.T) {
+			root := t.TempDir()
+			content := []byte("not really " + ext + " but the fake pandoc does not care")
+			if err := os.WriteFile(filepath.Join(root, "doc"+ext), content, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			server := fileServer{fsys: os.DirFS(root), pandoc: fakePandoc(t)}
+
+			nav := httptest.NewRequest(http.MethodGet, "/doc"+ext, nil)
+			nav.Header.Set("Sec-Fetch-Dest", "document")
+			rec := httptest.NewRecorder()
+			server.ServeHTTP(rec, nav)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "<!--fmt:"+wantFormat+"-->") {
+				t.Fatalf("body = %q, want pandoc invoked with -f %s", rec.Body.String(), wantFormat)
+			}
+
+			plain := httptest.NewRequest(http.MethodGet, "/doc"+ext, nil)
+			rec = httptest.NewRecorder()
+			server.ServeHTTP(rec, plain)
+			if !bytes.Equal(rec.Body.Bytes(), content) {
+				t.Fatalf("non-browser fetch = %q, want verbatim bytes", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestXLSXRenderedAsTables(t *testing.T) {
+	root := t.TempDir()
+	wb := excelize.NewFile()
+	if err := wb.SetSheetName("Sheet1", "cities"); err != nil {
+		t.Fatal(err)
+	}
+	for i, row := range [][]any{
+		{"city", "population"},
+		{"new orleans", 364136},
+	} {
+		if err := wb.SetSheetRow("cities", fmt.Sprintf("A%d", i+1), &row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := wb.NewSheet("empty"); err != nil {
+		t.Fatal(err)
+	}
+	xlsxPath := filepath.Join(root, "data.xlsx")
+	if err := wb.SaveAs(xlsxPath); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(xlsxPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	nav := httptest.NewRequest(http.MethodGet, "/data.xlsx", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"2 sheets",
+		`<h2 class="sheet">cities</h2>`,
+		"<th>city</th><th>population</th>",
+		"<td>new orleans</td><td>364136</td>",
+		`<h2 class="sheet">empty</h2>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body = %q, want %q", body, want)
+		}
+	}
+
+	plain := httptest.NewRequest(http.MethodGet, "/data.xlsx", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, plain)
+	if !bytes.Equal(rec.Body.Bytes(), raw) {
+		t.Fatalf("non-browser fetch = %d bytes, want verbatim %d-byte xlsx", rec.Body.Len(), len(raw))
+	}
+}
+
+func TestSQLiteRenderedAsTables(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "app.sqlite")
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE users (name TEXT, email TEXT, age INTEGER);
+		INSERT INTO users VALUES ('mike', 'mra@xoba.com', 55), ('nobody', NULL, NULL);`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	nav := httptest.NewRequest(http.MethodGet, "/app.sqlite", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"1 table",
+		`<h2 class="sheet">users</h2>`,
+		"2 rows",
+		"<th>name</th><th>email</th><th>age</th>",
+		"<td>mike</td><td>mra@xoba.com</td><td>55</td>",
+		"<td>NULL</td>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body = %q, want %q", body, want)
+		}
+	}
+
+	plain := httptest.NewRequest(http.MethodGet, "/app.sqlite", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, plain)
+	if !bytes.Equal(rec.Body.Bytes(), raw) {
+		t.Fatalf("non-browser fetch = %d bytes, want verbatim %d-byte db", rec.Body.Len(), len(raw))
+	}
+}
+
 func TestCSVAndTSVRenderedAsTables(t *testing.T) {
 	for _, tc := range []struct {
 		file    string
@@ -917,18 +1065,21 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$format" in
-  *+gfm_auto_identifiers*) ;;
-  *)
-    echo "missing gfm auto identifiers" >&2
-    exit 4
-    ;;
-esac
-
-case "$format" in
-  *+autolink_bare_uris*) ;;
-  *)
-    echo "missing autolink_bare_uris" >&2
-    exit 4
+  markdown*)
+    case "$format" in
+      *+gfm_auto_identifiers*) ;;
+      *)
+        echo "missing gfm auto identifiers" >&2
+        exit 4
+        ;;
+    esac
+    case "$format" in
+      *+autolink_bare_uris*) ;;
+      *)
+        echo "missing autolink_bare_uris" >&2
+        exit 4
+        ;;
+    esac
     ;;
 esac
 
@@ -953,7 +1104,7 @@ printf '</head><body>'
 if [ "$toc" -eq 1 ]; then
   printf '<nav id="TOC"></nav>'
 fi
-printf '<p>rendered markdown</p></body></html>'
+printf '<p>rendered markdown</p><!--fmt:%s--></body></html>' "$format"
 `
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)

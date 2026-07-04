@@ -1,1 +1,1 @@
-Serves local files, renders Markdown as HTML, and syntax-highlights source code.
+Serves local files: Markdown, notebooks, and office documents render as HTML; source code gets syntax highlighting; archives browse like directories; and CSVs, spreadsheets, and SQLite databases display as tables.

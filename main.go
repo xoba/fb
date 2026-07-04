@@ -7,6 +7,7 @@ import (
 	"compress/bzip2"
 	"compress/gzip"
 	"context"
+	"database/sql"
 	"encoding/csv"
 	"embed"
 	"errors"
@@ -32,6 +33,8 @@ import (
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
+	_ "github.com/mattn/go-sqlite3"
+	"github.com/xuri/excelize/v2"
 )
 
 const (
@@ -177,21 +180,32 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 		return
 	}
 
-	if strings.EqualFold(path.Ext(name), ".md") {
-		s.serveMarkdown(w, r, name, info)
+	ext := strings.ToLower(path.Ext(name))
+	browserView := r.URL.Query().Get("raw") != "1" && wantsDocument(r.Header)
+
+	// Markdown renders for every client (the server's original purpose);
+	// other pandoc-supported documents render only on browser navigation so
+	// curl and scripts still get the original bytes.
+	if format, ok := pandocFormats[ext]; ok && (ext == ".md" || browserView) {
+		s.serveDocument(w, r, name, info, format)
 		return
 	}
 
-	if r.URL.Query().Get("raw") != "1" && wantsDocument(r.Header) {
-		if _, ok := tableDelims[strings.ToLower(path.Ext(name))]; ok {
+	if browserView {
+		switch {
+		case tableDelims[ext] != 0:
 			s.serveTable(w, r, name, info)
 			return
-		}
-		if highlightable(name) {
+		case ext == ".xlsx":
+			s.serveXLSX(w, r, name, info)
+			return
+		case ext == ".sqlite" || ext == ".sqlite3" || ext == ".db":
+			s.serveSQLite(w, r, name, info)
+			return
+		case highlightable(name):
 			s.serveSource(w, r, name, info)
 			return
-		}
-		if isArchiveName(name) {
+		case isArchiveName(name):
 			s.descendArchive(w, r, name, info, ".", depth)
 			return
 		}
@@ -420,13 +434,29 @@ func requestName(urlPath string) string {
 	return name
 }
 
-func (s fileServer) serveMarkdown(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
-	html, err := s.renderMarkdown(r.Context(), name, renderOptions{
+// pandocFormats maps file extensions to the pandoc input format used to
+// render them as HTML.
+var pandocFormats = map[string]string{
+	".md":    "markdown+footnotes+lists_without_preceding_blankline+tex_math_single_backslash+gfm_auto_identifiers+autolink_bare_uris+emoji",
+	".ipynb": "ipynb",
+	".docx":  "docx",
+	".odt":   "odt",
+	".rtf":   "rtf",
+	".epub":  "epub",
+}
+
+func (s fileServer) serveDocument(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo, format string) {
+	html, err := s.renderDocument(r.Context(), name, renderOptions{
+		format:     format,
 		standalone: true,
 		toc:        r.URL.Query().Get("toc") == "1",
 	})
 	if err != nil {
 		log.Printf("pandoc failed for %s: %v", name, err)
+		if format != pandocFormats[".md"] {
+			s.serveRaw(w, r, name, info)
+			return
+		}
 		http.Error(w, "pandoc failed", http.StatusInternalServerError)
 		return
 	}
@@ -437,27 +467,40 @@ func (s fileServer) serveMarkdown(w http.ResponseWriter, r *http.Request, name s
 }
 
 type renderOptions struct {
+	// format is the pandoc input format; empty means markdown.
+	format string
 	// standalone produces a complete styled document; otherwise pandoc emits a
 	// body fragment for embedding (used for README previews in listings).
 	standalone bool
 	toc        bool
 }
 
-func (s fileServer) renderMarkdown(ctx context.Context, name string, opts renderOptions) ([]byte, error) {
+func (s fileServer) renderDocument(ctx context.Context, name string, opts renderOptions) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	// Feed the source through stdin rather than as a file path so markdown
-	// works from any fs.FS, including the inside of zip archives.
+	// Feed the source through stdin rather than as a file path so documents
+	// work from any fs.FS, including the inside of archives.
 	content, err := fs.ReadFile(s.fsys, name)
 	if err != nil {
 		return nil, err
 	}
 
+	format := opts.format
+	if format == "" {
+		format = pandocFormats[".md"]
+	}
+
 	args := []string{
-		"-f", "markdown+footnotes+lists_without_preceding_blankline+tex_math_single_backslash+gfm_auto_identifiers+autolink_bare_uris+emoji",
+		"-f", format,
 		"--mathjax=/" + assetPrefix + "/mathjax/tex-mml-chtml.js",
 		"--reference-location=section",
+	}
+
+	if format != pandocFormats[".md"] {
+		// Binary formats carry their images internally (pandoc's media bag);
+		// embed them as data URIs so they survive as a single HTML page.
+		args = append(args, "--embed-resources")
 	}
 
 	if opts.toc {
@@ -803,41 +846,22 @@ func (s fileServer) serveTable(w http.ResponseWriter, r *http.Request, name stri
 	}
 
 	header, rows := records[0], records[1:]
-	omitted := 0
-	if len(rows) > maxTableRows {
-		omitted = len(rows) - maxTableRows
-		rows = rows[:maxTableRows]
-	}
 
-	// Column numbers span the widest displayed row so coordinates stay
-	// meaningful even when rows are ragged.
-	maxCols := len(header)
-	for _, cells := range rows {
-		if len(cells) > maxCols {
-			maxCols = len(cells)
-		}
-	}
-	colNums := make([]int, maxCols)
-	for i := range colNums {
-		colNums[i] = i + 1
-	}
+	page := s.tablePageFor(name)
+	page.Summary = fmt.Sprintf("%d rows × %d columns", len(rows), len(header))
+	page.Sheets = []sheetView{makeSheet("", header, rows)}
+	s.renderTablePage(w, r, name, info, page)
+}
 
-	viewRows := make([]tableRow, len(rows))
-	for i, cells := range rows {
-		viewRows[i] = tableRow{N: i + 1, Cells: cells}
-	}
-
-	page := tablePage{
+func (s fileServer) tablePageFor(name string) tablePage {
+	return tablePage{
 		Title:   path.Base(name),
 		Crumbs:  s.breadcrumbs(path.Dir(name)),
 		RawHref: (&url.URL{Path: path.Base(name), RawQuery: "raw=1"}).String(),
-		Summary: fmt.Sprintf("%d rows × %d columns", len(records)-1, len(header)),
-		Header:  header,
-		ColNums: colNums,
-		Rows:    viewRows,
-		Omitted: omitted,
 	}
+}
 
+func (s fileServer) renderTablePage(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo, page tablePage) {
 	var buf bytes.Buffer
 	if err := tableTemplate.Execute(&buf, page); err != nil {
 		log.Printf("render table %s: %v", name, err)
@@ -850,10 +874,45 @@ func (s fileServer) serveTable(w http.ResponseWriter, r *http.Request, name stri
 	http.ServeContent(w, r, outName, info.ModTime(), bytes.NewReader(buf.Bytes()))
 }
 
+// makeSheet builds one displayed table, capping rows at maxTableRows.
+// Column numbers span the widest displayed row so coordinates stay
+// meaningful even when rows are ragged.
+func makeSheet(name string, header []string, rows [][]string) sheetView {
+	sheet := sheetView{Name: name, Header: header}
+
+	if len(rows) > maxTableRows {
+		sheet.Omitted = len(rows) - maxTableRows
+		rows = rows[:maxTableRows]
+	}
+
+	maxCols := len(header)
+	for _, cells := range rows {
+		if len(cells) > maxCols {
+			maxCols = len(cells)
+		}
+	}
+	sheet.ColNums = make([]int, maxCols)
+	for i := range sheet.ColNums {
+		sheet.ColNums[i] = i + 1
+	}
+
+	sheet.Rows = make([]tableRow, len(rows))
+	for i, cells := range rows {
+		sheet.Rows[i] = tableRow{N: i + 1, Cells: cells}
+	}
+	return sheet
+}
+
 type tablePage struct {
 	Title   string
 	Crumbs  []crumb
 	RawHref string
+	Summary string
+	Sheets  []sheetView
+}
+
+type sheetView struct {
+	Name    string
 	Summary string
 	Header  []string
 	ColNums []int
@@ -864,6 +923,228 @@ type tablePage struct {
 type tableRow struct {
 	N     int
 	Cells []string
+}
+
+// maxXLSXBytes caps how large a workbook is parsed for the table view.
+const maxXLSXBytes = 10 << 20
+
+func (s fileServer) serveXLSX(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
+	if info.Size() > maxXLSXBytes {
+		s.serveRaw(w, r, name, info)
+		return
+	}
+
+	data, err := fs.ReadFile(s.fsys, name)
+	if err != nil {
+		http.Error(w, "cannot read file", http.StatusInternalServerError)
+		return
+	}
+
+	wb, err := excelize.OpenReader(bytes.NewReader(data))
+	if err != nil {
+		log.Printf("open xlsx %s: %v", name, err)
+		s.serveRaw(w, r, name, info)
+		return
+	}
+	defer wb.Close()
+
+	page := s.tablePageFor(name)
+	sheets := wb.GetSheetList()
+	page.Summary = fmt.Sprintf("%d sheet%s", len(sheets), plural(len(sheets)))
+	for _, sheetName := range sheets {
+		rows, err := wb.GetRows(sheetName)
+		if err != nil {
+			log.Printf("read xlsx sheet %s of %s: %v", sheetName, name, err)
+			continue
+		}
+		var header []string
+		var body [][]string
+		if len(rows) > 0 {
+			header, body = rows[0], rows[1:]
+		}
+		page.Sheets = append(page.Sheets, makeSheet(sheetName, header, body))
+	}
+
+	s.renderTablePage(w, r, name, info, page)
+}
+
+const (
+	// maxSQLiteBytes caps how large a database is copied out for viewing;
+	// the copy is needed because the sqlite driver wants a real file path,
+	// which also lets databases inside archives work.
+	maxSQLiteBytes = 100 << 20
+
+	maxSQLiteTables       = 50
+	maxSQLiteRowsPerTable = 50
+)
+
+func (s fileServer) serveSQLite(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
+	if info.Size() > maxSQLiteBytes {
+		s.serveRaw(w, r, name, info)
+		return
+	}
+
+	page, err := s.sqlitePage(name)
+	if err != nil {
+		log.Printf("sqlite %s: %v", name, err)
+		s.serveRaw(w, r, name, info)
+		return
+	}
+
+	s.renderTablePage(w, r, name, info, page)
+}
+
+func (s fileServer) sqlitePage(name string) (tablePage, error) {
+	var page tablePage
+
+	src, err := s.fsys.Open(name)
+	if err != nil {
+		return page, err
+	}
+	defer src.Close()
+
+	tmp, err := os.CreateTemp("", "localmd-sqlite-*.db")
+	if err != nil {
+		return page, err
+	}
+	defer func() {
+		if err := os.Remove(tmp.Name()); err != nil {
+			log.Printf("remove temp db %s: %v", tmp.Name(), err)
+		}
+	}()
+
+	n, err := io.Copy(tmp, io.LimitReader(src, maxSQLiteBytes+1))
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return page, err
+	}
+	if n > maxSQLiteBytes {
+		return page, fmt.Errorf("database exceeds %d bytes", int64(maxSQLiteBytes))
+	}
+
+	db, err := sql.Open("sqlite3", "file:"+tmp.Name()+"?mode=ro&immutable=1")
+	if err != nil {
+		return page, err
+	}
+	defer db.Close()
+
+	names, err := sqliteTableNames(db)
+	if err != nil {
+		return page, err
+	}
+
+	page = s.tablePageFor(name)
+	page.Summary = fmt.Sprintf("%d table%s", len(names), plural(len(names)))
+	if len(names) > maxSQLiteTables {
+		page.Summary += fmt.Sprintf(", showing first %d", maxSQLiteTables)
+		names = names[:maxSQLiteTables]
+	}
+
+	for _, table := range names {
+		sheet, err := sqliteSheet(db, table)
+		if err != nil {
+			log.Printf("sqlite table %s of %s: %v", table, name, err)
+			continue
+		}
+		page.Sheets = append(page.Sheets, sheet)
+	}
+	return page, nil
+}
+
+func sqliteTableNames(db *sql.DB) ([]string, error) {
+	rows, err := db.Query(`SELECT name FROM sqlite_master
+		WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		names = append(names, n)
+	}
+	return names, rows.Err()
+}
+
+func sqliteSheet(db *sql.DB, table string) (sheetView, error) {
+	quoted := `"` + strings.ReplaceAll(table, `"`, `""`) + `"`
+
+	var count int64
+	if err := db.QueryRow("SELECT COUNT(*) FROM " + quoted).Scan(&count); err != nil {
+		return sheetView{}, err
+	}
+
+	rows, err := db.Query(fmt.Sprintf("SELECT * FROM %s LIMIT %d", quoted, maxSQLiteRowsPerTable))
+	if err != nil {
+		return sheetView{}, err
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return sheetView{}, err
+	}
+
+	var body [][]string
+	for rows.Next() {
+		holders := make([]any, len(cols))
+		for i := range holders {
+			holders[i] = new(any)
+		}
+		if err := rows.Scan(holders...); err != nil {
+			return sheetView{}, err
+		}
+		cells := make([]string, len(cols))
+		for i, h := range holders {
+			cells[i] = formatSQLiteValue(*h.(*any))
+		}
+		body = append(body, cells)
+	}
+	if err := rows.Err(); err != nil {
+		return sheetView{}, err
+	}
+
+	sheet := makeSheet(table, cols, body)
+	sheet.Summary = fmt.Sprintf("%d row%s", count, plural(int(count)))
+	if count > int64(len(body)) {
+		sheet.Omitted = int(count) - len(body)
+	}
+	return sheet, nil
+}
+
+// maxSQLiteCellChars keeps giant text or blob columns from wrecking the table.
+const maxSQLiteCellChars = 200
+
+func formatSQLiteValue(v any) string {
+	var text string
+	switch val := v.(type) {
+	case nil:
+		return "NULL"
+	case []byte:
+		if !isPlainText(val) {
+			return fmt.Sprintf("(%d-byte blob)", len(val))
+		}
+		text = string(val)
+	default:
+		text = fmt.Sprint(val)
+	}
+	if runes := []rune(text); len(runes) > maxSQLiteCellChars {
+		text = string(runes[:maxSQLiteCellChars]) + "…"
+	}
+	return text
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 var tableTemplate = template.Must(template.New("table").Parse(`<!DOCTYPE html>
@@ -891,7 +1172,14 @@ var tableTemplate = template.Must(template.New("table").Parse(`<!DOCTYPE html>
   nav span.file { font-weight: 600; }
   nav a.raw { float: right; font-weight: 400; font-size: 0.85rem; }
   p.summary { color: #57606a; font-size: 0.85rem; }
-  div.tablewrap { overflow: auto; max-height: 85vh; border: 1px solid #d0d7de; }
+  h2.sheet { font-size: 1rem; margin: 1.5rem 0 0.4rem; }
+  div.tablewrap {
+    overflow: auto;
+    max-height: 85vh;
+    width: fit-content;  /* hug narrow tables instead of spanning the page */
+    max-width: 100%;
+    border: 1px solid #d0d7de;
+  }
   /* Sticky cells need border-collapse: separate — collapsed borders stay
      behind when a cell is stuck — and opaque backgrounds to cover the data
      scrolling beneath them. */
@@ -937,15 +1225,18 @@ var tableTemplate = template.Must(template.New("table").Parse(`<!DOCTYPE html>
 <body>
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
 <p class="summary">{{.Summary}}</p>
-<div class="tablewrap">
+{{range .Sheets}}{{if .Name}}<h2 class="sheet">{{.Name}}</h2>
+{{end}}{{if .Summary}}<p class="summary">{{.Summary}}</p>
+{{end}}{{if .Header}}<div class="tablewrap">
 <table class="data">
 <tr class="coords"><td class="rownum"></td>{{range .ColNums}}<td class="colnum">{{.}}</td>{{end}}</tr>
 <tr><th class="corner"></th>{{range .Header}}<th>{{.}}</th>{{end}}</tr>
 {{range .Rows}}<tr><td class="rownum">{{.N}}</td>{{range .Cells}}<td>{{.}}</td>{{end}}</tr>
 {{end}}</table>
 </div>
-{{if .Omitted}}<p class="summary">&hellip; and {{.Omitted}} more rows</p>{{end}}
-</body>
+{{else}}<p class="summary">(empty)</p>
+{{end}}{{if .Omitted}}<p class="summary">&hellip; and {{.Omitted}} more rows</p>{{end}}
+{{end}}</body>
 </html>
 `))
 
@@ -1009,7 +1300,7 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 	if readme := findReadme(entries); readme != "" {
 		full := path.Join(name, readme)
 		if strings.EqualFold(path.Ext(readme), ".md") {
-			html, err := s.renderMarkdown(r.Context(), full, renderOptions{})
+			html, err := s.renderDocument(r.Context(), full, renderOptions{})
 			if err != nil {
 				log.Printf("pandoc failed for %s: %v", full, err)
 			} else {
