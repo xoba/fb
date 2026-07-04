@@ -833,10 +833,10 @@ var tableTemplate = template.Must(template.New("table").Parse(`<!DOCTYPE html>
     background-color: #f6f8fa;
     font-weight: 600;
   }
-  table.data td.rownum, table.data td.colnum {
-    background-color: #f6f8fa;
+  table.data td.rownum, table.data td.colnum, table.data th.corner {
+    background-color: #e7f0fa;  /* faint blue sets coordinates apart from data */
     color: #57606a;
-    text-align: right;
+    text-align: center;
   }
   table.data tr.coords td {
     position: sticky;
@@ -856,7 +856,7 @@ var tableTemplate = template.Must(template.New("table").Parse(`<!DOCTYPE html>
 <div class="tablewrap">
 <table class="data">
 <tr class="coords"><td class="rownum"></td>{{range .ColNums}}<td class="colnum">{{.}}</td>{{end}}</tr>
-<tr><th class="corner">row</th>{{range .Header}}<th>{{.}}</th>{{end}}</tr>
+<tr><th class="corner"></th>{{range .Header}}<th>{{.}}</th>{{end}}</tr>
 {{range .Rows}}<tr><td class="rownum">{{.N}}</td>{{range .Cells}}<td>{{.}}</td>{{end}}</tr>
 {{end}}</table>
 </div>

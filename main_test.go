@@ -639,7 +639,7 @@ func TestCSVAndTSVRenderedAsTables(t *testing.T) {
 			}
 			body := rec.Body.String()
 			for _, want := range []string{
-				`<th class="corner">row</th><th>city</th><th>population</th>`,
+				`<th class="corner"></th><th>city</th><th>population</th>`,
 				`<tr class="coords"><td class="rownum"></td><td class="colnum">1</td><td class="colnum">2</td></tr>`,
 				`<td class="rownum">1</td><td>new orleans</td><td>364136</td>`,
 				"1 rows × 2 columns",
