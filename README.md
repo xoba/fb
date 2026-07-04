@@ -11,9 +11,8 @@ archives all displayed in a form meant for reading.
 ./run.sh ~/notes    # serve a narrower root
 ```
 
-The server listens only on loopback (`127.0.0.1:3030` and `[::1]:3030`). The
-companion `md` script opens a given file in the browser through the running
-server. Requires `pandoc` on the PATH; everything else is compiled in.
+The server listens only on loopback (`127.0.0.1:3030` and `[::1]:3030`).
+Requires `pandoc` on the PATH; everything else is compiled in.
 
 ## The one rule: navigations render, everything else is raw
 
