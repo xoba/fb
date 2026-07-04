@@ -387,6 +387,45 @@ func TestDirectoryRendersReadmeTxtFallback(t *testing.T) {
 	}
 }
 
+func TestDirectoryShowsBlurb(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		content  []byte
+		wantSeen bool
+	}{
+		{name: "small plain text", content: []byte("summary of this directory\n"), wantSeen: true},
+		{name: "too large", content: []byte(strings.Repeat("x", 600)), wantSeen: false},
+		{name: "binary", content: []byte{'h', 'i', 0x00, 0x01}, wantSeen: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "blurb.txt"), tc.content, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			server := fileServer{fsys: os.DirFS(root), root: root, pandoc: "unused"}
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rec := httptest.NewRecorder()
+			server.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+			body := rec.Body.String()
+			if got := strings.Contains(body, `class="blurb"`); got != tc.wantSeen {
+				t.Fatalf("blurb shown = %v, want %v; body: %q", got, tc.wantSeen, body)
+			}
+			if tc.wantSeen && !strings.Contains(body, "summary of this directory") {
+				t.Fatalf("body = %q, want blurb contents", body)
+			}
+			if !strings.Contains(body, `href="blurb.txt"`) {
+				t.Fatalf("body = %q, want blurb.txt still listed as a file", body)
+			}
+		})
+	}
+}
+
 func TestDirectoryWithoutTrailingSlashRedirects(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {

@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/alecthomas/chroma/v2"
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
@@ -597,6 +598,7 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 	page := directoryPage{
 		Title:  "/" + strings.TrimSuffix(strings.TrimPrefix(name+"/", "./"), "/"),
 		Crumbs: breadcrumbs(name),
+		Blurb:  s.findBlurb(name, entries),
 	}
 	if name != "." {
 		page.Entries = append(page.Entries, dirEntryView{Name: "..", Href: "../"})
@@ -666,6 +668,44 @@ func sortDirEntries(entries []fs.DirEntry) {
 	})
 }
 
+// maxBlurbBytes caps the size of a blurb.txt shown atop its directory
+// listing; larger (or non-text) files are simply not inlined.
+const maxBlurbBytes = 512
+
+// findBlurb returns the trimmed contents of a directory's blurb.txt, or ""
+// when there is none or it is too large or not plain text.
+func (s fileServer) findBlurb(name string, entries []fs.DirEntry) string {
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(entry.Name(), "blurb.txt") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || info.Size() > maxBlurbBytes {
+			return ""
+		}
+		text, err := fs.ReadFile(s.fsys, path.Join(name, entry.Name()))
+		if err != nil || !isPlainText(text) {
+			return ""
+		}
+		return strings.TrimSpace(string(text))
+	}
+	return ""
+}
+
+// isPlainText reports whether b is valid UTF-8 free of control characters
+// other than ordinary whitespace.
+func isPlainText(b []byte) bool {
+	if !utf8.Valid(b) {
+		return false
+	}
+	for _, r := range string(b) {
+		if r < 0x20 && r != '\n' && r != '\r' && r != '\t' {
+			return false
+		}
+	}
+	return true
+}
+
 func findReadme(entries []fs.DirEntry) string {
 	for _, want := range []string{"README.md", "README.txt"} {
 		for _, entry := range entries {
@@ -707,6 +747,7 @@ func humanSize(n int64) string {
 type directoryPage struct {
 	Title      string
 	Crumbs     []crumb
+	Blurb      string
 	Entries    []dirEntryView
 	ReadmeName string
 	Readme     template.HTML
@@ -747,6 +788,8 @@ var directoryTemplate = template.Must(template.New("directory").Parse(`<!DOCTYPE
   nav { margin-bottom: 1rem; font-size: 1.1rem; }
   nav a { font-weight: 600; }
   nav span.sep { color: #57606a; }
+  p.blurb { margin: -0.5rem 0 1rem; color: #57606a; }
+  p.blurb span.blurb-label { font-weight: 600; }
   table.listing { border-collapse: collapse; width: 100%; }
   table.listing td { padding: 0.3rem 0.5rem 0.3rem 0; }
   table.listing td.meta {
@@ -767,7 +810,8 @@ var directoryTemplate = template.Must(template.New("directory").Parse(`<!DOCTYPE
 </head>
 <body>
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}</nav>
-<table class="listing">
+{{if .Blurb}}<p class="blurb"><span class="blurb-label">blurb:</span> {{.Blurb}}</p>
+{{end}}<table class="listing">
 {{range .Entries}}<tr><td><a href="{{.Href}}">{{.Name}}</a></td><td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
 {{end}}</table>
 {{if .ReadmeName}}<section class="readme">
