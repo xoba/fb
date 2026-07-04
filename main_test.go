@@ -610,6 +610,55 @@ func TestZipListing(t *testing.T) {
 	}
 }
 
+func TestCSVAndTSVRenderedAsTables(t *testing.T) {
+	for _, tc := range []struct {
+		file    string
+		content string
+	}{
+		{file: "data.csv", content: "city,population\nnew orleans,364136\n"},
+		{file: "data.tsv", content: "city\tpopulation\nnew orleans\t364136\n"},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, tc.file), []byte(tc.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+			nav := httptest.NewRequest(http.MethodGet, "/"+tc.file, nil)
+			nav.Header.Set("Sec-Fetch-Dest", "document")
+			rec := httptest.NewRecorder()
+			server.ServeHTTP(rec, nav)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+				t.Fatalf("Content-Type = %q, want table as text/html", got)
+			}
+			body := rec.Body.String()
+			for _, want := range []string{
+				"<th>city</th><th>population</th>",
+				"<td>new orleans</td><td>364136</td>",
+				"1 rows × 2 columns",
+				`href="` + tc.file + `?raw=1"`,
+			} {
+				if !strings.Contains(body, want) {
+					t.Fatalf("body = %q, want %q", body, want)
+				}
+			}
+
+			plain := httptest.NewRequest(http.MethodGet, "/"+tc.file, nil)
+			rec = httptest.NewRecorder()
+			server.ServeHTTP(rec, plain)
+			if got := rec.Body.String(); got != tc.content {
+				t.Fatalf("non-browser body = %q, want verbatim file", got)
+			}
+		})
+	}
+}
+
 func TestMarkdownInsideZipRendered(t *testing.T) {
 	root := t.TempDir()
 	var zbuf bytes.Buffer

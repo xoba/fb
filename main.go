@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/csv"
 	"embed"
 	"errors"
 	"fmt"
@@ -178,6 +179,10 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 	}
 
 	if r.URL.Query().Get("raw") != "1" && wantsDocument(r.Header) {
+		if _, ok := tableDelims[strings.ToLower(path.Ext(name))]; ok {
+			s.serveTable(w, r, name, info)
+			return
+		}
 		if highlightable(name) {
 			s.serveSource(w, r, name, info)
 			return
@@ -482,7 +487,6 @@ var highlightExts = map[string]bool{
 	".cpp":     true,
 	".cs":      true,
 	".css":     true,
-	".csv":     true,
 	".dart":    true,
 	".diff":    true,
 	".el":      true,
@@ -673,6 +677,136 @@ var sourceTemplate = template.Must(template.New("source").Parse(`<!DOCTYPE html>
 <div class="source">
 {{.Code}}
 </div>
+</body>
+</html>
+`))
+
+// tableDelims maps delimited-text extensions rendered as HTML tables to
+// their field separator.
+var tableDelims = map[string]rune{
+	".csv": ',',
+	".tsv": '\t',
+}
+
+// maxTableRows caps how many data rows a table view shows; the remainder is
+// summarized as a count.
+const maxTableRows = 2000
+
+func (s fileServer) serveTable(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
+	if info.Size() > maxHighlightBytes {
+		s.serveRaw(w, r, name, info)
+		return
+	}
+
+	src, err := fs.ReadFile(s.fsys, name)
+	if err != nil {
+		http.Error(w, "cannot read file", http.StatusInternalServerError)
+		return
+	}
+
+	reader := csv.NewReader(bytes.NewReader(src))
+	reader.Comma = tableDelims[strings.ToLower(path.Ext(name))]
+	reader.FieldsPerRecord = -1 // tolerate ragged rows
+	reader.LazyQuotes = true
+
+	records, err := reader.ReadAll()
+	if err != nil || len(records) == 0 {
+		if err != nil {
+			log.Printf("parse %s: %v", name, err)
+		}
+		s.serveRaw(w, r, name, info)
+		return
+	}
+
+	header, rows := records[0], records[1:]
+	omitted := 0
+	if len(rows) > maxTableRows {
+		omitted = len(rows) - maxTableRows
+		rows = rows[:maxTableRows]
+	}
+
+	page := tablePage{
+		Title:   path.Base(name),
+		Crumbs:  s.breadcrumbs(path.Dir(name)),
+		RawHref: (&url.URL{Path: path.Base(name), RawQuery: "raw=1"}).String(),
+		Summary: fmt.Sprintf("%d rows × %d columns", len(records)-1, len(header)),
+		Header:  header,
+		Rows:    rows,
+		Omitted: omitted,
+	}
+
+	var buf bytes.Buffer
+	if err := tableTemplate.Execute(&buf, page); err != nil {
+		log.Printf("render table %s: %v", name, err)
+		http.Error(w, "cannot render table", http.StatusInternalServerError)
+		return
+	}
+
+	outName := strings.TrimSuffix(path.Base(name), path.Ext(name)) + ".html"
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.ServeContent(w, r, outName, info.ModTime(), bytes.NewReader(buf.Bytes()))
+}
+
+type tablePage struct {
+	Title   string
+	Crumbs  []crumb
+	RawHref string
+	Summary string
+	Header  []string
+	Rows    [][]string
+	Omitted int
+}
+
+var tableTemplate = template.Must(template.New("table").Parse(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:,">
+<title>{{.Title}}</title>
+<style>
+  :root { color-scheme: light; }
+  html { color: #1a1a1a; background-color: #fdfdfd; }
+  body {
+    margin: 0 auto;
+    max-width: 70em;
+    padding: 50px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  @media (max-width: 600px) { body { padding: 12px; } }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  nav { margin-bottom: 1rem; font-size: 1.1rem; }
+  nav a { font-weight: 600; }
+  nav span.sep { color: #57606a; }
+  nav span.file { font-weight: 600; }
+  nav a.raw { float: right; font-weight: 400; font-size: 0.85rem; }
+  p.summary { color: #57606a; font-size: 0.85rem; }
+  div.tablewrap { overflow-x: auto; }
+  table.data {
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+  }
+  table.data th, table.data td {
+    border: 1px solid #d0d7de;
+    padding: 0.3rem 0.6rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  table.data th { background-color: #f6f8fa; font-weight: 600; }
+</style>
+</head>
+<body>
+<nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
+<p class="summary">{{.Summary}}</p>
+<div class="tablewrap">
+<table class="data">
+<tr>{{range .Header}}<th>{{.}}</th>{{end}}</tr>
+{{range .Rows}}<tr>{{range .}}<td>{{.}}</td>{{end}}</tr>
+{{end}}</table>
+</div>
+{{if .Omitted}}<p class="summary">&hellip; and {{.Omitted}} more rows</p>{{end}}
 </body>
 </html>
 `))
