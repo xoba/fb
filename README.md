@@ -39,6 +39,7 @@ files as HTML is the program's original purpose.
 | `.md` | Full pipeline: footnotes, GitHub-style heading anchors, autolinked URLs, emoji, and TeX math via embedded MathJax (no network needed). Add `?toc=1` for a table of contents. Renders for all clients, not just navigations. |
 | `.ipynb` | Jupyter notebooks — markdown cells, syntax-highlighted code cells, and cell outputs. |
 | `.docx`, `.odt`, `.rtf` | Word processor documents as clean HTML. |
+| `.doc` | Legacy binary Word documents, converted by macOS's built-in `textutil` and then styled through pandoc. Falls back to download where textutil is unavailable. |
 | `.epub` | Books, including their title page. |
 
 Non-markdown formats pass `--embed-resources`, so images stored inside the
@@ -73,8 +74,17 @@ tinted pale blue to distinguish them from real data.
 | Type | Notes |
 |------|-------|
 | `.csv`, `.tsv` | First row treated as the header. Tolerant parsing (ragged rows, lazy quotes); files over 2 MB or that fail to parse are served plain. Display capped at 2000 rows. |
-| `.xlsx` | Every sheet as its own table with the sheet name as a heading and row × column counts. 10 MB cap, 2000 displayed rows per sheet. |
-| `.sqlite`, `.sqlite3`, `.db` | Every table and view (up to 50, alphabetically), with its row and column counts and first 50 rows. `NULL` shown literally, binary blobs as `(N-byte blob)`, huge text cells truncated. Opened read-only against a temporary copy, so it also works for databases inside archives. 100 MB cap; non-SQLite `.db` files fall back to download. |
+| `.xlsx` | Browses like a directory: navigating to the file lists its sheets (with row counts), and each sheet renders as its own CSV-style table page. 10 MB cap. |
+| `.sqlite`, `.sqlite3`, `.db` | Browses like a directory of tables and views, each listed with its row × column counts and on-disk size including indexes (via the `dbstat` virtual table). The listing page has a SQL query box — results render as a table right beneath it. Each table's page shows the total row count, the first 2000 rows, and its highlighted schema. `NULL` shown literally, binary blobs as `(N-byte blob)`, huge text cells truncated. Opened read-only against a temporary copy, so it also works for databases inside archives, and write statements are rejected. 100 MB cap; non-SQLite `.db` files fall back to download. |
+
+`run.sh` builds with the `sqlite_dbstat` and `sqlite_fts5` tags: dbstat
+powers the per-table sizes, and FTS5 lets queries against databases with
+full-text-search tables work. Without the tags everything degrades
+gracefully (sizes are simply omitted).
+
+A bonus of the directory model: fetching a sheet or table URL with
+`?raw=1` (or from a non-browser client) exports *that member* as CSV —
+`curl localhost:3030/finances.xlsx/revenue` emits real CSV.
 
 ### Archives (browsed like directories)
 
@@ -101,11 +111,11 @@ bypassed).
 
 | Treatment | Types |
 |-----------|-------|
-| Rendered as a document (pandoc) | `.md` `.ipynb` `.docx` `.odt` `.rtf` `.epub` |
+| Rendered as a document (pandoc) | `.md` `.ipynb` `.doc` `.docx` `.odt` `.rtf` `.epub` |
 | Syntax-highlighted source | `.awk` `.bash` `.bat` `.c` `.cc` `.clj` `.cpp` `.cs` `.css` `.dart` `.diff` `.el` `.erl` `.ex` `.exs` `.fish` `.go` `.gradle` `.graphql` `.groovy` `.h` `.hcl` `.hpp` `.hs` `.ini` `.java` `.jl` `.js` `.json` `.jsx` `.kt` `.lisp` `.lua` `.mjs` `.nix` `.patch` `.php` `.pl` `.proto` `.ps1` `.py` `.r` `.rb` `.rs` `.scala` `.scss` `.sh` `.sql` `.svelte` `.swift` `.tex` `.tf` `.toml` `.ts` `.tsx` `.vue` `.xml` `.yaml` `.yml` `.zig` `.zsh` |
 | Syntax-highlighted by exact filename | `Makefile` `makefile` `GNUmakefile` `Dockerfile` `CMakeLists.txt` `.bashrc` `.zshrc` |
-| Displayed as tables | `.csv` `.tsv` `.xlsx` `.sqlite` `.sqlite3` `.db` |
-| Browsed like directories | `.zip` `.tar` `.tar.gz` `.tgz` `.tar.bz2` |
+| Displayed as tables | `.csv` `.tsv` (and every sheet/table inside the containers below) |
+| Browsed like directories | `.zip` `.tar` `.tar.gz` `.tgz` `.tar.bz2` `.xlsx` `.sqlite` `.sqlite3` `.db` |
 
 And filenames with special roles inside directory listings:
 

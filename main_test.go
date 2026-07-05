@@ -10,7 +10,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -678,6 +680,49 @@ func TestPandocDocumentFormats(t *testing.T) {
 	}
 }
 
+func TestLegacyDocRendered(t *testing.T) {
+	if _, err := exec.LookPath("textutil"); err != nil {
+		t.Skip("textutil not available")
+	}
+
+	root := t.TempDir()
+	src := filepath.Join(root, "src.txt")
+	if err := os.WriteFile(src, []byte("hello from a legacy word document"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	docPath := filepath.Join(root, "cv.doc")
+	if out, err := exec.Command("textutil", "-convert", "doc", "-output", docPath, src).CombinedOutput(); err != nil {
+		t.Skipf("cannot create .doc fixture: %v: %s", err, out)
+	}
+	if err := os.Remove(src); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(docPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: fakePandoc(t)}
+
+	nav := httptest.NewRequest(http.MethodGet, "/cv.doc", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "<!--fmt:html-->") {
+		t.Fatalf("body = %q, want textutil conversion fed to pandoc as html", rec.Body.String())
+	}
+
+	plain := httptest.NewRequest(http.MethodGet, "/cv.doc", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, plain)
+	if !bytes.Equal(rec.Body.Bytes(), raw) {
+		t.Fatalf("non-browser fetch = %d bytes, want verbatim %d-byte doc", rec.Body.Len(), len(raw))
+	}
+}
+
 func TestXLSXRenderedAsTables(t *testing.T) {
 	root := t.TempDir()
 	wb := excelize.NewFile()
@@ -706,24 +751,59 @@ func TestXLSXRenderedAsTables(t *testing.T) {
 
 	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
-	nav := httptest.NewRequest(http.MethodGet, "/data.xlsx", nil)
-	nav.Header.Set("Sec-Fetch-Dest", "document")
-	rec := httptest.NewRecorder()
-	server.ServeHTTP(rec, nav)
+	nav := func(target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := nav("/data.xlsx")
+	if rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/data.xlsx/" {
+		t.Fatalf("GET /data.xlsx = %d %q, want redirect to /data.xlsx/", rec.Code, rec.Header().Get("Location"))
+	}
+
+	rec = nav("/data.xlsx/")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
+		t.Fatalf("listing status = %d; body: %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"2 sheets",
-		`<h2 class="sheet">cities</h2>`,
-		"<th>city</th><th>population</th>",
-		"<td>new orleans</td><td>364136</td>",
-		`<h2 class="sheet">empty</h2>`,
+		`href="cities"`,
+		`href="empty"`,
+		"1 row", // the cities sheet has one data row
+		`href="/data.xlsx?raw=1"`,
 	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("body = %q, want %q", body, want)
+			t.Fatalf("listing body = %q, want %q", body, want)
 		}
+	}
+
+	rec = nav("/data.xlsx/cities")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sheet status = %d; body: %s", rec.Code, rec.Body.String())
+	}
+	body = rec.Body.String()
+	for _, want := range []string{
+		"<th>city</th><th>population</th>",
+		"<td>new orleans</td><td>364136</td>",
+		"1 row × 2 columns",
+		`href="cities?raw=1"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("sheet body = %q, want %q", body, want)
+		}
+	}
+
+	csvReq := httptest.NewRequest(http.MethodGet, "/data.xlsx/cities?raw=1", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, csvReq)
+	if got := rec.Body.String(); got != "city,population\nnew orleans,364136\n" {
+		t.Fatalf("sheet csv = %q, want csv export", got)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/csv") {
+		t.Fatalf("sheet csv Content-Type = %q, want text/csv", got)
 	}
 
 	plain := httptest.NewRequest(http.MethodGet, "/data.xlsx", nil)
@@ -755,25 +835,77 @@ func TestSQLiteRenderedAsTables(t *testing.T) {
 
 	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
-	nav := httptest.NewRequest(http.MethodGet, "/app.sqlite", nil)
-	nav.Header.Set("Sec-Fetch-Dest", "document")
-	rec := httptest.NewRecorder()
-	server.ServeHTTP(rec, nav)
+	nav := func(target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := nav("/app.sqlite")
+	if rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/app.sqlite/" {
+		t.Fatalf("GET /app.sqlite = %d %q, want redirect to /app.sqlite/", rec.Code, rec.Header().Get("Location"))
+	}
+
+	rec = nav("/app.sqlite/")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
+		t.Fatalf("listing status = %d; body: %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"1 table",
-		`<h2 class="sheet">users</h2>`,
+		`href="users"`,
+		"2 rows × 3 columns", // per-table stats in the metadata column
+		`name="q"`,           // the query form
+		`href="/app.sqlite?raw=1"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("listing body = %q, want %q", body, want)
+		}
+	}
+
+	rec = nav("/app.sqlite/?q=" + url.QueryEscape("select name from users order by name"))
+	body = rec.Body.String()
+	for _, want := range []string{
+		"<th>name</th>",
+		"<td>mike</td>",
+		"<td>nobody</td>",
+		"2 rows × 1 column",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("query result body = %q, want %q", body, want)
+		}
+	}
+
+	rec = nav("/app.sqlite/?q=" + url.QueryEscape("delete from users"))
+	if !strings.Contains(rec.Body.String(), `class="queryerror"`) {
+		t.Fatalf("write query body = %q, want a query error (read-only db)", rec.Body.String())
+	}
+
+	rec = nav("/app.sqlite/users")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("table status = %d; body: %s", rec.Code, rec.Body.String())
+	}
+	body = rec.Body.String()
+	for _, want := range []string{
 		"2 rows × 3 columns",
 		"<th>name</th><th>email</th><th>age</th>",
 		"<td>mike</td><td>mra@xoba.com</td><td>55</td>",
 		"<td>NULL</td>",
+		`href="users?raw=1"`,
+		`<h2 class="sheet">schema</h2>`,
+		"CREATE",
 	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("body = %q, want %q", body, want)
+			t.Fatalf("table body = %q, want %q", body, want)
 		}
+	}
+
+	csvReq := httptest.NewRequest(http.MethodGet, "/app.sqlite/users?raw=1", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, csvReq)
+	if got := rec.Body.String(); got != "name,email,age\nmike,mra@xoba.com,55\nnobody,,\n" {
+		t.Fatalf("table csv = %q, want csv export with empty NULLs", got)
 	}
 
 	plain := httptest.NewRequest(http.MethodGet, "/app.sqlite", nil)
@@ -937,6 +1069,53 @@ func TestOversizedTarServedVerbatim(t *testing.T) {
 	}
 	if rec.Body.Len() != len(big) {
 		t.Fatalf("body = %d bytes, want verbatim %d-byte tar", rec.Body.Len(), len(big))
+	}
+}
+
+func TestZipWithLatin1NamesBrowsable(t *testing.T) {
+	root := t.TempDir()
+	var zbuf bytes.Buffer
+	zw := zip.NewWriter(&zbuf)
+	for _, name := range []string{"docs/r\xe9sum\xe9.txt", "plain.txt"} {
+		hdr := &zip.FileHeader{Name: name, NonUTF8: true}
+		f, err := zw.CreateHeader(hdr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.Write([]byte("contents of " + name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "legacy.zip"), zbuf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	nav := func(target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := nav("/legacy.zip/docs/")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("listing status = %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "résumé.txt") {
+		t.Fatalf("listing = %q, want Latin-1 name decoded to résumé.txt", rec.Body.String())
+	}
+
+	member := httptest.NewRequest(http.MethodGet, "/legacy.zip/docs/r%C3%A9sum%C3%A9.txt", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, member)
+	if got := rec.Body.String(); got != "contents of docs/r\xe9sum\xe9.txt" {
+		t.Fatalf("member fetch = %q, want original contents under decoded name", got)
 	}
 }
 
