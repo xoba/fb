@@ -16,6 +16,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -74,7 +75,7 @@ func main() {
 	}
 
 	fsys := os.DirFS(root)
-	handler := fileServer{fsys: fsys, pandoc: "pandoc"}
+	handler := fileServer{fsys: fsys, pandoc: "pandoc", dir: root}
 
 	log.Printf("serving %s at http://localhost:3030/ (%s and %s)", root, listenAddr4, listenAddr6)
 	if err := serveLoopback(handler); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -148,6 +149,11 @@ type fileServer struct {
 	// root, or the archive's own URL path (e.g. "/notes/bundle.zip") when
 	// fsys is the contents of a zip file.
 	base string
+
+	// dir is the OS path of fsys's root when it is a real directory, and ""
+	// when fsys is archive-backed. It lets sqlite databases be opened in
+	// place — no copy, no size cap.
+	dir string
 }
 
 func (s fileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -200,8 +206,14 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 			s.serveTable(w, r, name, info)
 			return
 		case isTabularContainer(name):
-			s.serveContainerListing(w, r, name, info)
-			return
+			// Gate on viewability before serveContainerListing's trailing
+			// slash redirect: an oversized container must fall back to raw
+			// at its own URL, so the browser downloads it under its real
+			// filename rather than "download".
+			if s.containerViewable(name, info) {
+				s.serveContainerListing(w, r, name, info)
+				return
+			}
 		case highlightable(name):
 			s.serveSource(w, r, name, info)
 			return
@@ -247,6 +259,16 @@ func isTabularContainer(name string) bool {
 		return true
 	}
 	return false
+}
+
+// containerViewable reports whether a tabular container is within its
+// viewer's size limits. On-disk sqlite databases have none (they are opened
+// in place); archive-backed ones are bounded by the temp-copy cap.
+func (s fileServer) containerViewable(name string, info fs.FileInfo) bool {
+	if strings.EqualFold(path.Ext(name), ".xlsx") {
+		return info.Size() <= maxXLSXBytes
+	}
+	return s.dir != "" || info.Size() <= maxSQLiteBytes
 }
 
 const (
@@ -437,6 +459,12 @@ func (s fileServer) serveRaw(w http.ResponseWriter, r *http.Request, name string
 	}
 	defer f.Close()
 
+	// Keep inline display for viewable types, but make sure anything the
+	// browser decides to download gets the file's real name — even when the
+	// request URL ends in a slash.
+	w.Header().Set("Content-Disposition",
+		mime.FormatMediaType("inline", map[string]string{"filename": path.Base(name)}))
+
 	if rs, ok := f.(io.ReadSeeker); ok {
 		http.ServeContent(w, r, path.Base(name), info.ModTime(), rs)
 		return
@@ -497,7 +525,7 @@ func (s fileServer) serveInternal(w http.ResponseWriter, r *http.Request, name s
 			return
 		}
 		preventCaching(w.Header(), r.Header)
-		sub := fileServer{fsys: os.DirFS(dir), pandoc: s.pandoc, base: "/" + assetPrefix + "/drops"}
+		sub := fileServer{fsys: os.DirFS(dir), pandoc: s.pandoc, base: "/" + assetPrefix + "/drops", dir: dir}
 		inner := strings.TrimPrefix(strings.TrimPrefix(name, assetPrefix+"/drops"), "/")
 		if inner == "" {
 			inner = "."
@@ -1410,10 +1438,98 @@ func (s fileServer) sqliteMemberData(name string, info fs.FileInfo, member strin
 		if err := schemaRows.Scan(&stmt); err != nil {
 			return nil, nil, 0, "", err
 		}
-		stmts = append(stmts, stmt+";")
+		stmts = append(stmts, prettySQL(stmt)+";")
 	}
 	schema = strings.Join(stmts, "\n\n")
 	return header, body, total, schema, schemaRows.Err()
+}
+
+// prettySQL reformats a one-line CREATE TABLE statement so each column and
+// constraint sits on its own line. Statements that are already multi-line
+// (someone formatted them deliberately) and other statement kinds pass
+// through untouched.
+func prettySQL(stmt string) string {
+	upper := strings.ToUpper(strings.TrimSpace(stmt))
+	if strings.Contains(stmt, "\n") ||
+		(!strings.HasPrefix(upper, "CREATE TABLE") && !strings.HasPrefix(upper, "CREATE VIRTUAL TABLE")) {
+		return stmt
+	}
+
+	open, end, items := splitColumnList(stmt)
+	if open < 0 || len(items) < 2 {
+		return stmt
+	}
+
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(stmt[:open]))
+	b.WriteString(" (\n")
+	for i, item := range items {
+		b.WriteString("  ")
+		b.WriteString(strings.TrimSpace(item))
+		if i < len(items)-1 {
+			b.WriteString(",")
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString(")")
+	if tail := strings.TrimSpace(stmt[end+1:]); tail != "" {
+		b.WriteString(" " + tail)
+	}
+	return b.String()
+}
+
+// splitColumnList locates the outermost parenthesized list in stmt and
+// splits it on top-level commas, respecting nested parentheses, SQL string
+// literals with doubled-quote escapes, and quoted identifiers (double
+// quotes, backticks, brackets).
+func splitColumnList(stmt string) (open, end int, items []string) {
+	open, end = -1, -1
+	depth := 0
+	start := 0
+	var quote byte
+	for i := 0; i < len(stmt); i++ {
+		c := stmt[i]
+		if quote != 0 {
+			switch {
+			case quote == '[' && c == ']':
+				quote = 0
+			case c == quote:
+				if i+1 < len(stmt) && stmt[i+1] == quote {
+					i++ // doubled quote: escape, still inside
+				} else {
+					quote = 0
+				}
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"', '`':
+			quote = c
+		case '[':
+			quote = '['
+		case '(':
+			depth++
+			if depth == 1 && open < 0 {
+				open = i
+				start = i + 1
+			}
+		case ')':
+			depth--
+			if depth == 0 && open >= 0 && end < 0 {
+				end = i
+				items = append(items, stmt[start:i])
+			}
+		case ',':
+			if depth == 1 && end < 0 {
+				items = append(items, stmt[start:i])
+				start = i + 1
+			}
+		}
+	}
+	if end < 0 {
+		return -1, -1, nil
+	}
+	return open, end, items
 }
 
 // highlightSchema renders SQL schema text with chroma, without line numbers.
@@ -1545,9 +1661,28 @@ func (s fileServer) xlsxMembers(name string, info fs.FileInfo) ([]containerMembe
 	return members, nil
 }
 
-// openSQLite copies the database to a temp file and opens it read-only; the
-// returned cleanup closes the handle and removes the copy.
+// openSQLite opens a database read-only. On-disk databases are opened in
+// place, with no size limit — sqlite pages in only what a query touches.
+// Archive-backed databases are copied to a temp file first (the driver
+// needs a real path), capped at maxSQLiteBytes; the returned cleanup closes
+// the handle and removes any copy.
 func (s fileServer) openSQLite(name string, info fs.FileInfo) (*sql.DB, func(), error) {
+	if s.dir != "" {
+		dsn := &url.URL{
+			Scheme:   "file",
+			Path:     filepath.ToSlash(filepath.Join(s.dir, filepath.FromSlash(name))),
+			RawQuery: "mode=ro",
+		}
+		db, err := sql.Open("sqlite3", dsn.String())
+		if err == nil {
+			if err = db.Ping(); err == nil {
+				return db, func() { db.Close() }, nil
+			}
+			db.Close()
+		}
+		log.Printf("open sqlite %s in place: %v (falling back to copy)", name, err)
+	}
+
 	if info.Size() > maxSQLiteBytes {
 		return nil, nil, fmt.Errorf("database too large (%d bytes)", info.Size())
 	}
@@ -2244,7 +2379,7 @@ const dataTableCSS = `  p.summary { color: #57606a; font-size: 0.85rem; }
   table.data td.rownum { position: sticky; left: 0; z-index: 1; }
   table.data th.corner { left: 0; z-index: 3; }
   table.data tr.coords td.rownum { left: 0; z-index: 3; }
-  div.schema { margin-top: 0.5rem; font-size: 0.85rem; }
+  div.schema { margin-top: 0.5rem; font-size: 0.85rem; overflow-x: auto; }
   form.query { margin: 0 0 1rem; }
   form.query input {
     width: min(48em, 100%);

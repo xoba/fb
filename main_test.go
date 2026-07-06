@@ -1151,6 +1151,86 @@ func TestMarkdownInsideZipRendered(t *testing.T) {
 	}
 }
 
+func TestOversizedContainerDownloadsUnderOwnName(t *testing.T) {
+	root := t.TempDir()
+	big := make([]byte, maxXLSXBytes+1)
+	if err := os.WriteFile(filepath.Join(root, "big.xlsx"), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/big.xlsx", nil)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (raw fallback, not a redirect)", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Disposition"); !strings.Contains(got, `filename=big.xlsx`) && !strings.Contains(got, `filename="big.xlsx"`) {
+		t.Fatalf("Content-Disposition = %q, want the real filename", got)
+	}
+	if rec.Body.Len() != len(big) {
+		t.Fatalf("body = %d bytes, want verbatim %d", rec.Body.Len(), len(big))
+	}
+}
+
+func TestSQLiteOpenedInPlaceWithDir(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "big.sqlite")
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE t (x TEXT); INSERT INTO t VALUES ('direct');`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+
+	req := httptest.NewRequest(http.MethodGet, "/big.sqlite/t", nil)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %.200s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "<td>direct</td>") {
+		t.Fatalf("body = %q, want table contents via in-place open", rec.Body.String())
+	}
+}
+
+func TestPrettySQL(t *testing.T) {
+	in := `CREATE TABLE classifications (gmail_id TEXT PRIMARY KEY, category TEXT NOT NULL, amount DECIMAL(10,2), blurb TEXT DEFAULT '', note TEXT DEFAULT 'a,b', CHECK (category IN ('x','y'))) WITHOUT ROWID`
+	want := `CREATE TABLE classifications (
+  gmail_id TEXT PRIMARY KEY,
+  category TEXT NOT NULL,
+  amount DECIMAL(10,2),
+  blurb TEXT DEFAULT '',
+  note TEXT DEFAULT 'a,b',
+  CHECK (category IN ('x','y'))
+) WITHOUT ROWID`
+	if got := prettySQL(in); got != want {
+		t.Fatalf("prettySQL = %q, want %q", got, want)
+	}
+
+	for _, passthrough := range []string{
+		"CREATE INDEX idx ON t (a, b)",
+		"CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1, 2; END",
+		"CREATE TABLE already (\n  a TEXT,\n  b TEXT\n)",
+		"CREATE TABLE single (a TEXT)",
+	} {
+		if got := prettySQL(passthrough); got != passthrough {
+			t.Fatalf("prettySQL(%q) = %q, want unchanged", passthrough, got)
+		}
+	}
+}
+
 func TestDragAndDropUpload(t *testing.T) {
 	server := fileServer{fsys: os.DirFS(t.TempDir()), pandoc: "unused"}
 
