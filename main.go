@@ -1624,8 +1624,32 @@ func (s fileServer) renderSourcePage(w http.ResponseWriter, r *http.Request, nam
 	http.ServeContent(w, r, outName, info.ModTime(), bytes.NewReader(buf.Bytes()))
 }
 
+// codeStyle is the github style with Error tokens neutralized to plain
+// text: files a lexer only partially understands (unusual dialects like
+// plan9 assembly, embedded DSLs) should degrade to uncolored text rather
+// than fill the page with red boxes.
+var codeStyle = func() *chroma.Style {
+	builder := styles.Get("github").Builder()
+	builder.Add(chroma.Error, "#1f2328")
+	s, err := builder.Build()
+	if err != nil {
+		return styles.Get("github")
+	}
+	return s
+}()
+
+// forcedLexers overrides chroma's filename matching where its default guess
+// fits poorly: .s spans many assembler dialects, and the generic GAS lexer
+// degrades better than ArmAsm.
+var forcedLexers = map[string]string{".s": "gas"}
+
 func highlightSource(filename, src string) (template.HTML, error) {
 	lexer := lexers.Match(filename)
+	if alias, ok := forcedLexers[strings.ToLower(path.Ext(filename))]; ok {
+		if forced := lexers.Get(alias); forced != nil {
+			lexer = forced
+		}
+	}
 	if lexer == nil {
 		lexer = lexers.Fallback
 	}
@@ -1643,7 +1667,7 @@ func highlightSource(filename, src string) (template.HTML, error) {
 	)
 
 	var buf bytes.Buffer
-	if err := formatter.Format(&buf, styles.Get("github"), iterator); err != nil {
+	if err := formatter.Format(&buf, codeStyle, iterator); err != nil {
 		return "", err
 	}
 	return template.HTML(buf.String()), nil
@@ -2170,7 +2194,7 @@ func highlightSchema(schema string) template.HTML {
 		return escaped
 	}
 	var buf bytes.Buffer
-	if err := chromahtml.New().Format(&buf, styles.Get("github"), iterator); err != nil {
+	if err := chromahtml.New().Format(&buf, codeStyle, iterator); err != nil {
 		return escaped
 	}
 	return template.HTML(buf.String())

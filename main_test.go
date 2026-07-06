@@ -1753,3 +1753,15 @@ printf '<p>rendered markdown</p><!--fmt:%s--></body></html>' "$format"
 	}
 	return path
 }
+
+func TestErrorTokensNotRedBoxed(t *testing.T) {
+	// plan9-style assembly confuses every assembler lexer; the error tokens
+	// must render as plain text, not the github style's red boxes.
+	out, err := highlightSource("x.s", "DATA ·AVX2_iv0<>+0x00(SB)/8, $0x6a09e667f3bcc908\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "#82071e") {
+		t.Fatalf("output = %q, want no error-token background", out)
+	}
+}
