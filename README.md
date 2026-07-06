@@ -42,6 +42,7 @@ Editor backup files get the same treatment as their base file: a trailing
 |------|-------|
 | `.md` | Full pipeline: footnotes, GitHub-style heading anchors, autolinked URLs, emoji, and TeX math via embedded MathJax (no network needed). Add `?toc=1` for a table of contents. Renders for all clients, not just navigations. |
 | `.ipynb` | Jupyter notebooks — markdown cells, syntax-highlighted code cells, and cell outputs. |
+| `.rst` | reStructuredText documents. |
 | `.docx`, `.odt`, `.rtf` | Word processor documents as clean HTML. |
 | `.doc` | Legacy binary Word documents, converted by macOS's built-in `textutil` and then styled through pandoc. Falls back to download where textutil is unavailable. |
 | `.epub` | Books, including their title page. |
@@ -55,11 +56,12 @@ cannot parse a file, it falls back to a plain download.
 About sixty extensions render as GitHub-styled pages with clickable,
 linkable line numbers (`#L42`):
 
-> `.awk .bash .bat .c .cc .clj .cpp .cs .css .dart .diff .el .erl .ex .exs
-> .fish .go .gradle .graphql .groovy .h .hcl .hpp .hs .ini .java .jl .js
-> .json .jsx .kt .lisp .lua .mjs .nix .patch .php .pl .proto .ps1 .py .r
-> .rb .rs .scala .scss .sh .sql .svelte .swift .tex .tf .toml .ts .tsx .vue
-> .xml .yaml .yml .zig .zsh`
+> `.ada .adb .ads .awk .bash .bat .c .cc .clj .coffee .cpp .cs .css .dart
+> .diff .el .erb .erl .ex .exs .f .f90 .feature .fish .go .gradle .graphql
+> .groovy .h .hcl .hpp .hs .ini .java .jl .js .json .jsx .kt .lisp .lua
+> .mjs .nix .patch .php .pl .properties .proto .ps1 .py .r .rb .rs .s
+> .scala .scss .sh .sql .svelte .swift .tex .tf .toml .ts .tsx .vue .xml
+> .yaml .yml .zig .zsh`
 
 Plus exact filenames without useful extensions: `Makefile`, `makefile`,
 `GNUmakefile`, `Dockerfile`, `CMakeLists.txt`, `.bashrc`, `.zshrc`.
@@ -98,7 +100,7 @@ A bonus of the directory model: fetching a sheet or table URL with
 
 | Type | Notes |
 |------|-------|
-| `.zip` | Read lazily via the central directory — cheap even for large archives. |
+| `.zip`, `.jar` | Read lazily via the central directory — cheap even for large archives. |
 | `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2` | Tars have no index, so the whole archive is extracted into memory. Browsable when the file itself is at most 100 MB (as stored, compressed or not); larger ones fall back to download. A 1 GB extraction ceiling guards against decompression bombs. |
 
 Navigating to an archive shows a normal directory listing of its contents,
@@ -110,7 +112,8 @@ the archive itself.
 
 ### Images
 
-Navigating to a `.jpg`, `.png`, `.gif`, `.webp`, `.bmp`, or `.tif` shows
+Navigating to a `.jpg`, `.png`, `.gif`, `.webp`, `.bmp`, `.tif`, or
+`.heic` shows
 the image with a technical readout beneath it: file size, dimensions and
 megapixels, MIME type (from the actual content), modification time — and
 the full EXIF block when present, with photography fields formatted
@@ -119,7 +122,17 @@ get a map below the EXIF with a dot at the shot's location, composed of
 static OpenStreetMap tiles (plain images — the one feature that needs
 the network), with links out to OpenStreetMap and Apple Maps.
 Subresource and non-browser fetches get the raw bytes as usual, so
-`<img>` tags elsewhere keep working.
+`<img>` tags elsewhere keep working. HEIC photos — which most browsers
+cannot display — are converted to JPEG with macOS's `sips` (EXIF and GPS
+survive the conversion), cached per file, and shown with the full
+readout and map.
+
+### Video
+
+Navigating to a `.mov`, `.mp4`, `.m4v`, or `.webm` shows an inline
+player with file size, format, and modification time beneath it;
+duration and dimensions fill in from the browser's own decoder once
+the metadata loads.
 
 ### Everything else
 
@@ -132,13 +145,14 @@ bypassed).
 
 | Treatment | Types |
 |-----------|-------|
-| Rendered as a document (pandoc) | `.md` `.ipynb` `.doc` `.docx` `.odt` `.rtf` `.epub` |
-| Syntax-highlighted source | `.awk` `.bash` `.bat` `.c` `.cc` `.clj` `.cpp` `.cs` `.css` `.dart` `.diff` `.el` `.erl` `.ex` `.exs` `.fish` `.go` `.gradle` `.graphql` `.groovy` `.h` `.hcl` `.hpp` `.hs` `.ini` `.java` `.jl` `.js` `.json` `.jsx` `.kt` `.lisp` `.lua` `.mjs` `.nix` `.patch` `.php` `.pl` `.proto` `.ps1` `.py` `.r` `.rb` `.rs` `.scala` `.scss` `.sh` `.sql` `.svelte` `.swift` `.tex` `.tf` `.toml` `.ts` `.tsx` `.vue` `.xml` `.yaml` `.yml` `.zig` `.zsh` |
+| Rendered as a document (pandoc) | `.md` `.rst` `.ipynb` `.doc` `.docx` `.odt` `.rtf` `.epub` |
+| Syntax-highlighted source | `.ada` `.adb` `.ads` `.awk` `.bash` `.bat` `.c` `.cc` `.clj` `.coffee` `.cpp` `.cs` `.css` `.dart` `.diff` `.el` `.erb` `.erl` `.ex` `.exs` `.f` `.f90` `.feature` `.fish` `.go` `.gradle` `.graphql` `.groovy` `.h` `.hcl` `.hpp` `.hs` `.ini` `.java` `.jl` `.js` `.json` `.jsx` `.kt` `.lisp` `.lua` `.mjs` `.nix` `.patch` `.php` `.pl` `.properties` `.proto` `.ps1` `.py` `.r` `.rb` `.rs` `.s` `.scala` `.scss` `.sh` `.sql` `.svelte` `.swift` `.tex` `.tf` `.toml` `.ts` `.tsx` `.vue` `.xml` `.yaml` `.yml` `.zig` `.zsh` |
 | Syntax-highlighted by exact filename | `Makefile` `makefile` `GNUmakefile` `Dockerfile` `CMakeLists.txt` `.bashrc` `.zshrc` |
 | Highlighted as XML (binary converted via plutil) | `.plist` |
 | Displayed as tables | `.csv` `.tsv` (and every sheet/table inside the containers below) |
-| Browsed like directories | `.zip` `.tar` `.tar.gz` `.tgz` `.tar.bz2` `.xlsx` `.sqlite` `.sqlite3` `.db` |
-| Image pages with EXIF readout | `.jpg` `.jpeg` `.png` `.gif` `.webp` `.bmp` `.tif` `.tiff` |
+| Browsed like directories | `.zip` `.jar` `.tar` `.tar.gz` `.tgz` `.tar.bz2` `.xlsx` `.sqlite` `.sqlite3` `.db` |
+| Image pages with EXIF readout | `.jpg` `.jpeg` `.png` `.gif` `.webp` `.bmp` `.tif` `.tiff` `.heic` `.heif` |
+| Video player pages | `.mov` `.mp4` `.m4v` `.webm` |
 
 And filenames with special roles inside directory listings:
 

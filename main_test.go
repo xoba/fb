@@ -651,6 +651,7 @@ func TestPandocDocumentFormats(t *testing.T) {
 		".odt":   "odt",
 		".rtf":   "rtf",
 		".epub":  "epub",
+		".rst":   "rst",
 	} {
 		t.Run(ext, func(t *testing.T) {
 			root := t.TempDir()
@@ -1256,6 +1257,147 @@ func TestPrettySQL(t *testing.T) {
 		if got := prettySQL(passthrough); got != passthrough {
 			t.Fatalf("prettySQL(%q) = %q, want unchanged", passthrough, got)
 		}
+	}
+}
+
+func TestNewHighlightExtensions(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"prog.f90":        "program hello\nend program\n",
+		"pkg.adb":         "procedure Hello is\nbegin\n null;\nend Hello;\n",
+		"app.coffee":      "square = (x) -> x * x\n",
+		"login.feature":   "Feature: login\n  Scenario: ok\n",
+		"boot.s":          "mov r0, #0\n",
+		"view.erb":        "<%= @name %>\n",
+		"conf.properties": "key=value\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+	for name := range files {
+		req := httptest.NewRequest(http.MethodGet, "/"+name, nil)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+			t.Errorf("%s Content-Type = %q, want highlighted text/html", name, got)
+		}
+	}
+}
+
+func TestJarBrowsesAsArchive(t *testing.T) {
+	root := t.TempDir()
+	var zbuf bytes.Buffer
+	zw := zip.NewWriter(&zbuf)
+	f, err := zw.Create("META-INF/MANIFEST.MF")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte("Manifest-Version: 1.0\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "lib.jar"), zbuf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/lib.jar/", nil)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `href="META-INF/"`) {
+		t.Fatalf("jar listing status = %d body = %.300q, want archive listing", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVideoViewerPage(t *testing.T) {
+	root := t.TempDir()
+	content := []byte("not really a movie")
+	if err := os.WriteFile(filepath.Join(root, "clip.mov"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	nav := httptest.NewRequest(http.MethodGet, "/clip.mov", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %.200s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`<video class="subject" controls`, `src="clip.mov?raw=1"`, "file size", "video/quicktime"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body = %q, want %q", body, want)
+		}
+	}
+
+	plain := httptest.NewRequest(http.MethodGet, "/clip.mov", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, plain)
+	if !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("non-browser fetch = %q, want verbatim bytes", rec.Body.String())
+	}
+}
+
+func TestHEICViewer(t *testing.T) {
+	if _, err := exec.LookPath("sips"); err != nil {
+		t.Skip("sips not available")
+	}
+
+	root := t.TempDir()
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, image.NewRGBA(image.Rect(0, 0, 40, 30))); err != nil {
+		t.Fatal(err)
+	}
+	pngPath := filepath.Join(root, "src.png")
+	if err := os.WriteFile(pngPath, pngBuf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	heicPath := filepath.Join(root, "photo.heic")
+	if out, err := exec.Command("sips", "-s", "format", "heic", pngPath, "--out", heicPath).CombinedOutput(); err != nil {
+		t.Skipf("cannot create heic fixture: %v: %s", err, out)
+	}
+	if err := os.Remove(pngPath); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+
+	nav := httptest.NewRequest(http.MethodGet, "/photo.heic", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %.200s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`src="photo.heic?jpeg=1"`,
+		"40 × 30",
+		">image/heic<",
+		"converted to JPEG with sips",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body = %q, want %q", body, want)
+		}
+	}
+
+	preview := httptest.NewRequest(http.MethodGet, "/photo.heic?jpeg=1", nil)
+	preview.Header.Set("Sec-Fetch-Dest", "image")
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, preview)
+	if rec.Code != http.StatusOK || !bytes.HasPrefix(rec.Body.Bytes(), []byte{0xFF, 0xD8}) {
+		t.Fatalf("preview status = %d, want JPEG bytes", rec.Code)
 	}
 }
 

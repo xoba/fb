@@ -7,10 +7,11 @@ import (
 	"compress/bzip2"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"embed"
 	"encoding/csv"
 	"encoding/json"
-	"embed"
 	"errors"
 	"fmt"
 	"html/template"
@@ -218,6 +219,12 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 		return
 	}
 
+	// HEIC previews are image subresources, also ahead of the gating.
+	if r.URL.Query().Get("jpeg") == "1" && isHEIC(name) {
+		s.serveHEICPreview(w, r, name, info)
+		return
+	}
+
 	if browserView {
 		switch {
 		case tableDelims[ext] != 0:
@@ -234,6 +241,9 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 			}
 		case imageExts[ext]:
 			s.serveImage(w, r, name, info)
+			return
+		case videoExts[ext]:
+			s.serveVideo(w, r, name, info)
 			return
 		case ext == ".plist":
 			s.servePlist(w, r, name, info)
@@ -318,7 +328,11 @@ const (
 )
 
 func isArchiveName(name string) bool {
-	return strings.EqualFold(path.Ext(viewName(name)), ".zip") || isTarName(name)
+	switch strings.ToLower(path.Ext(viewName(name))) {
+	case ".zip", ".jar": // jars are zips
+		return true
+	}
+	return isTarName(name)
 }
 
 func isTarName(name string) bool {
@@ -660,6 +674,7 @@ const docFormat = "textutil-doc"
 // render them as HTML.
 var pandocFormats = map[string]string{
 	".md":    "markdown+footnotes+lists_without_preceding_blankline+tex_math_single_backslash+gfm_auto_identifiers+autolink_bare_uris+emoji",
+	".rst":   "rst",
 	".ipynb": "ipynb",
 	".doc":   docFormat,
 	".docx":  "docx",
@@ -911,12 +926,111 @@ func writePandocHeader(stylesheets []string) (string, func(), error) {
 	return f.Name(), cleanup, nil
 }
 
+// videoExts lists video types shown on a player page with file details; the
+// browser's decoder reports duration and dimensions client-side.
+var videoExts = map[string]bool{
+	".m4v":  true,
+	".mov":  true,
+	".mp4":  true,
+	".webm": true,
+}
+
+func (s fileServer) serveVideo(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
+	rawHref := (&url.URL{Path: path.Base(name), RawQuery: "raw=1"}).String()
+	page := imagePage{
+		Title:   path.Base(name),
+		Crumbs:  s.breadcrumbs(path.Dir(name)),
+		RawHref: rawHref,
+		Src:     rawHref,
+	}
+	page.Rows = append(page.Rows,
+		kvRow{K: "file size", V: fmt.Sprintf("%s (%d bytes)", humanSize(info.Size()), info.Size())})
+	if !info.ModTime().IsZero() {
+		page.Rows = append(page.Rows, kvRow{K: "modified", V: info.ModTime().Format("2006-01-02 15:04:05")})
+	}
+	if mt := mime.TypeByExtension(strings.ToLower(path.Ext(viewName(name)))); mt != "" {
+		page.Rows = append(page.Rows, kvRow{K: "format", V: mt})
+	}
+
+	var buf bytes.Buffer
+	if err := videoTemplate.Execute(&buf, page); err != nil {
+		log.Printf("render video %s: %v", name, err)
+		http.Error(w, "cannot render video page", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.ServeContent(w, r, "index.html", info.ModTime(), bytes.NewReader(buf.Bytes()))
+}
+
+var videoTemplate = template.Must(template.New("video").Parse(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/` + assetPrefix + `/favicon.png">
+<title>{{.Title}}</title>
+<style>
+  :root { color-scheme: light; }
+  html { color: #1a1a1a; background-color: #fdfdfd; }
+  body {
+    margin: 0 auto;
+    max-width: 70em;
+    padding: 50px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  @media (max-width: 600px) { body { padding: 12px; } }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  nav { margin-bottom: 1rem; font-size: 1.1rem; }
+  nav a { font-weight: 600; }
+  nav span.sep { color: #57606a; }
+  nav span.file { font-weight: 600; }
+  nav a.raw { float: right; font-weight: 400; font-size: 0.85rem; }
+  video.subject {
+    max-width: 100%;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background: #000;
+  }
+  table.kv { border-collapse: collapse; font-size: 0.85rem; margin-top: 1rem; }
+  table.kv td { padding: 0.25rem 1.25rem 0.25rem 0; vertical-align: top; }
+  table.kv td.k { color: #57606a; white-space: nowrap; }
+</style>
+` + dropJS + `</head>
+<body>
+<nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
+<video class="subject" controls preload="metadata" src="{{.Src}}"></video>
+<table class="kv" id="vmeta">
+{{range .Rows}}<tr><td class="k">{{.K}}</td><td>{{.V}}</td></tr>
+{{end}}</table>
+<script>
+document.querySelector("video").addEventListener("loadedmetadata", function () {
+  var v = this, t = document.getElementById("vmeta");
+  function row(k, val) {
+    var tr = t.insertRow();
+    var td = tr.insertCell(); td.className = "k"; td.textContent = k;
+    tr.insertCell().textContent = val;
+  }
+  if (isFinite(v.duration)) {
+    var s = Math.round(v.duration);
+    row("duration", Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2) + " (" + v.duration.toFixed(2) + " s)");
+  }
+  if (v.videoWidth) row("dimensions", v.videoWidth + " × " + v.videoHeight);
+});
+</script>
+</body>
+</html>
+`))
+
 // imageExts lists image types shown on a viewer page with a technical
 // readout (dimensions, file size, EXIF) beneath the image. The image itself
 // is fetched as a subresource, which gets the raw bytes as usual.
 var imageExts = map[string]bool{
 	".bmp":  true,
 	".gif":  true,
+	".heic": true,
+	".heif": true,
 	".jpeg": true,
 	".jpg":  true,
 	".png":  true,
@@ -925,21 +1039,129 @@ var imageExts = map[string]bool{
 	".webp": true,
 }
 
+// isHEIC reports whether name is a HEIC/HEIF image, which browsers other
+// than Safari cannot display and Go cannot decode: both the page's preview
+// and its metadata come from a JPEG conversion via macOS's sips.
+func isHEIC(name string) bool {
+	switch strings.ToLower(path.Ext(viewName(name))) {
+	case ".heic", ".heif":
+		return true
+	}
+	return false
+}
+
+var (
+	heicCacheOnce sync.Once
+	heicCachePath string
+	heicCacheErr  error
+)
+
+// heicJPEG converts a HEIC file to JPEG with sips (which preserves EXIF,
+// including GPS) and returns the path of the converted file, cached per
+// (path, size, mtime) so repeat views are instant.
+func (s fileServer) heicJPEG(ctx context.Context, name string, info fs.FileInfo) (string, error) {
+	heicCacheOnce.Do(func() {
+		heicCachePath, heicCacheErr = os.MkdirTemp("", "localmd-heic-")
+	})
+	if heicCacheErr != nil {
+		return "", heicCacheErr
+	}
+
+	key := sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%d",
+		s.displayPath(name), info.Size(), info.ModTime().UnixNano())))
+	out := filepath.Join(heicCachePath, fmt.Sprintf("%x.jpg", key[:12]))
+	if _, err := os.Stat(out); err == nil {
+		return out, nil
+	}
+
+	sips, err := exec.LookPath("sips")
+	if err != nil {
+		return "", fmt.Errorf("heic conversion needs sips: %w", err)
+	}
+
+	in := filepath.Join(s.dir, filepath.FromSlash(name))
+	if s.dir == "" { // archive-backed: sips needs a real file
+		data, err := fs.ReadFile(s.fsys, name)
+		if err != nil {
+			return "", err
+		}
+		tmp, err := os.CreateTemp(heicCachePath, "in-*.heic")
+		if err != nil {
+			return "", err
+		}
+		_, err = tmp.Write(data)
+		if closeErr := tmp.Close(); err == nil {
+			err = closeErr
+		}
+		defer os.Remove(tmp.Name())
+		if err != nil {
+			return "", err
+		}
+		in = tmp.Name()
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, sips, "-s", "format", "jpeg", in, "--out", out)
+	if outBytes, err := cmd.CombinedOutput(); err != nil {
+		os.Remove(out)
+		return "", fmt.Errorf("sips: %s: %w", strings.TrimSpace(string(outBytes)), err)
+	}
+	return out, nil
+}
+
+// serveHEICPreview streams the JPEG conversion, used as the <img> source on
+// HEIC viewer pages.
+func (s fileServer) serveHEICPreview(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
+	out, err := s.heicJPEG(r.Context(), name, info)
+	if err != nil {
+		log.Printf("heic preview %s: %v", name, err)
+		s.serveRaw(w, r, name, info)
+		return
+	}
+	f, err := os.Open(out)
+	if err != nil {
+		http.Error(w, "cannot read preview", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+	w.Header().Set("Content-Type", "image/jpeg")
+	http.ServeContent(w, r, "preview.jpg", info.ModTime(), f)
+}
+
 // maxImageMetaBytes bounds how much of an image is read for metadata;
 // dimensions and EXIF live near the start of the file.
 const maxImageMetaBytes = 32 << 20
 
 func (s fileServer) serveImage(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
-	f, err := s.fsys.Open(name)
-	if err != nil {
-		http.Error(w, "cannot read file", http.StatusInternalServerError)
-		return
-	}
-	data, err := io.ReadAll(io.LimitReader(f, maxImageMetaBytes))
-	f.Close()
-	if err != nil {
-		http.Error(w, "cannot read file", http.StatusInternalServerError)
-		return
+	heic := isHEIC(name)
+
+	var data []byte
+	if heic {
+		// Metadata (dimensions, EXIF, GPS) comes from the JPEG conversion,
+		// which sips carries over from the original.
+		out, err := s.heicJPEG(r.Context(), name, info)
+		if err != nil {
+			log.Printf("heic %s: %v", name, err)
+			s.serveRaw(w, r, name, info)
+			return
+		}
+		if data, err = os.ReadFile(out); err != nil {
+			http.Error(w, "cannot read preview", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		f, err := s.fsys.Open(name)
+		if err != nil {
+			http.Error(w, "cannot read file", http.StatusInternalServerError)
+			return
+		}
+		data, err = io.ReadAll(io.LimitReader(f, maxImageMetaBytes))
+		f.Close()
+		if err != nil {
+			http.Error(w, "cannot read file", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	rawHref := (&url.URL{Path: path.Base(name), RawQuery: "raw=1"}).String()
@@ -948,6 +1170,9 @@ func (s fileServer) serveImage(w http.ResponseWriter, r *http.Request, name stri
 		Crumbs:  s.breadcrumbs(path.Dir(name)),
 		RawHref: rawHref,
 		Src:     rawHref,
+	}
+	if heic {
+		page.Src = (&url.URL{Path: path.Base(name), RawQuery: "jpeg=1"}).String()
 	}
 	add := func(k, v string) {
 		if v != "" {
@@ -961,9 +1186,15 @@ func (s fileServer) serveImage(w http.ResponseWriter, r *http.Request, name stri
 	}
 	mimeType := mime.TypeByExtension(strings.ToLower(path.Ext(viewName(name))))
 	if cfg, format, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
-		mimeType = "image/" + format // from actual content, not the extension
+		if !heic {
+			mimeType = "image/" + format // from actual content, not the extension
+		}
 		add("dimensions", fmt.Sprintf("%d × %d (%.1f MP)", cfg.Width, cfg.Height,
 			float64(cfg.Width)*float64(cfg.Height)/1e6))
+	}
+	if heic {
+		mimeType = "image/heic"
+		add("preview", "converted to JPEG with sips")
 	}
 	add("format", mimeType)
 
@@ -1203,67 +1434,77 @@ var imageTemplate = template.Must(template.New("image").Parse(`<!DOCTYPE html>
 // keep working as real stylesheets. Deliberately absent: .md (pandoc), .html
 // and .svg (the browser renders those), and .txt (prose reads better plain).
 var highlightExts = map[string]bool{
-	".awk":     true,
-	".bash":    true,
-	".bat":     true,
-	".c":       true,
-	".cc":      true,
-	".clj":     true,
-	".cpp":     true,
-	".cs":      true,
-	".css":     true,
-	".dart":    true,
-	".diff":    true,
-	".el":      true,
-	".erl":     true,
-	".ex":      true,
-	".exs":     true,
-	".fish":    true,
-	".go":      true,
-	".gradle":  true,
-	".graphql": true,
-	".groovy":  true,
-	".h":       true,
-	".hcl":     true,
-	".hpp":     true,
-	".hs":      true,
-	".ini":     true,
-	".java":    true,
-	".jl":      true,
-	".js":      true,
-	".json":    true,
-	".jsx":     true,
-	".kt":      true,
-	".lisp":    true,
-	".lua":     true,
-	".mjs":     true,
-	".nix":     true,
-	".patch":   true,
-	".php":     true,
-	".pl":      true,
-	".proto":   true,
-	".ps1":     true,
-	".py":      true,
-	".r":       true,
-	".rb":      true,
-	".rs":      true,
-	".scala":   true,
-	".scss":    true,
-	".sh":      true,
-	".sql":     true,
-	".svelte":  true,
-	".swift":   true,
-	".tex":     true,
-	".tf":      true,
-	".toml":    true,
-	".ts":      true,
-	".tsx":     true,
-	".vue":     true,
-	".xml":     true,
-	".yaml":    true,
-	".yml":     true,
-	".zig":     true,
-	".zsh":     true,
+	".ada":        true,
+	".adb":        true,
+	".ads":        true,
+	".awk":        true,
+	".bash":       true,
+	".bat":        true,
+	".c":          true,
+	".coffee":     true,
+	".erb":        true,
+	".f":          true,
+	".f90":        true,
+	".feature":    true,
+	".properties": true,
+	".s":          true,
+	".cc":         true,
+	".clj":        true,
+	".cpp":        true,
+	".cs":         true,
+	".css":        true,
+	".dart":       true,
+	".diff":       true,
+	".el":         true,
+	".erl":        true,
+	".ex":         true,
+	".exs":        true,
+	".fish":       true,
+	".go":         true,
+	".gradle":     true,
+	".graphql":    true,
+	".groovy":     true,
+	".h":          true,
+	".hcl":        true,
+	".hpp":        true,
+	".hs":         true,
+	".ini":        true,
+	".java":       true,
+	".jl":         true,
+	".js":         true,
+	".json":       true,
+	".jsx":        true,
+	".kt":         true,
+	".lisp":       true,
+	".lua":        true,
+	".mjs":        true,
+	".nix":        true,
+	".patch":      true,
+	".php":        true,
+	".pl":         true,
+	".proto":      true,
+	".ps1":        true,
+	".py":         true,
+	".r":          true,
+	".rb":         true,
+	".rs":         true,
+	".scala":      true,
+	".scss":       true,
+	".sh":         true,
+	".sql":        true,
+	".svelte":     true,
+	".swift":      true,
+	".tex":        true,
+	".tf":         true,
+	".toml":       true,
+	".ts":         true,
+	".tsx":        true,
+	".vue":        true,
+	".xml":        true,
+	".yaml":       true,
+	".yml":        true,
+	".zig":        true,
+	".zsh":        true,
 }
 
 // highlightNames lists exact basenames without a useful extension that also
