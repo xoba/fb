@@ -24,6 +24,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -53,7 +54,7 @@ const (
 	localCSSName = ".localmd.css"
 )
 
-//go:embed assets/mathjax
+//go:embed assets/mathjax assets/favicon.png
 var embeddedAssets embed.FS
 
 func main() {
@@ -523,8 +524,9 @@ func dropsDir() (string, error) {
 	return dropsPath, dropsErr
 }
 
-// maxDropBytes caps a single drag-and-dropped upload.
-const maxDropBytes = 1 << 30
+// maxDropBytes caps a single drag-and-dropped upload; nothing beyond the
+// largest viewer cap (sqlite/tar at 100 MB) could be usefully viewed anyway.
+const maxDropBytes = 100 << 20
 
 // handleDrop stores an uploaded file under a fresh sequence directory (so
 // original basenames are kept without collisions) and replies with the URL
@@ -1011,7 +1013,7 @@ var sourceTemplate = template.Must(template.New("source").Parse(`<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="icon" href="data:,">
+<link rel="icon" href="/` + assetPrefix + `/favicon.png">
 <title>{{.Title}}</title>
 <style>
   :root { color-scheme: light; }
@@ -1735,7 +1737,7 @@ var tableTemplate = template.Must(template.New("table").Parse(dataTableDefine + 
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="icon" href="data:,">
+<link rel="icon" href="/` + assetPrefix + `/favicon.png">
 <title>{{.Title}}</title>
 <style>
   :root { color-scheme: light; }
@@ -2094,19 +2096,83 @@ type dirEntryView struct {
 }
 
 // dropJS lets any rendered page accept a drag-and-dropped file: the file is
-// uploaded to the drop endpoint and the browser navigates to the stored
-// copy, which renders through the ordinary pipeline like any other file.
-const dropJS = `<script>
-addEventListener("dragover", function (e) { e.preventDefault(); });
-addEventListener("drop", function (e) {
-  e.preventDefault();
-  var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-  if (!f) return;
-  fetch("/` + assetPrefix + `/drop?name=" + encodeURIComponent(f.name), { method: "POST", body: f })
-    .then(function (r) { if (!r.ok) throw new Error(r.status + " " + r.statusText); return r.text(); })
-    .then(function (href) { location.href = href; })
-    .catch(function (err) { alert("drop failed: " + err); });
-});
+// uploaded to the drop endpoint (with a floating progress monitor, since
+// large files take a while) and the browser navigates to the stored copy,
+// which renders through the ordinary pipeline like any other file.
+var dropJS = `<script>
+(function () {
+  var maxDrop = ` + strconv.Itoa(maxDropBytes) + `;
+  var box, msg, bar;
+
+  function human(n) {
+    var units = ["B", "KB", "MB", "GB"], i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (i ? n.toFixed(1) : n) + " " + units[i];
+  }
+
+  function panel() {
+    if (box) return;
+    box = document.createElement("div");
+    box.style.cssText = "position:fixed;left:50%;bottom:2rem;transform:translateX(-50%);" +
+      "background:#1f2328;color:#fff;padding:0.6rem 1rem;border-radius:8px;" +
+      "font:0.85rem -apple-system,BlinkMacSystemFont,sans-serif;box-shadow:0 4px 12px rgba(0,0,0,0.35);" +
+      "z-index:9999;min-width:18rem;max-width:80vw";
+    msg = document.createElement("div");
+    msg.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+    bar = document.createElement("div");
+    bar.style.cssText = "height:4px;background:#2b8aff;border-radius:2px;margin-top:0.45rem;width:0%";
+    box.appendChild(msg);
+    box.appendChild(bar);
+    box.onclick = hide;
+    document.body.appendChild(box);
+  }
+
+  function show(text, frac) {
+    panel();
+    box.style.display = "block";
+    bar.style.background = "#2b8aff";
+    msg.textContent = text;
+    bar.style.width = (frac == null ? 0 : Math.round(frac * 100)) + "%";
+  }
+
+  function fail(text) {
+    show(text, 1);
+    bar.style.background = "#f85149";
+    setTimeout(hide, 8000);
+  }
+
+  function hide() { if (box) box.style.display = "none"; }
+
+  addEventListener("dragover", function (e) { e.preventDefault(); });
+  addEventListener("drop", function (e) {
+    e.preventDefault();
+    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (!f) return;
+    if (f.size > maxDrop) {
+      fail(f.name + " is too large: " + human(f.size) + " (limit " + human(maxDrop) + ")");
+      return;
+    }
+
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", "/` + assetPrefix + `/drop?name=" + encodeURIComponent(f.name));
+    xhr.upload.onprogress = function (ev) {
+      if (ev.lengthComputable) {
+        show("uploading " + f.name + " — " + human(ev.loaded) + " of " + human(ev.total), ev.loaded / ev.total);
+      }
+    };
+    xhr.onload = function () {
+      if (xhr.status === 200) {
+        show("opening " + f.name + " …", 1);
+        location.href = xhr.responseText;
+      } else {
+        fail(f.name + ": " + (xhr.responseText || xhr.status + " " + xhr.statusText).trim());
+      }
+    };
+    xhr.onerror = function () { fail(f.name + ": upload failed"); };
+    show("uploading " + f.name + " …", 0);
+    xhr.send(f);
+  });
+})();
 </script>
 `
 
@@ -2201,7 +2267,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="icon" href="data:,">
+<link rel="icon" href="/` + assetPrefix + `/favicon.png">
 <title>{{.Title}}</title>
 <style>
   :root { color-scheme: light; }
@@ -2310,7 +2376,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
 </html>
 `))
 
-const pandocHeader = `<link rel="icon" href="data:,">
+var pandocHeader = `<link rel="icon" href="/` + assetPrefix + `/favicon.png">
 <script>
   MathJax = {
     chtml: { fontURL: "/` + assetPrefix + `/mathjax/output/chtml/fonts/woff-v2" }

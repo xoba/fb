@@ -133,7 +133,9 @@ had clicked it: the file is uploaded to a per-session scratch area
 (browsers deliberately hide the original path from pages, so the server
 works from a copy) and the browser navigates to it, rendering through the
 ordinary pipeline — a dropped notebook renders, a dropped zip browses, a
-dropped database gets the query box. Past drops remain browsable at
+dropped database gets the query box. A floating monitor shows upload
+progress; files over 100 MB (the largest viewer cap) are rejected with a
+notice before any upload starts. Past drops remain browsable at
 `/_localmd/drops/` until the OS cleans the temp directory.
 
 ## Directory listings

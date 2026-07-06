@@ -1187,6 +1187,34 @@ func TestDragAndDropUpload(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "/_localmd/drop?name=") {
 		t.Fatalf("directory listing lacks the drag-and-drop script")
 	}
+	if !strings.Contains(rec.Body.String(), "/_localmd/favicon.png") {
+		t.Fatalf("directory listing lacks the favicon link")
+	}
+
+	big := httptest.NewRequest(http.MethodPost, "/_localmd/drop?name=big.tar", bytes.NewReader(make([]byte, maxDropBytes+1)))
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, big)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("oversized drop accepted, want rejection")
+	}
+}
+
+func TestServesFavicon(t *testing.T) {
+	server := fileServer{fsys: os.DirFS(t.TempDir()), pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/_localmd/favicon.png", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "image/png") {
+		t.Fatalf("Content-Type = %q, want image/png", got)
+	}
+	if rec.Body.Len() == 0 {
+		t.Fatal("empty favicon")
+	}
 }
 
 func TestDirectoryWithoutTrailingSlashRedirects(t *testing.T) {
