@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/csv"
+	"encoding/json"
 	"embed"
 	"errors"
 	"fmt"
@@ -197,6 +198,13 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 	// curl and scripts still get the original bytes.
 	if format, ok := pandocFormats[ext]; ok && (ext == ".md" || browserView) {
 		s.serveDocument(w, r, name, info, format)
+		return
+	}
+
+	// Async stat fetches come from scripts, not navigations, so handle them
+	// ahead of the browser-view gating.
+	if r.URL.Query().Get("stat") != "" && isTabularContainer(name) && ext != ".xlsx" {
+		s.serveSQLiteStat(w, r, name, info)
 		return
 	}
 
@@ -1247,7 +1255,12 @@ func (s fileServer) serveContainerListing(w http.ResponseWriter, r *http.Request
 		db, cleanup, dbErr := s.openSQLite(name, info)
 		if dbErr == nil {
 			defer cleanup()
-			members, err = sqliteMemberList(db)
+			// On-disk databases can be huge: serve the listing instantly
+			// with names only and let statsJS fill in per-table stats with
+			// a progress indicator. Archive-backed ones are small; compute
+			// synchronously.
+			page.StatsAsync = s.dir != ""
+			members, err = sqliteMemberList(db, !page.StatsAsync)
 
 			page.QueryForm = true
 			page.Query = strings.TrimSpace(r.URL.Query().Get("q"))
@@ -1723,7 +1736,11 @@ func (s fileServer) openSQLite(name string, info fs.FileInfo) (*sql.DB, func(), 
 	return db, func() { db.Close(); removeTmp() }, nil
 }
 
-func sqliteMemberList(db *sql.DB) ([]containerMember, error) {
+// sqliteMemberList lists tables and views. With withStats it also computes
+// each member's row/column counts and footprint synchronously — appropriate
+// only for small (archive-backed) databases; large on-disk ones get their
+// stats filled in asynchronously by statsJS instead.
+func sqliteMemberList(db *sql.DB, withStats bool) ([]containerMember, error) {
 	rows, err := db.Query(`SELECT name, type FROM sqlite_master
 		WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name`)
 	if err != nil {
@@ -1746,53 +1763,66 @@ func sqliteMemberList(db *sql.DB) ([]containerMember, error) {
 		return nil, err
 	}
 
-	sizes := sqliteTableSizes(db)
 	for i := range members {
-		m := &members[i]
-		m.Detail = kinds[i]
-		if n, ok := sizes[m.Name]; ok {
-			m.Bytes = humanSize(n)
+		if withStats {
+			members[i].Detail, members[i].Bytes = sqliteTableStat(db, members[i].Name, kinds[i])
+		} else {
+			members[i].Detail = kinds[i]
 		}
-
-		var count int64
-		if err := db.QueryRow("SELECT COUNT(*) FROM " + quoteSQLiteIdent(m.Name)).Scan(&count); err != nil {
-			continue // e.g. a view over a missing table; leave the bare kind
-		}
-		var cols int
-		if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info(?)", m.Name).Scan(&cols); err != nil {
-			continue
-		}
-		stats := fmt.Sprintf("%d row%s × %d column%s", count, plural(int(count)), cols, plural(cols))
-		if kinds[i] == "view" {
-			stats = "view · " + stats
-		}
-		m.Detail = stats
 	}
 	return members, nil
 }
 
-// sqliteTableSizes returns each table's on-disk footprint (its btree plus
-// all of its indexes) via the dbstat virtual table. Returns nil when the
-// binary was built without the sqlite_dbstat tag.
-func sqliteTableSizes(db *sql.DB) map[string]int64 {
-	rows, err := db.Query(`SELECT m.tbl_name, SUM(s.pgsize)
-		FROM dbstat('main', 1) s JOIN sqlite_master m ON s.name = m.name
-		GROUP BY m.tbl_name`)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
+// sqliteTableStat computes one member's listing metadata: "N rows × M
+// columns" (prefixed for views) and its on-disk footprint including indexes
+// via dbstat (empty without the sqlite_dbstat build tag).
+func sqliteTableStat(db *sql.DB, member, kind string) (detail, footprint string) {
+	detail = kind
 
-	sizes := make(map[string]int64)
-	for rows.Next() {
-		var name string
-		var n int64
-		if err := rows.Scan(&name, &n); err != nil {
-			return nil
-		}
-		sizes[name] = n
+	var size int64
+	if err := db.QueryRow(`SELECT COALESCE(SUM(s.pgsize), 0)
+		FROM dbstat('main', 1) s JOIN sqlite_master m ON s.name = m.name
+		WHERE m.tbl_name = ?`, member).Scan(&size); err == nil && size > 0 {
+		footprint = humanSize(size)
 	}
-	return sizes
+
+	var count int64
+	if err := db.QueryRow("SELECT COUNT(*) FROM " + quoteSQLiteIdent(member)).Scan(&count); err != nil {
+		return detail, footprint // e.g. a view over a missing table
+	}
+	var cols int
+	if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info(?)", member).Scan(&cols); err != nil {
+		return detail, footprint
+	}
+
+	detail = fmt.Sprintf("%d row%s × %d column%s", count, plural(int(count)), cols, plural(cols))
+	if kind == "view" {
+		detail = "view · " + detail
+	}
+	return detail, footprint
+}
+
+// serveSQLiteStat answers the async stat fetches issued by statsJS: metadata
+// for a single table as JSON.
+func (s fileServer) serveSQLiteStat(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
+	member := r.URL.Query().Get("stat")
+
+	db, cleanup, err := s.openSQLite(name, info)
+	if err != nil {
+		http.Error(w, "cannot open database", http.StatusInternalServerError)
+		return
+	}
+	defer cleanup()
+
+	var kind string
+	if err := db.QueryRow("SELECT type FROM sqlite_master WHERE name = ?", member).Scan(&kind); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	detail, footprint := sqliteTableStat(db, member, kind)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"detail": detail, "bytes": footprint})
 }
 
 func quoteSQLiteIdent(name string) string {
@@ -2209,6 +2239,7 @@ type directoryPage struct {
 	Query      string
 	QueryError string
 	QuerySheet *sheetView
+	StatsAsync bool
 	Entries    []dirEntryView
 	Dotted     []dirEntryView
 	ReadmeName string
@@ -2493,9 +2524,10 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
 </form>
 {{with .QueryError}}<p class="queryerror">{{.}}</p>
 {{end}}{{with .QuerySheet}}{{template "datatable" .}}
-{{end}}{{end}}{{if .SortLinks}}<div class="sort">sort: {{range $i, $l := .SortLinks}}{{if $i}} &middot; {{end}}<a {{if $l.Active}}class="active" {{end}}href="{{$l.Href}}">{{$l.Label}}{{if $l.Active}} {{$l.Arrow}}{{end}}</a>{{end}}</div>
+{{end}}{{end}}{{if .StatsAsync}}<p class="summary" id="statprog"></p>
+{{end}}{{if .SortLinks}}<div class="sort">sort: {{range $i, $l := .SortLinks}}{{if $i}} &middot; {{end}}<a {{if $l.Active}}class="active" {{end}}href="{{$l.Href}}">{{$l.Label}}{{if $l.Active}} {{$l.Arrow}}{{end}}</a>{{end}}</div>
 {{end}}
-{{define "rows"}}{{range .}}<tr>{{if .IsDir}}<td class="dname"><a href="{{.Href}}" title="{{.Name}}">{{.Name}}</a></td><td class="blurb"{{with .Blurb}} title="{{.}}"{{end}}>{{.Blurb}}</td>{{else}}<td class="fname" colspan="2"><a href="{{.Href}}" title="{{.Name}}">{{.Name}}</a></td>{{end}}<td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
+{{define "rows"}}{{range .}}<tr data-name="{{.Name}}">{{if .IsDir}}<td class="dname"><a href="{{.Href}}" title="{{.Name}}">{{.Name}}</a></td><td class="blurb"{{with .Blurb}} title="{{.}}"{{end}}>{{.Blurb}}</td>{{else}}<td class="fname" colspan="2"><a href="{{.Href}}" title="{{.Name}}">{{.Name}}</a></td>{{end}}<td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
 {{end}}{{end}}<table class="listing">
 {{template "rows" .Entries}}</table>
 {{if .Dotted}}<details class="dotfiles">
@@ -2507,9 +2539,39 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
 <h1 class="readme-title">{{.ReadmeName}}</h1>
 {{if .Readme}}{{.Readme}}{{else}}<pre class="readme-text">{{.ReadmeText}}</pre>{{end}}
 </section>{{end}}
-</body>
+{{if .StatsAsync}}` + statsJS + `{{end}}</body>
 </html>
 `))
+
+// statsJS fills in per-table stats on sqlite listing pages one table at a
+// time, with a progress indicator, so listings of huge databases render
+// instantly instead of waiting on every COUNT(*).
+const statsJS = `<script>
+(function () {
+  var prog = document.getElementById("statprog");
+  var rows = Array.prototype.slice.call(document.querySelectorAll("table.listing tr[data-name]"))
+    .filter(function (tr) { return tr.getAttribute("data-name") !== ".."; });
+  if (!rows.length) { if (prog) prog.remove(); return; }
+  function next(i) {
+    if (i >= rows.length) { prog.remove(); return; }
+    var name = rows[i].getAttribute("data-name");
+    var pct = Math.round(100 * i / rows.length);
+    prog.textContent = "computing table stats — " + (i + 1) + " of " + rows.length + ": " + name + " …";
+    prog.style.background = "linear-gradient(to right, #e7f0fa " + pct + "%, transparent " + pct + "%)";
+    fetch(location.pathname + "?stat=" + encodeURIComponent(name))
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (st) {
+        var metas = rows[i].querySelectorAll("td.meta");
+        if (metas[0]) metas[0].textContent = st.detail;
+        if (metas[1]) metas[1].textContent = st.bytes;
+      })
+      .catch(function () {})
+      .then(function () { next(i + 1); });
+  }
+  next(0);
+})();
+</script>
+`
 
 var pandocHeader = `<link rel="icon" href="/` + assetPrefix + `/favicon.png">
 <script>

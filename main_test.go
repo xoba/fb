@@ -1203,6 +1203,32 @@ func TestSQLiteOpenedInPlaceWithDir(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "<td>direct</td>") {
 		t.Fatalf("body = %q, want table contents via in-place open", rec.Body.String())
 	}
+
+	// On-disk databases list instantly: names only, stats filled in by the
+	// async script against the ?stat endpoint.
+	listing := httptest.NewRequest(http.MethodGet, "/big.sqlite/", nil)
+	listing.Header.Set("Sec-Fetch-Dest", "document")
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, listing)
+	body := rec.Body.String()
+	for _, want := range []string{`id="statprog"`, `data-name="t"`, "computing table stats"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("listing body = %q, want async stats marker %q", body, want)
+		}
+	}
+	if strings.Contains(body, "1 row × 1 column") {
+		t.Fatalf("listing body computed stats synchronously, want async")
+	}
+
+	stat := httptest.NewRequest(http.MethodGet, "/big.sqlite/?stat=t", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, stat)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stat status = %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); !strings.Contains(got, "1 row × 1 column") {
+		t.Fatalf("stat body = %q, want row and column counts", got)
+	}
 }
 
 func TestPrettySQL(t *testing.T) {
