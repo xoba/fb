@@ -64,7 +64,8 @@ linkable line numbers (`#L42`):
 > .yaml .yml .zig .zsh`
 
 Plus exact filenames without useful extensions: `Makefile`, `makefile`,
-`GNUmakefile`, `Dockerfile`, `CMakeLists.txt`, `.bashrc`, `.zshrc`.
+`GNUmakefile`, `Dockerfile`, `CMakeLists.txt`, `.bashrc`, `.zshrc` — and
+`.mf` jar manifests, colored as key/value properties.
 
 `.plist` property lists also render as highlighted XML — binary ones are
 converted first with macOS's built-in `plutil` (elsewhere, binary plists
@@ -122,10 +123,10 @@ get a map below the EXIF with a dot at the shot's location, composed of
 static OpenStreetMap tiles (plain images — the one feature that needs
 the network), with links out to OpenStreetMap and Apple Maps.
 Subresource and non-browser fetches get the raw bytes as usual, so
-`<img>` tags elsewhere keep working. HEIC photos — which most browsers
-cannot display — are converted to JPEG with macOS's `sips` (EXIF and GPS
-survive the conversion), cached per file, and shown with the full
-readout and map.
+`<img>` tags elsewhere keep working. HEIC and TIFF images — which most
+browsers cannot display — are converted to JPEG with macOS's `sips`
+(EXIF and GPS survive the conversion), cached per file, and shown with
+the full readout and map.
 
 ### Video
 

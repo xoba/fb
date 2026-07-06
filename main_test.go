@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/xuri/excelize/v2"
+	"golang.org/x/image/tiff"
 )
 
 func TestServesMarkdownThroughPandoc(t *testing.T) {
@@ -1763,5 +1764,62 @@ func TestErrorTokensNotRedBoxed(t *testing.T) {
 	}
 	if strings.Contains(string(out), "#82071e") {
 		t.Fatalf("output = %q, want no error-token background", out)
+	}
+}
+
+func TestTIFFPreviewConverted(t *testing.T) {
+	if _, err := exec.LookPath("sips"); err != nil {
+		t.Skip("sips not available")
+	}
+
+	root := t.TempDir()
+	var buf bytes.Buffer
+	if err := tiff.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 20, 10)), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "scan.tiff"), buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+
+	nav := httptest.NewRequest(http.MethodGet, "/scan.tiff", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+	body := rec.Body.String()
+	for _, want := range []string{`src="scan.tiff?jpeg=1"`, "20 × 10", ">image/tiff<", "converted to JPEG with sips"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body = %q, want %q", body, want)
+		}
+	}
+
+	preview := httptest.NewRequest(http.MethodGet, "/scan.tiff?jpeg=1", nil)
+	preview.Header.Set("Sec-Fetch-Dest", "image")
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, preview)
+	if rec.Code != http.StatusOK || !bytes.HasPrefix(rec.Body.Bytes(), []byte{0xFF, 0xD8}) {
+		t.Fatalf("preview status = %d, want JPEG bytes", rec.Code)
+	}
+}
+
+func TestManifestHighlighted(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "MANIFEST.MF"),
+		[]byte("Manifest-Version: 1.0\nMain-Class: org.example.App\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/MANIFEST.MF", nil)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Fatalf("Content-Type = %q, want highlighted text/html", got)
+	}
+	if !strings.Contains(rec.Body.String(), "Manifest-Version") {
+		t.Fatalf("body lacks manifest content")
 	}
 }

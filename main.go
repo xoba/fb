@@ -219,8 +219,8 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 		return
 	}
 
-	// HEIC previews are image subresources, also ahead of the gating.
-	if r.URL.Query().Get("jpeg") == "1" && isHEIC(name) {
+	// Converted image previews are subresources, also ahead of the gating.
+	if r.URL.Query().Get("jpeg") == "1" && needsJPEGPreview(name) {
 		s.serveHEICPreview(w, r, name, info)
 		return
 	}
@@ -1050,6 +1050,16 @@ func isHEIC(name string) bool {
 	return false
 }
 
+// needsJPEGPreview reports whether an image must be converted for display:
+// browsers cannot show HEIC or TIFF inline.
+func needsJPEGPreview(name string) bool {
+	switch strings.ToLower(path.Ext(viewName(name))) {
+	case ".heic", ".heif", ".tif", ".tiff":
+		return true
+	}
+	return false
+}
+
 var (
 	heicCacheOnce sync.Once
 	heicCachePath string
@@ -1135,11 +1145,13 @@ const maxImageMetaBytes = 32 << 20
 
 func (s fileServer) serveImage(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
 	heic := isHEIC(name)
+	preview := needsJPEGPreview(name)
 
 	var data []byte
 	if heic {
 		// Metadata (dimensions, EXIF, GPS) comes from the JPEG conversion,
-		// which sips carries over from the original.
+		// which sips carries over from the original. (TIFFs keep their
+		// original bytes here: Go reads TIFF metadata natively.)
 		out, err := s.heicJPEG(r.Context(), name, info)
 		if err != nil {
 			log.Printf("heic %s: %v", name, err)
@@ -1171,7 +1183,7 @@ func (s fileServer) serveImage(w http.ResponseWriter, r *http.Request, name stri
 		RawHref: rawHref,
 		Src:     rawHref,
 	}
-	if heic {
+	if preview {
 		page.Src = (&url.URL{Path: path.Base(name), RawQuery: "jpeg=1"}).String()
 	}
 	add := func(k, v string) {
@@ -1194,6 +1206,8 @@ func (s fileServer) serveImage(w http.ResponseWriter, r *http.Request, name stri
 	}
 	if heic {
 		mimeType = "image/heic"
+	}
+	if preview {
 		add("preview", "converted to JPEG with sips")
 	}
 	add("format", mimeType)
@@ -1477,6 +1491,7 @@ var highlightExts = map[string]bool{
 	".kt":         true,
 	".lisp":       true,
 	".lua":        true,
+	".mf":         true,
 	".mjs":        true,
 	".nix":        true,
 	".patch":      true,
@@ -1639,9 +1654,13 @@ var codeStyle = func() *chroma.Style {
 }()
 
 // forcedLexers overrides chroma's filename matching where its default guess
-// fits poorly: .s spans many assembler dialects, and the generic GAS lexer
-// degrades better than ArmAsm.
-var forcedLexers = map[string]string{".s": "gas"}
+// fits poorly (.s spans many assembler dialects, and the generic GAS lexer
+// degrades better than ArmAsm) or where chroma has no match at all (.mf jar
+// manifests are key: value pairs the properties lexer colors well).
+var forcedLexers = map[string]string{
+	".mf": "properties",
+	".s":  "gas",
+}
 
 func highlightSource(filename, src string) (template.HTML, error) {
 	lexer := lexers.Match(filename)
