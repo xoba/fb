@@ -21,6 +21,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"math"
 	"mime"
 	"net"
 	"net/http"
@@ -942,14 +943,23 @@ func (s fileServer) serveImage(w http.ResponseWriter, r *http.Request, name stri
 	if !info.ModTime().IsZero() {
 		add("modified", info.ModTime().Format("2006-01-02 15:04:05"))
 	}
+	mimeType := mime.TypeByExtension(strings.ToLower(path.Ext(name)))
 	if cfg, format, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
-		add("format", format)
+		mimeType = "image/" + format // from actual content, not the extension
 		add("dimensions", fmt.Sprintf("%d × %d (%.1f MP)", cfg.Width, cfg.Height,
 			float64(cfg.Width)*float64(cfg.Height)/1e6))
 	}
-	add("mime type", mime.TypeByExtension(strings.ToLower(path.Ext(name))))
+	add("format", mimeType)
 
-	page.Exif = exifRows(data)
+	var lat, long float64
+	var hasGPS bool
+	page.Exif, lat, long, hasGPS = exifRows(data)
+	if hasGPS {
+		page.Map = osmMap(lat, long)
+		page.MapHref = fmt.Sprintf("https://www.openstreetmap.org/?mlat=%.6f&mlon=%.6f#map=16/%.6f/%.6f",
+			lat, long, lat, long)
+		page.AppleMaps = fmt.Sprintf("https://maps.apple.com/?ll=%.6f,%.6f", lat, long)
+	}
 
 	var buf bytes.Buffer
 	if err := imageTemplate.Execute(&buf, page); err != nil {
@@ -970,14 +980,13 @@ func (f exifWalkFunc) Walk(name exif.FieldName, tag *exiftiff.Tag) error {
 }
 
 // exifRows extracts every readable EXIF field, sorted by name, with a
-// friendly GPS coordinate row when position data is present.
-func exifRows(data []byte) []kvRow {
+// friendly GPS coordinate row (and the decoded position) when present.
+func exifRows(data []byte) (rows []kvRow, lat, long float64, hasGPS bool) {
 	x, err := exif.Decode(bytes.NewReader(data))
 	if err != nil {
-		return nil
+		return nil, 0, 0, false
 	}
 
-	var rows []kvRow
 	x.Walk(exifWalkFunc(func(field exif.FieldName, tag *exiftiff.Tag) error {
 		if field == "MakerNote" || strings.HasSuffix(string(field), "IFDPointer") {
 			return nil // opaque vendor blob / internal file offsets
@@ -996,10 +1005,11 @@ func exifRows(data []byte) []kvRow {
 	}))
 	sort.Slice(rows, func(i, j int) bool { return rows[i].K < rows[j].K })
 
-	if lat, long, err := x.LatLong(); err == nil {
+	if lat, long, err = x.LatLong(); err == nil {
+		hasGPS = true
 		rows = append([]kvRow{{K: "GPS position", V: fmt.Sprintf("%.6f, %.6f", lat, long)}}, rows...)
 	}
-	return rows
+	return rows, lat, long, hasGPS
 }
 
 // formatExifValue makes the common photography tags read naturally instead
@@ -1043,12 +1053,48 @@ func ratFloat(v string) (float64, bool) {
 }
 
 type imagePage struct {
-	Title   string
-	Crumbs  []crumb
-	RawHref string
-	Src     string
-	Rows    []kvRow
-	Exif    []kvRow
+	Title     string
+	Crumbs    []crumb
+	RawHref   string
+	Src       string
+	Rows      []kvRow
+	Exif      []kvRow
+	Map       *mapView
+	MapHref   string
+	AppleMaps string
+}
+
+// mapView is a 3×3 grid of OpenStreetMap raster tiles with a dot positioned
+// at the photo's GPS coordinates — plain images, no scripts or iframes.
+type mapView struct {
+	Rows       [][]string // tile URLs
+	DotX, DotY int        // dot position within the grid, in pixels
+}
+
+func osmMap(lat, long float64) *mapView {
+	const zoom = 15
+	const tile = 256
+	n := math.Exp2(zoom)
+	xt := (long + 180) / 360 * n
+	latRad := lat * math.Pi / 180
+	yt := (1 - math.Log(math.Tan(latRad)+1/math.Cos(latRad))/math.Pi) / 2 * n
+	if math.IsNaN(yt) || math.IsInf(yt, 0) || yt < 1 || yt > n-2 || xt < 1 || xt > n-2 {
+		return nil
+	}
+
+	x0, y0 := int(xt)-1, int(yt)-1
+	m := &mapView{
+		DotX: int((xt - float64(x0)) * tile),
+		DotY: int((yt - float64(y0)) * tile),
+	}
+	for dy := range 3 {
+		var row []string
+		for dx := range 3 {
+			row = append(row, fmt.Sprintf("https://tile.openstreetmap.org/%d/%d/%d.png", zoom, x0+dx, y0+dy))
+		}
+		m.Rows = append(m.Rows, row)
+	}
+	return m
 }
 
 type kvRow struct {
@@ -1091,6 +1137,27 @@ var imageTemplate = template.Must(template.New("image").Parse(`<!DOCTYPE html>
   table.kv { border-collapse: collapse; font-size: 0.85rem; }
   table.kv td { padding: 0.25rem 1.25rem 0.25rem 0; vertical-align: top; }
   table.kv td.k { color: #57606a; white-space: nowrap; }
+  div.map {
+    position: relative;
+    width: 768px;
+    max-width: 100%;
+    overflow: hidden;
+    line-height: 0;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+  }
+  div.map .maprow { white-space: nowrap; }
+  div.map .dot {
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    margin: -7px 0 0 -7px;
+    background: #f85149;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    box-shadow: 0 0 4px rgba(0,0,0,0.5);
+  }
+  p.summary { color: #57606a; font-size: 0.85rem; }
 </style>
 ` + dropJS + `</head>
 <body>
@@ -1103,6 +1170,12 @@ var imageTemplate = template.Must(template.New("image").Parse(`<!DOCTYPE html>
 <table class="kv">
 {{range .Exif}}<tr><td class="k">{{.K}}</td><td>{{.V}}</td></tr>
 {{end}}</table>
+{{end}}{{if .Map}}<h2 class="sheet">location</h2>
+<div class="map">
+{{range .Map.Rows}}<div class="maprow">{{range .}}<img src="{{.}}" width="256" height="256" alt="">{{end}}</div>
+{{end}}<div class="dot" style="left:{{.Map.DotX}}px;top:{{.Map.DotY}}px"></div>
+</div>
+<p class="summary"><a href="{{.MapHref}}">OpenStreetMap</a> &middot; <a href="{{.AppleMaps}}">Apple Maps</a> &middot; map data &copy; OpenStreetMap contributors</p>
 {{end}}</body>
 </html>
 `))

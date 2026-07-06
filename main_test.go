@@ -1282,7 +1282,7 @@ func TestImageViewerPage(t *testing.T) {
 	for _, want := range []string{
 		`<img class="subject" src="pic.png?raw=1"`,
 		"3 × 2",
-		">png<",
+		">image/png<",
 		fmt.Sprintf("%d bytes", pngBuf.Len()),
 		`href="pic.png?raw=1"`,
 	} {

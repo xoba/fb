@@ -104,11 +104,14 @@ the archive itself.
 
 Navigating to a `.jpg`, `.png`, `.gif`, `.webp`, `.bmp`, or `.tif` shows
 the image with a technical readout beneath it: file size, dimensions and
-megapixels, format, modification time — and the full EXIF block when
-present, with photography fields formatted naturally (`f/7.1`, `85 mm`,
-`1/200 s`) and a decoded GPS position. Subresource and non-browser
-fetches get the raw bytes as usual, so `<img>` tags elsewhere keep
-working.
+megapixels, MIME type (from the actual content), modification time — and
+the full EXIF block when present, with photography fields formatted
+naturally (`f/7.1`, `85 mm`, `1/200 s`). GPS-tagged photos additionally
+get a map below the EXIF with a dot at the shot's location, composed of
+static OpenStreetMap tiles (plain images — the one feature that needs
+the network), with links out to OpenStreetMap and Apple Maps.
+Subresource and non-browser fetches get the raw bytes as usual, so
+`<img>` tags elsewhere keep working.
 
 ### Everything else
 
