@@ -100,9 +100,19 @@ nested inside archives (to depth 3). Breadcrumbs cross the archive boundary
 (`/ notes bundle.zip src main.go`), and the listing's `raw` link downloads
 the archive itself.
 
+### Images
+
+Navigating to a `.jpg`, `.png`, `.gif`, `.webp`, `.bmp`, or `.tif` shows
+the image with a technical readout beneath it: file size, dimensions and
+megapixels, format, modification time — and the full EXIF block when
+present, with photography fields formatted naturally (`f/7.1`, `85 mm`,
+`1/200 s`) and a decoded GPS position. Subresource and non-browser
+fetches get the raw bytes as usual, so `<img>` tags elsewhere keep
+working.
+
 ### Everything else
 
-Served verbatim with sensible content types — images, PDFs, video, and
+Served verbatim with sensible content types — PDFs, video, and
 audio display natively in the browser. `index.html` files are viewable
 in place (the Go standard library's redirect-back-to-directory behavior is
 bypassed).
@@ -116,6 +126,7 @@ bypassed).
 | Syntax-highlighted by exact filename | `Makefile` `makefile` `GNUmakefile` `Dockerfile` `CMakeLists.txt` `.bashrc` `.zshrc` |
 | Displayed as tables | `.csv` `.tsv` (and every sheet/table inside the containers below) |
 | Browsed like directories | `.zip` `.tar` `.tar.gz` `.tgz` `.tar.bz2` `.xlsx` `.sqlite` `.sqlite3` `.db` |
+| Image pages with EXIF readout | `.jpg` `.jpeg` `.png` `.gif` `.webp` `.bmp` `.tif` `.tiff` |
 
 And filenames with special roles inside directory listings:
 

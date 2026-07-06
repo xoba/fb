@@ -5,7 +5,9 @@ go 1.27rc1
 require (
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/mattn/go-sqlite3 v1.14.47
+	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
 	github.com/xuri/excelize/v2 v2.10.1
+	golang.org/x/image v0.25.0
 )
 
 require (

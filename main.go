@@ -14,6 +14,10 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"io/fs"
 	"log"
@@ -39,7 +43,12 @@ import (
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/rwcarlsen/goexif/exif"
+	exiftiff "github.com/rwcarlsen/goexif/tiff"
 	"github.com/xuri/excelize/v2"
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/tiff"
+	_ "golang.org/x/image/webp"
 )
 
 const (
@@ -222,6 +231,9 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 				s.serveContainerListing(w, r, name, info)
 				return
 			}
+		case imageExts[ext]:
+			s.serveImage(w, r, name, info)
+			return
 		case highlightable(name):
 			s.serveSource(w, r, name, info)
 			return
@@ -881,6 +893,219 @@ func writePandocHeader(stylesheets []string) (string, func(), error) {
 
 	return f.Name(), cleanup, nil
 }
+
+// imageExts lists image types shown on a viewer page with a technical
+// readout (dimensions, file size, EXIF) beneath the image. The image itself
+// is fetched as a subresource, which gets the raw bytes as usual.
+var imageExts = map[string]bool{
+	".bmp":  true,
+	".gif":  true,
+	".jpeg": true,
+	".jpg":  true,
+	".png":  true,
+	".tif":  true,
+	".tiff": true,
+	".webp": true,
+}
+
+// maxImageMetaBytes bounds how much of an image is read for metadata;
+// dimensions and EXIF live near the start of the file.
+const maxImageMetaBytes = 32 << 20
+
+func (s fileServer) serveImage(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
+	f, err := s.fsys.Open(name)
+	if err != nil {
+		http.Error(w, "cannot read file", http.StatusInternalServerError)
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxImageMetaBytes))
+	f.Close()
+	if err != nil {
+		http.Error(w, "cannot read file", http.StatusInternalServerError)
+		return
+	}
+
+	rawHref := (&url.URL{Path: path.Base(name), RawQuery: "raw=1"}).String()
+	page := imagePage{
+		Title:   path.Base(name),
+		Crumbs:  s.breadcrumbs(path.Dir(name)),
+		RawHref: rawHref,
+		Src:     rawHref,
+	}
+	add := func(k, v string) {
+		if v != "" {
+			page.Rows = append(page.Rows, kvRow{K: k, V: v})
+		}
+	}
+
+	add("file size", fmt.Sprintf("%s (%d bytes)", humanSize(info.Size()), info.Size()))
+	if !info.ModTime().IsZero() {
+		add("modified", info.ModTime().Format("2006-01-02 15:04:05"))
+	}
+	if cfg, format, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
+		add("format", format)
+		add("dimensions", fmt.Sprintf("%d × %d (%.1f MP)", cfg.Width, cfg.Height,
+			float64(cfg.Width)*float64(cfg.Height)/1e6))
+	}
+	add("mime type", mime.TypeByExtension(strings.ToLower(path.Ext(name))))
+
+	page.Exif = exifRows(data)
+
+	var buf bytes.Buffer
+	if err := imageTemplate.Execute(&buf, page); err != nil {
+		log.Printf("render image %s: %v", name, err)
+		http.Error(w, "cannot render image page", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.ServeContent(w, r, "index.html", info.ModTime(), bytes.NewReader(buf.Bytes()))
+}
+
+// exifWalkFunc adapts a function to goexif's Walker interface.
+type exifWalkFunc func(name exif.FieldName, tag *exiftiff.Tag) error
+
+func (f exifWalkFunc) Walk(name exif.FieldName, tag *exiftiff.Tag) error {
+	return f(name, tag)
+}
+
+// exifRows extracts every readable EXIF field, sorted by name, with a
+// friendly GPS coordinate row when position data is present.
+func exifRows(data []byte) []kvRow {
+	x, err := exif.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil
+	}
+
+	var rows []kvRow
+	x.Walk(exifWalkFunc(func(field exif.FieldName, tag *exiftiff.Tag) error {
+		if field == "MakerNote" || strings.HasSuffix(string(field), "IFDPointer") {
+			return nil // opaque vendor blob / internal file offsets
+		}
+		v := tag.String()
+		if sv, err := tag.StringVal(); err == nil {
+			v = strings.TrimSpace(sv)
+		}
+		v = strings.Trim(v, `"`)
+		v = formatExifValue(field, v)
+		if v == "" || len(v) > 150 {
+			return nil
+		}
+		rows = append(rows, kvRow{K: string(field), V: v})
+		return nil
+	}))
+	sort.Slice(rows, func(i, j int) bool { return rows[i].K < rows[j].K })
+
+	if lat, long, err := x.LatLong(); err == nil {
+		rows = append([]kvRow{{K: "GPS position", V: fmt.Sprintf("%.6f, %.6f", lat, long)}}, rows...)
+	}
+	return rows
+}
+
+// formatExifValue makes the common photography tags read naturally instead
+// of as raw rationals: f/7.1 rather than 71/10.
+func formatExifValue(field exif.FieldName, v string) string {
+	switch field {
+	case "FNumber":
+		if f, ok := ratFloat(v); ok {
+			return fmt.Sprintf("f/%.1f", f)
+		}
+	case "FocalLength":
+		if f, ok := ratFloat(v); ok {
+			return fmt.Sprintf("%g mm", f)
+		}
+	case "ExposureTime":
+		return v + " s"
+	case "ExposureBiasValue":
+		if f, ok := ratFloat(v); ok {
+			return fmt.Sprintf("%g EV", f)
+		}
+	case "DigitalZoomRatio", "MaxApertureValue", "ApertureValue", "ShutterSpeedValue", "BrightnessValue":
+		if f, ok := ratFloat(v); ok {
+			return fmt.Sprintf("%.4g", f)
+		}
+	}
+	return v
+}
+
+// ratFloat parses an EXIF rational like "71/10".
+func ratFloat(v string) (float64, bool) {
+	num, den, ok := strings.Cut(v, "/")
+	if !ok {
+		return 0, false
+	}
+	n, err1 := strconv.ParseFloat(num, 64)
+	d, err2 := strconv.ParseFloat(den, 64)
+	if err1 != nil || err2 != nil || d == 0 {
+		return 0, false
+	}
+	return n / d, true
+}
+
+type imagePage struct {
+	Title   string
+	Crumbs  []crumb
+	RawHref string
+	Src     string
+	Rows    []kvRow
+	Exif    []kvRow
+}
+
+type kvRow struct {
+	K, V string
+}
+
+var imageTemplate = template.Must(template.New("image").Parse(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/` + assetPrefix + `/favicon.png">
+<title>{{.Title}}</title>
+<style>
+  :root { color-scheme: light; }
+  html { color: #1a1a1a; background-color: #fdfdfd; }
+  body {
+    margin: 0 auto;
+    max-width: 70em;
+    padding: 50px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  @media (max-width: 600px) { body { padding: 12px; } }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  nav { margin-bottom: 1rem; font-size: 1.1rem; }
+  nav a { font-weight: 600; }
+  nav span.sep { color: #57606a; }
+  nav span.file { font-weight: 600; }
+  nav a.raw { float: right; font-weight: 400; font-size: 0.85rem; }
+  img.subject {
+    max-width: 100%;
+    height: auto;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background:
+      repeating-conic-gradient(#f0f0f0 0% 25%, #fff 0% 50%) 0 0/20px 20px; /* checkerboard shows transparency */
+  }
+  h2.sheet { font-size: 1rem; margin: 1.5rem 0 0.4rem; }
+  table.kv { border-collapse: collapse; font-size: 0.85rem; }
+  table.kv td { padding: 0.25rem 1.25rem 0.25rem 0; vertical-align: top; }
+  table.kv td.k { color: #57606a; white-space: nowrap; }
+</style>
+` + dropJS + `</head>
+<body>
+<nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
+<img class="subject" src="{{.Src}}" alt="{{.Title}}">
+<table class="kv">
+{{range .Rows}}<tr><td class="k">{{.K}}</td><td>{{.V}}</td></tr>
+{{end}}</table>
+{{if .Exif}}<h2 class="sheet">exif</h2>
+<table class="kv">
+{{range .Exif}}<tr><td class="k">{{.K}}</td><td>{{.V}}</td></tr>
+{{end}}</table>
+{{end}}</body>
+</html>
+`))
 
 // highlightExts lists source-file extensions served as syntax-highlighted HTML
 // pages when a browser navigates to them. Subresource fetches and non-browser

@@ -7,6 +7,8 @@ import (
 	"compress/gzip"
 	"database/sql"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1254,6 +1256,48 @@ func TestPrettySQL(t *testing.T) {
 		if got := prettySQL(passthrough); got != passthrough {
 			t.Fatalf("prettySQL(%q) = %q, want unchanged", passthrough, got)
 		}
+	}
+}
+
+func TestImageViewerPage(t *testing.T) {
+	root := t.TempDir()
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, image.NewRGBA(image.Rect(0, 0, 3, 2))); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "pic.png"), pngBuf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	nav := httptest.NewRequest(http.MethodGet, "/pic.png", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %.200s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`<img class="subject" src="pic.png?raw=1"`,
+		"3 × 2",
+		">png<",
+		fmt.Sprintf("%d bytes", pngBuf.Len()),
+		`href="pic.png?raw=1"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body = %q, want %q", body, want)
+		}
+	}
+
+	// Subresource and non-browser fetches still get the raw image.
+	img := httptest.NewRequest(http.MethodGet, "/pic.png", nil)
+	img.Header.Set("Sec-Fetch-Dest", "image")
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, img)
+	if !bytes.Equal(rec.Body.Bytes(), pngBuf.Bytes()) {
+		t.Fatalf("image subresource fetch = %d bytes, want verbatim %d", rec.Body.Len(), pngBuf.Len())
 	}
 }
 
