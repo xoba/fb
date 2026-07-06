@@ -1151,6 +1151,44 @@ func TestMarkdownInsideZipRendered(t *testing.T) {
 	}
 }
 
+func TestDragAndDropUpload(t *testing.T) {
+	server := fileServer{fsys: os.DirFS(t.TempDir()), pandoc: "unused"}
+
+	src := "package main\n"
+	post := httptest.NewRequest(http.MethodPost, "/_localmd/drop?name="+url.QueryEscape("../sneaky/prog.go"), strings.NewReader(src))
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, post)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("drop status = %d; body: %s", rec.Code, rec.Body.String())
+	}
+	href := rec.Body.String()
+	if !strings.HasPrefix(href, "/_localmd/drops/") || !strings.HasSuffix(href, "/prog.go") {
+		t.Fatalf("drop href = %q, want sanitized path under /_localmd/drops/", href)
+	}
+
+	nav := httptest.NewRequest(http.MethodGet, href, nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `id="L1"`) {
+		t.Fatalf("dropped file nav status = %d, want highlighted source; body: %.200s", rec.Code, rec.Body.String())
+	}
+
+	plain := httptest.NewRequest(http.MethodGet, href, nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, plain)
+	if got := rec.Body.String(); got != src {
+		t.Fatalf("dropped file raw fetch = %q, want original bytes", got)
+	}
+
+	listing := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, listing)
+	if !strings.Contains(rec.Body.String(), "/_localmd/drop?name=") {
+		t.Fatalf("directory listing lacks the drag-and-drop script")
+	}
+}
+
 func TestDirectoryWithoutTrailingSlashRedirects(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {

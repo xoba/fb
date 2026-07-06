@@ -126,6 +126,16 @@ And filenames with special roles inside directory listings:
 | `.localmd.css` | Linked as a stylesheet into markdown rendered at or below its directory |
 | `index.html` | Viewable in place rather than redirecting back to the directory |
 
+## Drag and drop
+
+Drop any file from Finder onto any rendered page and it opens as if you
+had clicked it: the file is uploaded to a per-session scratch area
+(browsers deliberately hide the original path from pages, so the server
+works from a copy) and the browser navigates to it, rendering through the
+ordinary pipeline — a dropped notebook renders, a dropped zip browses, a
+dropped database gets the query box. Past drops remain browsable at
+`/_localmd/drops/` until the OS cleans the temp directory.
+
 ## Directory listings
 
 - **Sorting** — `sort: time · name · size` selector at the top; newest

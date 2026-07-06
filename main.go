@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing/fstest"
 	"time"
 	"unicode/utf8"
@@ -152,7 +153,7 @@ func (s fileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	name := requestName(r.URL.Path)
 
 	if name == assetPrefix || strings.HasPrefix(name, assetPrefix+"/") {
-		serveAsset(w, r, name)
+		s.serveInternal(w, r, name)
 		return
 	}
 
@@ -468,6 +469,100 @@ func wantsDocument(h http.Header) bool {
 func serveAsset(w http.ResponseWriter, r *http.Request, name string) {
 	w.Header().Set("Cache-Control", "max-age=86400")
 	http.ServeFileFS(w, r, embeddedAssets, path.Join("assets", strings.TrimPrefix(name, assetPrefix+"/")))
+}
+
+// serveInternal handles the reserved /_localmd/ namespace: embedded assets,
+// the drag-and-drop upload endpoint, and browsing of dropped files.
+func (s fileServer) serveInternal(w http.ResponseWriter, r *http.Request, name string) {
+	if name == assetPrefix+"/drop" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleDrop(w, r)
+		return
+	}
+
+	if name == assetPrefix+"/drops" || strings.HasPrefix(name, assetPrefix+"/drops/") {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		dir, err := dropsDir()
+		if err != nil {
+			http.Error(w, "drops unavailable", http.StatusInternalServerError)
+			return
+		}
+		preventCaching(w.Header(), r.Header)
+		sub := fileServer{fsys: os.DirFS(dir), pandoc: s.pandoc, base: "/" + assetPrefix + "/drops"}
+		inner := strings.TrimPrefix(strings.TrimPrefix(name, assetPrefix+"/drops"), "/")
+		if inner == "" {
+			inner = "."
+		}
+		sub.route(w, r, inner, 0)
+		return
+	}
+
+	serveAsset(w, r, name)
+}
+
+var (
+	dropsOnce sync.Once
+	dropsPath string
+	dropsErr  error
+	dropSeq   atomic.Int64
+)
+
+// dropsDir is the per-process directory holding drag-and-dropped files.
+func dropsDir() (string, error) {
+	dropsOnce.Do(func() {
+		dropsPath, dropsErr = os.MkdirTemp("", "localmd-drops-")
+	})
+	return dropsPath, dropsErr
+}
+
+// maxDropBytes caps a single drag-and-dropped upload.
+const maxDropBytes = 1 << 30
+
+// handleDrop stores an uploaded file under a fresh sequence directory (so
+// original basenames are kept without collisions) and replies with the URL
+// where the copy is served through the ordinary pipeline.
+func (s fileServer) handleDrop(w http.ResponseWriter, r *http.Request) {
+	dir, err := dropsDir()
+	if err != nil {
+		http.Error(w, "drops unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	base := path.Base(r.URL.Query().Get("name"))
+	if base == "." || base == "/" || base == ".." {
+		base = "dropped"
+	}
+
+	seq := fmt.Sprintf("%06d", dropSeq.Add(1))
+	if err := os.MkdirAll(filepath.Join(dir, seq), 0o755); err != nil {
+		http.Error(w, "cannot store drop", http.StatusInternalServerError)
+		return
+	}
+
+	f, err := os.Create(filepath.Join(dir, seq, base))
+	if err != nil {
+		http.Error(w, "cannot store drop", http.StatusInternalServerError)
+		return
+	}
+	_, err = io.Copy(f, http.MaxBytesReader(w, r.Body, maxDropBytes))
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		http.Error(w, "upload failed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprint(w, (&url.URL{Path: "/" + assetPrefix + "/drops/" + seq + "/" + base}).String())
 }
 
 func preventCaching(response, request http.Header) {
@@ -949,7 +1044,7 @@ var sourceTemplate = template.Must(template.New("source").Parse(`<!DOCTYPE html>
     line-height: 1.45;
   }
 </style>
-</head>
+` + dropJS + `</head>
 <body>
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
 <div class="source">
@@ -1660,7 +1755,7 @@ var tableTemplate = template.Must(template.New("table").Parse(dataTableDefine + 
   nav span.file { font-weight: 600; }
   nav a.raw { float: right; font-weight: 400; font-size: 0.85rem; }
 ` + dataTableCSS + `</style>
-</head>
+` + dropJS + `</head>
 <body>
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
 <p class="summary">{{.Summary}}</p>
@@ -1998,6 +2093,23 @@ type dirEntryView struct {
 	ModTime string
 }
 
+// dropJS lets any rendered page accept a drag-and-dropped file: the file is
+// uploaded to the drop endpoint and the browser navigates to the stored
+// copy, which renders through the ordinary pipeline like any other file.
+const dropJS = `<script>
+addEventListener("dragover", function (e) { e.preventDefault(); });
+addEventListener("drop", function (e) {
+  e.preventDefault();
+  var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (!f) return;
+  fetch("/` + assetPrefix + `/drop?name=" + encodeURIComponent(f.name), { method: "POST", body: f })
+    .then(function (r) { if (!r.ok) throw new Error(r.status + " " + r.statusText); return r.text(); })
+    .then(function (href) { location.href = href; })
+    .catch(function (err) { alert("drop failed: " + err); });
+});
+</script>
+`
+
 // dataTableDefine is the shared "datatable" sub-template rendering one
 // sheetView as a coordinate-framed table; parsed into both the directory
 // template (for query results) and the table template.
@@ -2171,7 +2283,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
     white-space: pre-wrap;
   }
 ` + dataTableCSS + `</style>
-</head>
+` + dropJS + `</head>
 <body>
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if .RawHref}}<a class="raw" href="{{.RawHref}}">raw</a>{{end}}</nav>
 {{if .Blurb}}<p class="blurb">{{.Blurb}}</p>
@@ -2237,4 +2349,4 @@ const pandocHeader = `<link rel="icon" href="data:,">
     }
   }
 </style>
-`
+` + dropJS
