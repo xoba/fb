@@ -200,7 +200,7 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 		return
 	}
 
-	ext := strings.ToLower(path.Ext(name))
+	ext := strings.ToLower(path.Ext(viewName(name)))
 	browserView := r.URL.Query().Get("raw") != "1" && wantsDocument(r.Header)
 
 	// Markdown renders for every client (the server's original purpose);
@@ -277,8 +277,21 @@ func (s fileServer) routeIntoArchive(w http.ResponseWriter, r *http.Request, nam
 	http.NotFound(w, r)
 }
 
+// viewName strips a trailing editor-backup marker, so files like README.md~
+// get the same viewer as their base file. Used for type detection only; the
+// actual file is read under its real name.
+func viewName(name string) string {
+	return strings.TrimSuffix(name, "~")
+}
+
+// isXLSX reports whether name should be treated as a workbook (as opposed
+// to a sqlite database, the other tabular container kind).
+func isXLSX(name string) bool {
+	return strings.EqualFold(path.Ext(viewName(name)), ".xlsx")
+}
+
 func isTabularContainer(name string) bool {
-	switch strings.ToLower(path.Ext(name)) {
+	switch strings.ToLower(path.Ext(viewName(name))) {
 	case ".xlsx", ".sqlite", ".sqlite3", ".db":
 		return true
 	}
@@ -289,7 +302,7 @@ func isTabularContainer(name string) bool {
 // viewer's size limits. On-disk sqlite databases have none (they are opened
 // in place); archive-backed ones are bounded by the temp-copy cap.
 func (s fileServer) containerViewable(name string, info fs.FileInfo) bool {
-	if strings.EqualFold(path.Ext(name), ".xlsx") {
+	if isXLSX(name) {
 		return info.Size() <= maxXLSXBytes
 	}
 	return s.dir != "" || info.Size() <= maxSQLiteBytes
@@ -305,11 +318,11 @@ const (
 )
 
 func isArchiveName(name string) bool {
-	return strings.EqualFold(path.Ext(name), ".zip") || isTarName(name)
+	return strings.EqualFold(path.Ext(viewName(name)), ".zip") || isTarName(name)
 }
 
 func isTarName(name string) bool {
-	l := strings.ToLower(name)
+	l := strings.ToLower(viewName(name))
 	return strings.HasSuffix(l, ".tar") || strings.HasSuffix(l, ".tar.gz") ||
 		strings.HasSuffix(l, ".tgz") || strings.HasSuffix(l, ".tar.bz2")
 }
@@ -334,7 +347,7 @@ func (s fileServer) descendArchive(w http.ResponseWriter, r *http.Request, arcNa
 
 	var arc fs.FS
 	if isTarName(arcName) {
-		arc, err = tarFS(arcName, f, info)
+		arc, err = tarFS(viewName(arcName), f, info)
 	} else {
 		arc, err = zipFS(f, info)
 	}
@@ -946,7 +959,7 @@ func (s fileServer) serveImage(w http.ResponseWriter, r *http.Request, name stri
 	if !info.ModTime().IsZero() {
 		add("modified", info.ModTime().Format("2006-01-02 15:04:05"))
 	}
-	mimeType := mime.TypeByExtension(strings.ToLower(path.Ext(name)))
+	mimeType := mime.TypeByExtension(strings.ToLower(path.Ext(viewName(name))))
 	if cfg, format, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
 		mimeType = "image/" + format // from actual content, not the extension
 		add("dimensions", fmt.Sprintf("%d × %d (%.1f MP)", cfg.Width, cfg.Height,
@@ -1267,7 +1280,7 @@ var highlightNames = map[string]bool{
 }
 
 func highlightable(name string) bool {
-	base := path.Base(name)
+	base := path.Base(viewName(name))
 	return highlightNames[base] || highlightExts[strings.ToLower(path.Ext(base))]
 }
 
@@ -1287,7 +1300,7 @@ func (s fileServer) serveSource(w http.ResponseWriter, r *http.Request, name str
 		return
 	}
 
-	s.renderSourcePage(w, r, name, info, path.Base(name), string(src))
+	s.renderSourcePage(w, r, name, info, path.Base(viewName(name)), string(src))
 }
 
 // servePlist shows a property list as syntax-highlighted XML, converting
@@ -1474,7 +1487,7 @@ func (s fileServer) serveTable(w http.ResponseWriter, r *http.Request, name stri
 	}
 
 	reader := csv.NewReader(bytes.NewReader(src))
-	reader.Comma = tableDelims[strings.ToLower(path.Ext(name))]
+	reader.Comma = tableDelims[strings.ToLower(path.Ext(viewName(name)))]
 	reader.FieldsPerRecord = -1 // tolerate ragged rows
 	reader.LazyQuotes = true
 
@@ -1607,7 +1620,7 @@ func (s fileServer) serveContainerListing(w http.ResponseWriter, r *http.Request
 
 	var members []containerMember
 	var err error
-	if strings.EqualFold(path.Ext(name), ".xlsx") {
+	if isXLSX(name) {
 		members, err = s.xlsxMembers(name, info)
 	} else {
 		db, cleanup, dbErr := s.openSQLite(name, info)
@@ -1720,7 +1733,7 @@ func (s fileServer) serveMemberTable(w http.ResponseWriter, r *http.Request, nam
 		schema string
 		err    error
 	)
-	if strings.EqualFold(path.Ext(name), ".xlsx") {
+	if isXLSX(name) {
 		header, body, total, err = s.xlsxMemberRows(name, info, member)
 	} else {
 		header, body, total, schema, err = s.sqliteMemberData(name, info, member, maxTableRows)
@@ -1923,7 +1936,7 @@ func highlightSchema(schema string) template.HTML {
 }
 
 func (s fileServer) serveMemberCSV(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo, member string) {
-	if strings.EqualFold(path.Ext(name), ".xlsx") {
+	if isXLSX(name) {
 		wb, err := s.openXLSX(name, info)
 		if err != nil {
 			log.Printf("open xlsx %s: %v", name, err)

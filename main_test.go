@@ -1259,6 +1259,49 @@ func TestPrettySQL(t *testing.T) {
 	}
 }
 
+func TestBackupFilesUseBaseViewer(t *testing.T) {
+	root := t.TempDir()
+	for name, content := range map[string]string{
+		"note.md~":  "# Hello\n",
+		"prog.go~":  "package main\n",
+		"data.csv~": "city,population\nnew orleans,364136\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: fakePandoc(t)}
+
+	nav := func(target string) string {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d; body: %.200s", target, rec.Code, rec.Body.String())
+		}
+		return rec.Body.String()
+	}
+
+	if body := nav("/note.md~"); !strings.Contains(body, "<p>rendered markdown</p>") {
+		t.Fatalf("note.md~ = %q, want markdown rendering", body)
+	}
+	if body := nav("/prog.go~"); !strings.Contains(body, `color:#cf222e">package<`) {
+		t.Fatalf("prog.go~ = %q, want go-highlighted keyword", body)
+	}
+	if body := nav("/data.csv~"); !strings.Contains(body, "<td>new orleans</td><td>364136</td>") {
+		t.Fatalf("data.csv~ = %q, want table rendering", body)
+	}
+
+	plain := httptest.NewRequest(http.MethodGet, "/prog.go~", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, plain)
+	if got := rec.Body.String(); got != "package main\n" {
+		t.Fatalf("non-browser fetch = %q, want verbatim backup file", got)
+	}
+}
+
 func TestPlistViewer(t *testing.T) {
 	if _, err := exec.LookPath("plutil"); err != nil {
 		t.Skip("plutil not available")
