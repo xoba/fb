@@ -60,6 +60,10 @@ linkable line numbers (`#L42`):
 Plus exact filenames without useful extensions: `Makefile`, `makefile`,
 `GNUmakefile`, `Dockerfile`, `CMakeLists.txt`, `.bashrc`, `.zshrc`.
 
+`.plist` property lists also render as highlighted XML — binary ones are
+converted first with macOS's built-in `plutil` (elsewhere, binary plists
+fall back to download).
+
 Deliberately *not* highlighted: `.html` and `.svg` (the browser renders
 those better), `.txt` (prose reads better plain), `.md` (pandoc's job), and
 `go.mod` (chroma mis-identifies it). Files over 2 MB are served plain.
@@ -127,6 +131,7 @@ bypassed).
 | Rendered as a document (pandoc) | `.md` `.ipynb` `.doc` `.docx` `.odt` `.rtf` `.epub` |
 | Syntax-highlighted source | `.awk` `.bash` `.bat` `.c` `.cc` `.clj` `.cpp` `.cs` `.css` `.dart` `.diff` `.el` `.erl` `.ex` `.exs` `.fish` `.go` `.gradle` `.graphql` `.groovy` `.h` `.hcl` `.hpp` `.hs` `.ini` `.java` `.jl` `.js` `.json` `.jsx` `.kt` `.lisp` `.lua` `.mjs` `.nix` `.patch` `.php` `.pl` `.proto` `.ps1` `.py` `.r` `.rb` `.rs` `.scala` `.scss` `.sh` `.sql` `.svelte` `.swift` `.tex` `.tf` `.toml` `.ts` `.tsx` `.vue` `.xml` `.yaml` `.yml` `.zig` `.zsh` |
 | Syntax-highlighted by exact filename | `Makefile` `makefile` `GNUmakefile` `Dockerfile` `CMakeLists.txt` `.bashrc` `.zshrc` |
+| Highlighted as XML (binary converted via plutil) | `.plist` |
 | Displayed as tables | `.csv` `.tsv` (and every sheet/table inside the containers below) |
 | Browsed like directories | `.zip` `.tar` `.tar.gz` `.tgz` `.tar.bz2` `.xlsx` `.sqlite` `.sqlite3` `.db` |
 | Image pages with EXIF readout | `.jpg` `.jpeg` `.png` `.gif` `.webp` `.bmp` `.tif` `.tiff` |

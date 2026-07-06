@@ -235,6 +235,9 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 		case imageExts[ext]:
 			s.serveImage(w, r, name, info)
 			return
+		case ext == ".plist":
+			s.servePlist(w, r, name, info)
+			return
 		case highlightable(name):
 			s.serveSource(w, r, name, info)
 			return
@@ -1284,7 +1287,64 @@ func (s fileServer) serveSource(w http.ResponseWriter, r *http.Request, name str
 		return
 	}
 
-	code, err := highlightSource(path.Base(name), string(src))
+	s.renderSourcePage(w, r, name, info, path.Base(name), string(src))
+}
+
+// servePlist shows a property list as syntax-highlighted XML, converting
+// binary plists with macOS's plutil first.
+func (s fileServer) servePlist(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
+	if info.Size() > maxHighlightBytes {
+		s.serveRaw(w, r, name, info)
+		return
+	}
+
+	data, err := fs.ReadFile(s.fsys, name)
+	if err != nil {
+		http.Error(w, "cannot read file", http.StatusInternalServerError)
+		return
+	}
+
+	if converted, err := plistToXML(r.Context(), data); err == nil {
+		data = converted
+	} else if bytes.HasPrefix(data, []byte("bplist")) {
+		// Binary and unconvertible (plutil missing or file corrupt):
+		// nothing sensible to show.
+		log.Printf("convert plist %s: %v", name, err)
+		s.serveRaw(w, r, name, info)
+		return
+	}
+
+	s.renderSourcePage(w, r, name, info, "plist.xml", string(data))
+}
+
+func plistToXML(ctx context.Context, data []byte) ([]byte, error) {
+	plutil, err := exec.LookPath("plutil")
+	if err != nil {
+		return nil, err
+	}
+
+	cmd := exec.CommandContext(ctx, plutil, "-convert", "xml1", "-o", "-", "-")
+	cmd.Stdin = bytes.NewReader(data)
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("plutil: %s: %w", msg, err)
+	}
+	return out, nil
+}
+
+// renderSourcePage shows src as a highlighted source view, lexed by
+// lexName's extension (which may differ from name when the content was
+// converted, as with binary plists).
+func (s fileServer) renderSourcePage(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo, lexName, src string) {
+	code, err := highlightSource(lexName, src)
 	if err != nil {
 		log.Printf("highlight failed for %s: %v", name, err)
 		s.serveRaw(w, r, name, info)

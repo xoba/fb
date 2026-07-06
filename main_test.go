@@ -1259,6 +1259,56 @@ func TestPrettySQL(t *testing.T) {
 	}
 }
 
+func TestPlistViewer(t *testing.T) {
+	if _, err := exec.LookPath("plutil"); err != nil {
+		t.Skip("plutil not available")
+	}
+
+	root := t.TempDir()
+	xmlPath := filepath.Join(root, "prefs.plist")
+	xml := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>magicSetting</key><true/></dict></plist>`
+	if err := os.WriteFile(xmlPath, []byte(xml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Make a genuine binary plist out of it.
+	binPath := filepath.Join(root, "binary.plist")
+	if out, err := exec.Command("plutil", "-convert", "binary1", "-o", binPath, xmlPath).CombinedOutput(); err != nil {
+		t.Skipf("cannot create binary plist: %v: %s", err, out)
+	}
+	raw, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(raw, []byte("bplist")) {
+		t.Fatalf("fixture is not a binary plist")
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	for _, target := range []string{"/binary.plist", "/prefs.plist"} {
+		nav := httptest.NewRequest(http.MethodGet, target, nil)
+		nav.Header.Set("Sec-Fetch-Dest", "document")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, nav)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d; body: %.200s", target, rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, "magicSetting") || !strings.Contains(body, `id="L1"`) {
+			t.Fatalf("%s body = %q, want highlighted XML with the plist key", target, body)
+		}
+	}
+
+	plain := httptest.NewRequest(http.MethodGet, "/binary.plist", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, plain)
+	if !bytes.Equal(rec.Body.Bytes(), raw) {
+		t.Fatalf("non-browser fetch = %d bytes, want verbatim %d-byte binary plist", rec.Body.Len(), len(raw))
+	}
+}
+
 func TestImageViewerPage(t *testing.T) {
 	root := t.TempDir()
 	var pngBuf bytes.Buffer
