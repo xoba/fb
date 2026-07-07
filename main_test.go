@@ -1670,6 +1670,35 @@ func TestGitDirectoryShowsStats(t *testing.T) {
 	}
 }
 
+func TestPagesLinkHealthzAndVersion(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "code.go"), []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "data.csv"), []byte("a,b\n1,2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "notes.md"), []byte("# hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := fileServer{fsys: os.DirFS(root), pandoc: fakePandoc(t), dir: root}
+
+	for _, url := range []string{"/", "/code.go", "/data.csv", "/notes.md"} {
+		req := httptest.NewRequest(http.MethodGet, url, nil)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: status = %d, want %d", url, rec.Code, http.StatusOK)
+			continue
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, "/_localmd/healthz") || !strings.Contains(body, "/_localmd/version") {
+			t.Errorf("%s lacks the healthz/version footer", url)
+		}
+	}
+}
+
 func TestHealthzEndpoint(t *testing.T) {
 	server := fileServer{fsys: os.DirFS(t.TempDir()), pandoc: "unused"}
 
@@ -1783,6 +1812,7 @@ func fakePandoc(t *testing.T) string {
 set -eu
 
 header=""
+footer=""
 format=""
 standalone=0
 toc=0
@@ -1791,6 +1821,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     -f) shift; format="$1" ;;
     --include-in-header) shift; header="$1" ;;
+    --include-after-body) shift; footer="$1" ;;
     -s) standalone=1 ;;
     --toc) toc=1 ;;
     -V)
@@ -1837,6 +1868,11 @@ if [ -z "$pagetitle" ]; then
   exit 5
 fi
 
+if [ -z "$footer" ]; then
+  echo "missing --include-after-body" >&2
+  exit 6
+fi
+
 if ! grep -q "color-scheme: light" "$header"; then
   echo "missing readability CSS" >&2
   exit 3
@@ -1848,7 +1884,9 @@ printf '</head><body>'
 if [ "$toc" -eq 1 ]; then
   printf '<nav id="TOC"></nav>'
 fi
-printf '<p>rendered markdown</p><!--fmt:%s--></body></html>' "$format"
+printf '<p>rendered markdown</p><!--fmt:%s-->' "$format"
+cat "$footer"
+printf '</body></html>'
 `
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)

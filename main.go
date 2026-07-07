@@ -819,6 +819,9 @@ func (s fileServer) renderDocument(ctx context.Context, name string, opts render
 				"-V", "monobackgroundcolor=#f6f8fa",
 				"-V", "maxwidth=42em",
 			)
+			if p, err := pandocFooterFile(); err == nil {
+				args = append(args, "--include-after-body", p)
+			}
 		}
 		return args
 	}
@@ -878,6 +881,32 @@ func runPandoc(ctx context.Context, pandoc string, args []string, input []byte) 
 		return nil, fmt.Errorf("%s: %w", msg, err)
 	}
 	return out, nil
+}
+
+var (
+	footerOnce sync.Once
+	footerPath string
+	footerErr  error
+)
+
+// pandocFooterFile writes the shared page footer to a temp file, once per
+// process, for pandoc --include-after-body (which only accepts files).
+func pandocFooterFile() (string, error) {
+	footerOnce.Do(func() {
+		f, err := os.CreateTemp("", "localmd-pandoc-footer-*.html")
+		if err != nil {
+			footerErr = err
+			return
+		}
+		if _, err := f.WriteString(pageFooter); err != nil {
+			f.Close()
+			footerErr = err
+			return
+		}
+		footerErr = f.Close()
+		footerPath = f.Name()
+	})
+	return footerPath, footerErr
 }
 
 var (
@@ -1059,7 +1088,7 @@ document.querySelector("video").addEventListener("loadedmetadata", function () {
   if (v.videoWidth) row("dimensions", v.videoWidth + " × " + v.videoHeight);
 });
 </script>
-</body>
+` + pageFooter + `</body>
 </html>
 `))
 
@@ -1477,7 +1506,7 @@ var imageTemplate = template.Must(template.New("image").Parse(`<!DOCTYPE html>
 {{end}}<div class="dot" style="left:{{.Map.DotX}}px;top:{{.Map.DotY}}px"></div>
 </div>
 <p class="summary"><a href="{{.MapHref}}">OpenStreetMap</a> &middot; <a href="{{.AppleMaps}}">Apple Maps</a> &middot; map data &copy; OpenStreetMap contributors</p>
-{{end}}</body>
+{{end}}` + pageFooter + `</body>
 </html>
 `))
 
@@ -1783,7 +1812,7 @@ var sourceTemplate = template.Must(template.New("source").Parse(`<!DOCTYPE html>
 <div class="source">
 {{.Code}}
 </div>
-</body>
+` + pageFooter + `</body>
 </html>
 `))
 
@@ -2623,7 +2652,7 @@ var tableTemplate = template.Must(template.New("table").Parse(dataTableDefine + 
 <p class="summary">{{.Summary}}</p>
 {{range .Sheets}}{{template "datatable" .}}{{end}}{{if .Schema}}<h2 class="sheet">schema</h2>
 <div class="schema">{{.Schema}}</div>
-{{end}}</body>
+{{end}}` + pageFooter + `</body>
 </html>
 `))
 
@@ -3099,6 +3128,12 @@ type dirEntryView struct {
 // uploaded to the drop endpoint (with a floating progress monitor, since
 // large files take a while) and the browser navigates to the stored copy,
 // which renders through the ordinary pipeline like any other file.
+// pageFooter links the health and version probes from the bottom of every
+// rendered page. Inline styles keep it self-contained, so templates and
+// pandoc output can append it without touching their own CSS.
+const pageFooter = `<footer style="margin-top:3rem;padding-top:0.5rem;border-top:1px solid #eaeef0;font-size:0.75rem;color:#8c959f"><a style="color:#8c959f" href="/` + assetPrefix + `/healthz">healthz</a> &middot; <a style="color:#8c959f" href="/` + assetPrefix + `/version">version</a></footer>
+`
+
 var dropJS = `<script>
 (function () {
   var maxDrop = ` + strconv.Itoa(maxDropBytes) + `;
@@ -3396,7 +3431,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
 {{range .Commits}}<tr><td class="hash">{{.Hash}}</td><td class="cmeta">{{.Date}}</td><td class="cmeta">{{.Author}}</td><td>{{.Subject}}</td></tr>
 {{end}}</table>{{end}}
 </section>{{end}}
-{{if .StatsAsync}}` + statsJS + `{{end}}</body>
+{{if .StatsAsync}}` + statsJS + `{{end}}` + pageFooter + `</body>
 </html>
 `))
 
