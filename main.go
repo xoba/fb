@@ -2702,6 +2702,10 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 		}
 	}
 
+	if s.dir != "" && isGitDirListing(entries) {
+		page.Git = gitSection(r.Context(), filepath.Join(s.dir, filepath.FromSlash(name)))
+	}
+
 	var buf bytes.Buffer
 	if err := directoryTemplate.Execute(&buf, page); err != nil {
 		log.Printf("render directory %s: %v", name, err)
@@ -2711,6 +2715,140 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(buf.Bytes()))
+}
+
+// isGitDirListing reports whether a directory listing looks like a git
+// repository directory — a .git directory or a bare repository — by the
+// presence of a HEAD file plus objects and refs directories.
+func isGitDirListing(entries []fs.DirEntry) bool {
+	var head, objects, refs bool
+	for _, e := range entries {
+		switch e.Name() {
+		case "HEAD":
+			head = !e.IsDir()
+		case "objects":
+			objects = e.IsDir()
+		case "refs":
+			refs = e.IsDir()
+		}
+	}
+	return head && objects && refs
+}
+
+type gitCommitView struct {
+	Hash    string
+	Date    string
+	Author  string
+	Subject string
+}
+
+type gitView struct {
+	Head    string   // "branch main", "detached HEAD at abc1234", ...
+	Facts   []string // "12 commits", "3 branches", "2 tags", "4.5 MB of objects"
+	Remotes []string // "origin: ssh://..."
+	Commits []gitCommitView
+}
+
+// gitOutput runs one git command against a repository directory and returns
+// its trimmed stdout.
+func gitOutput(ctx context.Context, gitDir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"--git-dir", gitDir}, args...)...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out.String()), nil
+}
+
+func countNoun(n int64, singular, plural string) string {
+	if n == 1 {
+		return "1 " + singular
+	}
+	return fmt.Sprintf("%d %s", n, plural)
+}
+
+// gitSection summarizes a git repository directory for the bottom of its
+// listing page: where HEAD points, repository-level counts, remotes, and
+// the most recent commits. Each probe degrades independently, so a bare,
+// empty, or odd repository still shows whatever applies.
+func gitSection(ctx context.Context, gitDir string) *gitView {
+	if _, err := exec.LookPath("git"); err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	view := &gitView{}
+
+	head, err := gitOutput(ctx, gitDir, "rev-parse", "--abbrev-ref", "HEAD")
+	switch {
+	case err != nil:
+		view.Head = "unborn HEAD"
+	case head == "HEAD":
+		view.Head = "detached HEAD"
+		if short, err := gitOutput(ctx, gitDir, "rev-parse", "--short", "HEAD"); err == nil {
+			view.Head += " at " + short
+		}
+	default:
+		view.Head = "branch " + head
+	}
+
+	if out, err := gitOutput(ctx, gitDir, "rev-list", "--count", "HEAD"); err == nil {
+		if n, err := strconv.ParseInt(out, 10, 64); err == nil {
+			view.Facts = append(view.Facts, countNoun(n, "commit", "commits"))
+		}
+	} else {
+		view.Facts = append(view.Facts, "no commits yet")
+	}
+	countRefs := func(space, singular, plural string) {
+		out, err := gitOutput(ctx, gitDir, "for-each-ref", "--format=%(refname)", space)
+		if err != nil {
+			return
+		}
+		var n int64
+		if out != "" {
+			n = int64(strings.Count(out, "\n") + 1)
+		}
+		view.Facts = append(view.Facts, countNoun(n, singular, plural))
+	}
+	countRefs("refs/heads", "branch", "branches")
+	countRefs("refs/tags", "tag", "tags")
+	if out, err := gitOutput(ctx, gitDir, "count-objects", "-v"); err == nil {
+		var kib int64
+		for _, line := range strings.Split(out, "\n") {
+			key, val, ok := strings.Cut(line, ": ")
+			if ok && (key == "size" || key == "size-pack") {
+				if n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil {
+					kib += n
+				}
+			}
+		}
+		view.Facts = append(view.Facts, humanSize(kib*1024)+" of objects")
+	}
+
+	if out, err := gitOutput(ctx, gitDir, "config", "--get-regexp", `^remote\..*\.url$`); err == nil {
+		for _, line := range strings.Split(out, "\n") {
+			key, u, ok := strings.Cut(line, " ")
+			if !ok {
+				continue
+			}
+			name := strings.TrimSuffix(strings.TrimPrefix(key, "remote."), ".url")
+			view.Remotes = append(view.Remotes, name+": "+u)
+		}
+	}
+
+	const logFormat = "%h%x09%ad%x09%an%x09%s"
+	if out, err := gitOutput(ctx, gitDir, "log", "-n", "8", "--format="+logFormat, "--date=format:%Y-%m-%d %H:%M"); err == nil {
+		for _, line := range strings.Split(out, "\n") {
+			parts := strings.SplitN(line, "\t", 4)
+			if len(parts) == 4 {
+				view.Commits = append(view.Commits, gitCommitView{Hash: parts[0], Date: parts[1], Author: parts[2], Subject: parts[3]})
+			}
+		}
+	}
+
+	return view
 }
 
 // Sort keys accepted in the ?sort= query parameter.
@@ -2940,6 +3078,7 @@ type directoryPage struct {
 	ReadmeName string
 	Readme     template.HTML
 	ReadmeText string
+	Git        *gitView
 }
 
 type crumb struct {
@@ -3209,6 +3348,21 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
     font-size: 0.85rem;
     white-space: pre-wrap;
   }
+  section.git { margin-top: 2rem; border-top: 1px solid #d0d7de; }
+  section.git h1.git-title { font-size: 1rem; color: #57606a; font-weight: 600; }
+  section.git p { margin: 0.3rem 0; font-size: 0.85rem; color: #57606a; }
+  table.commits { border-collapse: collapse; font-size: 0.85rem; margin-top: 0.75rem; }
+  table.commits td { padding: 0.25rem 1rem 0.25rem 0; vertical-align: baseline; }
+  table.commits td.hash {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: #57606a;
+    white-space: nowrap;
+  }
+  table.commits td.cmeta {
+    color: #57606a;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
 ` + dataTableCSS + `</style>
 ` + dropJS + `</head>
 <body>
@@ -3233,6 +3387,14 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
 {{if .ReadmeName}}<section class="readme">
 <h1 class="readme-title">{{.ReadmeName}}</h1>
 {{if .Readme}}{{.Readme}}{{else}}<pre class="readme-text">{{.ReadmeText}}</pre>{{end}}
+</section>{{end}}
+{{with .Git}}<section class="git">
+<h1 class="git-title">git repository</h1>
+<p>{{.Head}}{{range .Facts}} &middot; {{.}}{{end}}</p>
+{{range .Remotes}}<p>{{.}}</p>
+{{end}}{{if .Commits}}<table class="commits">
+{{range .Commits}}<tr><td class="hash">{{.Hash}}</td><td class="cmeta">{{.Date}}</td><td class="cmeta">{{.Author}}</td><td>{{.Subject}}</td></tr>
+{{end}}</table>{{end}}
 </section>{{end}}
 {{if .StatsAsync}}` + statsJS + `{{end}}</body>
 </html>

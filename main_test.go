@@ -1603,6 +1603,73 @@ func TestServesFavicon(t *testing.T) {
 	}
 }
 
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=tester", "GIT_AUTHOR_EMAIL=tester@example.com",
+		"GIT_COMMITTER_NAME=tester", "GIT_COMMITTER_EMAIL=tester@example.com")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+func TestGitDirectoryShowsStats(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := t.TempDir()
+	runGit(t, root, "init", "-b", "main")
+	runGit(t, root, "remote", "add", "origin", "ssh://example.com/repo.git")
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "add", "a.txt")
+	runGit(t, root, "commit", "-m", "first commit subject")
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("two"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "commit", "-am", "second commit subject")
+	runGit(t, root, "tag", "v1")
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+
+	req := httptest.NewRequest(http.MethodGet, "/.git/", nil)
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"git repository",
+		"branch main",
+		"2 commits",
+		"1 branch",
+		"1 tag",
+		"of objects",
+		"origin: ssh://example.com/repo.git",
+		"first commit subject",
+		"second commit subject",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("git dir listing lacks %q", want)
+		}
+	}
+
+	// The worktree itself is not a git directory; its listing stays plain.
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "text/html")
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if strings.Contains(rec.Body.String(), "git repository") {
+		t.Error("plain directory listing unexpectedly has a git section")
+	}
+}
+
 func TestHealthzEndpoint(t *testing.T) {
 	server := fileServer{fsys: os.DirFS(t.TempDir()), pandoc: "unused"}
 

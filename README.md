@@ -218,6 +218,13 @@ notice before any upload starts. Past drops remain browsable at
   (via pandoc); `README.txt` is shown preformatted as a fallback.
 - **Dot-files** — entries starting with `.` collapse into a "N dot-files"
   disclosure section at the bottom; one click expands them.
+- **Git repositories** — a listing that is itself a git repository
+  directory (a `.git` directory, or a bare repository: anything with a
+  `HEAD` file plus `objects` and `refs` directories) gets a section at the
+  bottom showing where HEAD points, commit/branch/tag counts, object
+  store size, remotes, and the eight most recent commits. Gathered by
+  shelling out to `git`, so it applies only to on-disk directories, not
+  archive members.
 - **Layout** — directory rows have separate name and blurb cells while file
   rows span both, so files reserve no empty blurb space and long filenames
   never widen the directory column. Long names truncate with an ellipsis
