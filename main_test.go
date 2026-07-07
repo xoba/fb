@@ -1603,6 +1603,40 @@ func TestServesFavicon(t *testing.T) {
 	}
 }
 
+func TestHealthzEndpoint(t *testing.T) {
+	server := fileServer{fsys: os.DirFS(t.TempDir()), pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/_localmd/healthz", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != "ok" {
+		t.Fatalf("body = %q, want %q", got, "ok")
+	}
+}
+
+func TestVersionEndpoint(t *testing.T) {
+	server := fileServer{fsys: os.DirFS(t.TempDir()), pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/_localmd/version", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	// Test binaries carry no VCS stamp, so the revision reads "unknown"
+	// here; the fields themselves must always be present.
+	for _, want := range []string{"revision: ", "vcs.time: ", "modified: ", "go: go"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("version output %q lacks %q", rec.Body.String(), want)
+		}
+	}
+}
+
 func TestDirectoryWithoutTrailingSlashRedirects(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {

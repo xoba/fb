@@ -73,6 +73,29 @@ EOF
 
 loaded() { launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; }
 
+version() { curl -fsS --max-time 3 http://localhost:3030/_localmd/version 2>/dev/null; }
+
+# verify_deploy polls the version endpoint until the served git revision
+# matches HEAD (the revision go build stamps into the binary), so a
+# redeploy either confirms the new build is live or fails loudly.
+verify_deploy() {
+    local want got v
+    want=$(git rev-parse HEAD)
+    for _ in $(seq 1 20); do
+        v=$(version || true)
+        got=$(awk '$1 == "revision:" {print $2}' <<<"$v")
+        if [[ "$got" == "$want" ]]; then
+            local dirty=""
+            grep -q '^modified: true' <<<"$v" && dirty=" (built from a dirty tree)"
+            echo "serving revision ${got:0:12}$dirty"
+            return 0
+        fi
+        sleep 0.5
+    done
+    echo "WARNING: serving revision ${got:-unknown}, expected $want" >&2
+    return 1
+}
+
 start() {
     if loaded; then
         launchctl kickstart "$DOMAIN/$LABEL"
@@ -97,8 +120,9 @@ status() {
     else
         echo "$LABEL is not loaded"
     fi
-    if curl -fsS -o /dev/null --max-time 3 http://localhost:3030/; then
+    if curl -fsS -o /dev/null --max-time 3 http://localhost:3030/_localmd/healthz; then
         echo "http://localhost:3030/ is responding"
+        version | sed 's/^/  /'
     else
         echo "http://localhost:3030/ is NOT responding"
     fi
@@ -113,6 +137,7 @@ install)
     fi
     launchctl bootstrap "$DOMAIN" "$PLIST"
     echo "installed and started $LABEL (serving $ROOT, logs in $LOG)"
+    verify_deploy
     ;;
 redeploy)
     build
@@ -122,6 +147,7 @@ redeploy)
     else
         start
     fi
+    verify_deploy
     ;;
 start) start ;;
 stop) stop ;;

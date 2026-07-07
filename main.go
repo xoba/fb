@@ -31,6 +31,8 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -551,9 +553,47 @@ func serveAsset(w http.ResponseWriter, r *http.Request, name string) {
 	http.ServeFileFS(w, r, embeddedAssets, path.Join("assets", strings.TrimPrefix(name, assetPrefix+"/")))
 }
 
+// serveVersion reports which build is running: the git revision stamped into
+// the binary by go build (absent under go run and go test), the commit time,
+// and whether the working tree was dirty. service.sh compares the revision
+// against git HEAD to confirm a redeploy took effect.
+func serveVersion(w http.ResponseWriter) {
+	revision, vcsTime, modified := "unknown", "unknown", "unknown"
+	goVersion := runtime.Version()
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		goVersion = bi.GoVersion
+		for _, kv := range bi.Settings {
+			switch kv.Key {
+			case "vcs.revision":
+				revision = kv.Value
+			case "vcs.time":
+				vcsTime = kv.Value
+			case "vcs.modified":
+				modified = kv.Value
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprintf(w, "revision: %s\nvcs.time: %s\nmodified: %s\ngo: %s\n", revision, vcsTime, modified, goVersion)
+}
+
 // serveInternal handles the reserved /_localmd/ namespace: embedded assets,
-// the drag-and-drop upload endpoint, and browsing of dropped files.
+// the drag-and-drop upload endpoint, browsing of dropped files, and the
+// health and version probes.
 func (s fileServer) serveInternal(w http.ResponseWriter, r *http.Request, name string) {
+	if name == assetPrefix+"/healthz" {
+		preventCaching(w.Header(), r.Header)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		fmt.Fprintln(w, "ok")
+		return
+	}
+
+	if name == assetPrefix+"/version" {
+		preventCaching(w.Header(), r.Header)
+		serveVersion(w)
+		return
+	}
+
 	if name == assetPrefix+"/drop" {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", "POST")

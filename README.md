@@ -35,6 +35,13 @@ logs to `~/Library/Logs/localmd.log`. The generated plist
 is found. The serve root defaults to `/`; install with
 `LOCALMD_ROOT=~/notes ./service.sh install` to serve a narrower root.
 
+The server exposes two probes: `/_localmd/healthz` answers `ok`, and
+`/_localmd/version` reports the git revision, commit time, and dirty
+flag that `go build` stamps into the binary (all `unknown` under
+`go run`). `redeploy` and `install` poll the version endpoint until the
+served revision matches git HEAD, so a redeploy either confirms the new
+build is actually the one serving or fails loudly.
+
 ## The one rule: navigations render, everything else is raw
 
 Every fancy view applies only when a **browser navigates** to a file —
