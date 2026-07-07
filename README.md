@@ -14,6 +14,27 @@ archives all displayed in a form meant for reading.
 The server listens only on loopback (`127.0.0.1:3030` and `[::1]:3030`).
 Requires `pandoc` on the PATH; everything else is compiled in.
 
+## Running as a service
+
+`run.sh` runs the server in the foreground; for something that is always
+there when you're logged in, install it as a macOS LaunchAgent instead:
+
+```
+./service.sh install     # build, install the LaunchAgent, and start
+./service.sh redeploy    # after changing code: rebuild and restart
+./service.sh status      # launchd state plus an HTTP probe
+./service.sh logs        # tail ~/Library/Logs/localmd.log
+./service.sh stop        # stop until 'start' or next login
+./service.sh uninstall   # stop and remove the LaunchAgent
+```
+
+The service starts at login, restarts automatically if it crashes, and
+logs to `~/Library/Logs/localmd.log`. The generated plist
+(`~/Library/LaunchAgents/com.xoba.localmd.plist`) runs the compiled
+`localmd` binary with a PATH that includes `/opt/homebrew/bin` so pandoc
+is found. The serve root defaults to `/`; install with
+`LOCALMD_ROOT=~/notes ./service.sh install` to serve a narrower root.
+
 ## The one rule: navigations render, everything else is raw
 
 Every fancy view applies only when a **browser navigates** to a file —
