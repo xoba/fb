@@ -119,6 +119,10 @@ The back link returns to the cell's spot in the table — it carries the
 coordinates in the URL fragment, and the table scrolls the cell into view
 and flashes it — rather than resetting to the top-left corner.
 
+A cell whose text is a single well-formed `http://` or `https://` URL is
+hyperlinked (opening in a new tab, so the table keeps its place); a cut
+URL cell links its visible prefix to the full URL.
+
 | Type | Notes |
 |------|-------|
 | `.csv`, `.tsv` | First row treated as the header. Tolerant parsing (ragged rows, lazy quotes); files over 2 MB or that fail to parse are served plain. Display capped at 2000 rows. |

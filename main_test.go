@@ -1130,6 +1130,48 @@ func TestTruncatedCellsLinkToFullView(t *testing.T) {
 	})
 }
 
+func TestURLCellsHyperlinked(t *testing.T) {
+	longURL := "https://example.com/path?id=" + strings.Repeat("x", maxCellChars)
+
+	root := t.TempDir()
+	content := "name,link\n" +
+		"plain,https://example.com/a?b=1&c=2\n" +
+		"spaced,https://example.com and some words\n" +
+		"scheme,ftp://example.com/file\n" +
+		"long," + longURL + "\n"
+	if err := os.WriteFile(filepath.Join(root, "links.csv"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	nav := func(target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		return rec
+	}
+
+	body := nav("/links.csv").Body.String()
+	if !strings.Contains(body, `<a href="https://example.com/a?b=1&amp;c=2" target="_blank" rel="noopener">https://example.com/a?b=1&amp;c=2</a>`) {
+		t.Fatalf("table body = %q, want the URL cell hyperlinked", body)
+	}
+	if strings.Contains(body, `href="https://example.com and`) || strings.Contains(body, `href="ftp:`) {
+		t.Fatalf("table body = %q, want no links for non-URL cells", body)
+	}
+	// A cut URL cell links its visible prefix to the full URL and keeps
+	// its "… more" link.
+	if !strings.Contains(body, `<a href="`+longURL+`" target="_blank"`) ||
+		!strings.Contains(body, `<a class="more" href="?cell=4,2">`) {
+		t.Fatalf("table body = %q, want the long URL cell linked and cut", body)
+	}
+
+	body = nav("/links.csv?cell=4,2").Body.String()
+	if !strings.Contains(body, `<a href="`+longURL+`" target="_blank" rel="noopener">`+longURL+`</a>`) {
+		t.Fatalf("cell body = %q, want the full URL hyperlinked", body)
+	}
+}
+
 func TestTarBrowsing(t *testing.T) {
 	makeTar := func(t *testing.T, gzipped bool) []byte {
 		t.Helper()

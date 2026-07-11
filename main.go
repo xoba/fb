@@ -40,6 +40,7 @@ import (
 	"sync/atomic"
 	"testing/fstest"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/alecthomas/chroma/v2"
@@ -1990,11 +1991,13 @@ type tableRow struct {
 
 // tableCell is one displayed table cell. Cut marks text cut short at
 // maxCellChars whose full content is plain text; makeSheet turns Cut cells
-// into "… more" links by filling More with the full-text view's href.
+// into "… more" links by filling More with the full-text view's href. Link
+// is the external URL the cell's full text names, when it names one.
 type tableCell struct {
 	Text string
 	Cut  bool
 	More string
+	Link string
 }
 
 // Tabular containers — xlsx workbooks and sqlite databases — browse like
@@ -2780,15 +2783,32 @@ const maxCellChars = 200
 // displayCell shapes one cell for table display, cutting text longer than
 // maxCellChars. Cells cut from plain text are marked Cut so the table can
 // link to the full content; text with binary junk just keeps the ellipsis.
+// Cells whose text is an http(s) URL link out to it (a cut cell's visible
+// prefix still links to the full URL).
 func displayCell(text string) tableCell {
+	link := cellURL(text)
 	runes := []rune(text)
 	if len(runes) <= maxCellChars {
-		return tableCell{Text: text}
+		return tableCell{Text: text, Link: link}
 	}
 	if !isPlainText([]byte(text)) {
 		return tableCell{Text: string(runes[:maxCellChars]) + "…"}
 	}
-	return tableCell{Text: string(runes[:maxCellChars]), Cut: true}
+	return tableCell{Text: string(runes[:maxCellChars]), Cut: true, Link: link}
+}
+
+// cellURL returns the URL a cell's text names — the text, trimmed, when it
+// is a single well-formed absolute http(s) URL — or "" otherwise.
+func cellURL(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if strings.IndexFunc(trimmed, unicode.IsSpace) >= 0 {
+		return ""
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ""
+	}
+	return trimmed
 }
 
 // displayCells applies displayCell across raw string rows.
@@ -2888,6 +2908,7 @@ func (s fileServer) renderCellView(w http.ResponseWriter, r *http.Request, info 
 		// scroll the cell into view instead of resetting to the top left.
 		BackHref: fmt.Sprintf("%s#cell=%d,%d", backHref, row, col),
 		Text:     text,
+		Link:     cellURL(text),
 	}
 
 	var buf bytes.Buffer
@@ -2907,6 +2928,7 @@ type cellPage struct {
 	Detail   string
 	BackHref string
 	Text     string
+	Link     string // external URL the text names, when it names one
 }
 
 var cellTemplate = template.Must(template.New("cell").Parse(`<!DOCTYPE html>
@@ -2947,7 +2969,7 @@ var cellTemplate = template.Must(template.New("cell").Parse(`<!DOCTYPE html>
 <body>
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<a href="{{.BackHref}}">{{.Title}}</a><span class="sep">/</span><span class="file">{{.Where}}</span></nav>
 <p class="summary">{{.Detail}} — <a href="{{.BackHref}}">&larr; back to table</a></p>
-<pre class="cell">{{.Text}}</pre>
+<pre class="cell">{{if .Link}}<a href="{{.Link}}" target="_blank" rel="noopener">{{.Text}}</a>{{else}}{{.Text}}{{end}}</pre>
 ` + pageFooter + `</body>
 </html>
 `))
@@ -3516,7 +3538,7 @@ const dataTableDefine = `{{define "datatable"}}{{if .Name}}<h2 class="sheet">{{.
 <table class="data">
 <tr class="coords"><td class="rownum"></td>{{range .ColNums}}<td class="colnum">{{.}}</td>{{end}}</tr>
 <tr><th class="corner"></th>{{range .Header}}<th>{{.}}</th>{{end}}</tr>
-{{range .Rows}}<tr><td class="rownum">{{.N}}</td>{{range .Cells}}<td>{{.Text}}{{if .More}}<a class="more" href="{{.More}}">&hellip;&nbsp;more</a>{{end}}</td>{{end}}</tr>
+{{range .Rows}}<tr><td class="rownum">{{.N}}</td>{{range .Cells}}<td>{{if .Link}}<a href="{{.Link}}" target="_blank" rel="noopener">{{.Text}}</a>{{else}}{{.Text}}{{end}}{{if .More}}<a class="more" href="{{.More}}">&hellip;&nbsp;more</a>{{end}}</td>{{end}}</tr>
 {{end}}</table>
 </div>
 {{else}}<p class="summary">(empty)</p>
