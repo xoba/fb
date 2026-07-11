@@ -149,7 +149,9 @@ the archive itself.
 
 Navigating to a `.jpg`, `.png`, `.gif`, `.webp`, `.bmp`, `.tif`, or
 `.heic` shows
-the image with a technical readout beneath it: file size, dimensions and
+the image scaled to fit the browser window — up or down, aspect ratio
+preserved, regardless of its native dimensions — with a technical readout
+beneath it: file size, dimensions and
 megapixels, MIME type (from the actual content), modification time — and
 the full EXIF block when present, with photography fields formatted
 naturally (`f/7.1`, `85 mm`, `1/200 s`). GPS-tagged photos additionally
@@ -165,9 +167,10 @@ the full readout and map.
 ### Video
 
 Navigating to a `.mov`, `.mp4`, `.m4v`, or `.webm` shows an inline
-player with file size, format, and modification time beneath it;
-duration and dimensions fill in from the browser's own decoder once
-the metadata loads.
+player scaled to fit the browser window (like images, independent of
+the movie's native dimensions) with file size, format, and modification
+time beneath it; duration and dimensions fill in from the browser's own
+decoder once the metadata loads.
 
 ### Everything else
 

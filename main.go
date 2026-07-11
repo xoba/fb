@@ -1043,8 +1043,7 @@ var videoTemplate = template.Must(template.New("video").Parse(`<!DOCTYPE html>
   :root { color-scheme: light; }
   html { color: #1a1a1a; background-color: #fdfdfd; }
   body {
-    margin: 0 auto;
-    max-width: 70em;
+    margin: 0;
     padding: 50px;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   }
@@ -1056,8 +1055,15 @@ var videoTemplate = template.Must(template.New("video").Parse(`<!DOCTYPE html>
   nav span.sep { color: #57606a; }
   nav span.file { font-weight: 600; }
   nav a.raw { float: right; font-weight: 400; font-size: 0.85rem; }
+  /* The window sets the display size, not the movie's native dimensions:
+     the player spans the window below the nav and the picture scales (up
+     or down, aspect preserved) to fit inside it. */
   video.subject {
-    max-width: 100%;
+    display: block;
+    width: 100%;
+    height: calc(100vh - 9rem);
+    height: calc(100dvh - 9rem);
+    object-fit: contain;
     border: 1px solid #d0d7de;
     border-radius: 6px;
     background: #000;
@@ -1442,8 +1448,7 @@ var imageTemplate = template.Must(template.New("image").Parse(`<!DOCTYPE html>
   :root { color-scheme: light; }
   html { color: #1a1a1a; background-color: #fdfdfd; }
   body {
-    margin: 0 auto;
-    max-width: 70em;
+    margin: 0;
     padding: 50px;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   }
@@ -1455,9 +1460,15 @@ var imageTemplate = template.Must(template.New("image").Parse(`<!DOCTYPE html>
   nav span.sep { color: #57606a; }
   nav span.file { font-weight: 600; }
   nav a.raw { float: right; font-weight: 400; font-size: 0.85rem; }
+  /* The window sets the display size, not the image's native dimensions:
+     the frame spans the window below the nav and the picture scales (up or
+     down, aspect preserved) to fit inside it. */
   img.subject {
-    max-width: 100%;
-    height: auto;
+    display: block;
+    width: 100%;
+    height: calc(100vh - 9rem);
+    height: calc(100dvh - 9rem);
+    object-fit: contain;
     border: 1px solid #d0d7de;
     border-radius: 6px;
     background:
