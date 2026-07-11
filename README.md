@@ -222,6 +222,12 @@ notice before any upload starts. Past drops remain browsable at
 
 ## Directory listings
 
+- **Summary** — a muted headline above the listing totals what it shows:
+  `5 dirs · 23 files · 1.4 GB` (that level only, dot-files excluded).
+  Container listings get the same treatment: `3 sheets · 1240 rows` for a
+  workbook, `9 tables · 2 views · 1693 rows · 460 KB` for a database. For
+  large on-disk databases the member counts render instantly and the
+  row/byte totals are appended once the async per-table stats finish.
 - **Sorting** — `sort: time · name · size` selector at the top; newest
   first by default. Clicking the active key reverses its direction (the
   arrow shows which way); directories always group above files. Name sort

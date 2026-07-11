@@ -346,6 +346,7 @@ func TestDirectoryListingGroupsAndRendersReadme(t *testing.T) {
 		"a.txt":     "plain\n",
 		"notes.md":  "# Notes\n",
 		"README.md": "# Readme\n",
+		".hidden":   "shh\n",
 	} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
@@ -374,6 +375,11 @@ func TestDirectoryListingGroupsAndRendersReadme(t *testing.T) {
 	}
 	if !strings.Contains(body, "<p>rendered readme</p>") {
 		t.Fatalf("body = %q, want inline rendered README", body)
+	}
+	// a.txt (6) + notes.md (8) + README.md (9) = 23 bytes; the dot-file is
+	// excluded from both counts and the byte total.
+	if want := `id="listsum">1 dir · 3 files · 23 B</p>`; !strings.Contains(body, want) {
+		t.Fatalf("body = %q, want summary %q", body, want)
 	}
 }
 
@@ -777,6 +783,7 @@ func TestXLSXRenderedAsTables(t *testing.T) {
 		`href="cities"`,
 		`href="empty"`,
 		"1 row", // the cities sheet has one data row
+		`id="listsum">2 sheets · 1 row</p>`,
 		`href="/data.xlsx?raw=1"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -859,8 +866,9 @@ func TestSQLiteRenderedAsTables(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		`href="users"`,
-		"2 rows × 3 columns", // per-table stats in the metadata column
-		`name="q"`,           // the query form
+		"2 rows × 3 columns",                // per-table stats in the metadata column
+		`id="listsum">1 table · 2 rows</p>`, // summary with synchronous totals
+		`name="q"`,                          // the query form
 		`href="/app.sqlite?raw=1"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -1414,7 +1422,12 @@ func TestSQLiteOpenedInPlaceWithDir(t *testing.T) {
 	rec = httptest.NewRecorder()
 	server.ServeHTTP(rec, listing)
 	body := rec.Body.String()
-	for _, want := range []string{`id="statprog"`, `data-name="t"`, "computing table stats"} {
+	for _, want := range []string{
+		`id="statprog"`,
+		`data-name="t"`,
+		"computing table stats",
+		`id="listsum">1 table</p>`, // member counts render instantly; totals arrive with the async stats
+	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("listing body = %q, want async stats marker %q", body, want)
 		}
@@ -1429,8 +1442,12 @@ func TestSQLiteOpenedInPlaceWithDir(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("stat status = %d; body: %s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Body.String(); !strings.Contains(got, "1 row × 1 column") {
+	got := rec.Body.String()
+	if !strings.Contains(got, "1 row × 1 column") {
 		t.Fatalf("stat body = %q, want row and column counts", got)
+	}
+	if !strings.Contains(got, `"rows":1`) {
+		t.Fatalf("stat body = %q, want raw row count for the summary totals", got)
 	}
 }
 

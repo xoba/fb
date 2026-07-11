@@ -2040,7 +2040,7 @@ func (s fileServer) serveContainerListing(w http.ResponseWriter, r *http.Request
 	var members []containerMember
 	var err error
 	if isXLSX(name) {
-		members, err = s.xlsxMembers(name, info)
+		members, page.Summary, err = s.xlsxMembers(name, info)
 	} else {
 		db, cleanup, dbErr := s.openSQLite(name, info)
 		if dbErr == nil {
@@ -2050,7 +2050,7 @@ func (s fileServer) serveContainerListing(w http.ResponseWriter, r *http.Request
 			// a progress indicator. Archive-backed ones are small; compute
 			// synchronously.
 			page.StatsAsync = s.dir != ""
-			members, err = sqliteMemberList(db, !page.StatsAsync)
+			members, page.Summary, err = sqliteMemberList(db, !page.StatsAsync)
 
 			page.QueryForm = true
 			page.Query = strings.TrimSpace(r.URL.Query().Get("q"))
@@ -2564,23 +2564,26 @@ func (s fileServer) openXLSX(name string, info fs.FileInfo) (*excelize.File, err
 	return excelize.OpenReader(bytes.NewReader(data))
 }
 
-func (s fileServer) xlsxMembers(name string, info fs.FileInfo) ([]containerMember, error) {
+func (s fileServer) xlsxMembers(name string, info fs.FileInfo) ([]containerMember, string, error) {
 	wb, err := s.openXLSX(name, info)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer wb.Close()
 
 	var members []containerMember
+	var total int
 	for _, sheet := range wb.GetSheetList() {
 		rows, err := wb.GetRows(sheet)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		n := max(len(rows)-1, 0)
+		total += n
 		members = append(members, containerMember{Name: sheet, Detail: fmt.Sprintf("%d row%s", n, plural(n))})
 	}
-	return members, nil
+	summary := fmt.Sprintf("%d sheet%s · %d row%s", len(members), plural(len(members)), total, plural(total))
+	return members, summary, nil
 }
 
 // openSQLite opens a database read-only. On-disk databases are opened in
@@ -2645,15 +2648,16 @@ func (s fileServer) openSQLite(name string, info fs.FileInfo) (*sql.DB, func(), 
 	return db, func() { db.Close(); removeTmp() }, nil
 }
 
-// sqliteMemberList lists tables and views. With withStats it also computes
-// each member's row/column counts and footprint synchronously — appropriate
-// only for small (archive-backed) databases; large on-disk ones get their
-// stats filled in asynchronously by statsJS instead.
-func sqliteMemberList(db *sql.DB, withStats bool) ([]containerMember, error) {
+// sqliteMemberList lists tables and views, and formats the summary line for
+// the listing header. With withStats it also computes each member's
+// row/column counts and footprint synchronously — appropriate only for small
+// (archive-backed) databases; large on-disk ones get their stats (and the
+// summary's row/byte totals) filled in asynchronously by statsJS instead.
+func sqliteMemberList(db *sql.DB, withStats bool) ([]containerMember, string, error) {
 	rows, err := db.Query(`SELECT name, type FROM sqlite_master
 		WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name`)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer rows.Close()
 
@@ -2663,52 +2667,87 @@ func sqliteMemberList(db *sql.DB, withStats bool) ([]containerMember, error) {
 		var m containerMember
 		var kind string
 		if err := rows.Scan(&m.Name, &kind); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		members = append(members, m)
 		kinds = append(kinds, kind)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
+	var tables, views int
+	for _, kind := range kinds {
+		if kind == "view" {
+			views++
+		} else {
+			tables++
+		}
+	}
+	summary := fmt.Sprintf("%d table%s", tables, plural(tables))
+	if views > 0 {
+		summary += fmt.Sprintf(" · %d view%s", views, plural(views))
+	}
+
+	var totalRows, totalSize int64
 	for i := range members {
 		if withStats {
-			members[i].Detail, members[i].Bytes = sqliteTableStat(db, members[i].Name, kinds[i])
+			st := sqliteTableStat(db, members[i].Name, kinds[i])
+			members[i].Detail, members[i].Bytes = st.Detail, st.Bytes
+			totalRows += st.Rows
+			totalSize += st.Size
 		} else {
 			members[i].Detail = kinds[i]
 		}
 	}
-	return members, nil
+	if withStats {
+		summary += fmt.Sprintf(" · %d row%s", totalRows, plural(int(totalRows)))
+		if totalSize > 0 {
+			summary += " · " + humanSize(totalSize)
+		}
+	}
+	return members, summary, nil
+}
+
+// sqliteStat is one member's listing metadata: formatted detail and
+// footprint strings for the listing row, plus the raw numbers so statsJS
+// can total them across tables for the summary line.
+type sqliteStat struct {
+	Detail string `json:"detail"`
+	Bytes  string `json:"bytes"`
+	Rows   int64  `json:"rows"`
+	Size   int64  `json:"size"`
 }
 
 // sqliteTableStat computes one member's listing metadata: "N rows × M
 // columns" (prefixed for views) and its on-disk footprint including indexes
 // via dbstat (empty without the sqlite_dbstat build tag).
-func sqliteTableStat(db *sql.DB, member, kind string) (detail, footprint string) {
-	detail = kind
+func sqliteTableStat(db *sql.DB, member, kind string) sqliteStat {
+	st := sqliteStat{Detail: kind}
 
 	var size int64
 	if err := db.QueryRow(`SELECT COALESCE(SUM(s.pgsize), 0)
 		FROM dbstat('main', 1) s JOIN sqlite_master m ON s.name = m.name
 		WHERE m.tbl_name = ?`, member).Scan(&size); err == nil && size > 0 {
-		footprint = humanSize(size)
+		st.Size = size
+		st.Bytes = humanSize(size)
 	}
 
 	var count int64
 	if err := db.QueryRow("SELECT COUNT(*) FROM " + quoteSQLiteIdent(member)).Scan(&count); err != nil {
-		return detail, footprint // e.g. a view over a missing table
+		return st // e.g. a view over a missing table
 	}
 	var cols int
 	if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info(?)", member).Scan(&cols); err != nil {
-		return detail, footprint
+		return st
 	}
 
-	detail = fmt.Sprintf("%d row%s × %d column%s", count, plural(int(count)), cols, plural(cols))
+	st.Rows = count
+	st.Detail = fmt.Sprintf("%d row%s × %d column%s", count, plural(int(count)), cols, plural(cols))
 	if kind == "view" {
-		detail = "view · " + detail
+		st.Detail = "view · " + st.Detail
 	}
-	return detail, footprint
+	return st
 }
 
 // serveSQLiteStat answers the async stat fetches issued by statsJS: metadata
@@ -2729,9 +2768,8 @@ func (s fileServer) serveSQLiteStat(w http.ResponseWriter, r *http.Request, name
 		return
 	}
 
-	detail, footprint := sqliteTableStat(db, member, kind)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"detail": detail, "bytes": footprint})
+	json.NewEncoder(w).Encode(sqliteTableStat(db, member, kind))
 }
 
 func quoteSQLiteIdent(name string) string {
@@ -3010,6 +3048,8 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 	}
 	sortDirItems(items, key, desc)
 
+	var dirs, files int
+	var total int64
 	for _, item := range items {
 		entry := item.entry
 		view := dirEntryView{Name: entry.Name(), Href: (&url.URL{Path: entry.Name()}).String()}
@@ -3026,10 +3066,19 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 		}
 		if strings.HasPrefix(entry.Name(), ".") {
 			page.Dotted = append(page.Dotted, view)
+			continue
+		}
+		page.Entries = append(page.Entries, view)
+		if entry.IsDir() {
+			dirs++
 		} else {
-			page.Entries = append(page.Entries, view)
+			files++
+			if item.info != nil {
+				total += item.info.Size()
+			}
 		}
 	}
+	page.Summary = listingSummary(dirs, files, total)
 
 	if readme := findReadme(entries); readme != "" {
 		full := path.Join(name, readme)
@@ -3396,6 +3445,17 @@ func (s fileServer) breadcrumbs(name string) []crumb {
 	return crumbs
 }
 
+// listingSummary formats the headline atop directory and archive listings:
+// "5 dirs · 23 files · 1.4 GB". The byte total covers the listed files
+// only (dot-files and subdirectory contents excluded).
+func listingSummary(dirs, files int, size int64) string {
+	summary := fmt.Sprintf("%d dir%s · %d file%s", dirs, plural(dirs), files, plural(files))
+	if size > 0 {
+		summary += " · " + humanSize(size)
+	}
+	return summary
+}
+
 func humanSize(n int64) string {
 	const unit = 1024
 	if n < unit {
@@ -3413,6 +3473,7 @@ type directoryPage struct {
 	Title      string
 	Crumbs     []crumb
 	Blurb      string
+	Summary    string
 	SortLinks  []sortLink
 	RawHref    string
 	QueryForm  bool
@@ -3743,6 +3804,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
 <body>
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if .RawHref}}<a class="raw" href="{{.RawHref}}">raw</a>{{end}}</nav>
 {{if .Blurb}}<p class="blurb">{{.Blurb}}</p>
+{{end}}{{if .Summary}}<p class="summary" id="listsum">{{.Summary}}</p>
 {{end}}{{if .QueryForm}}<form class="query" method="get" action="">
 <input type="text" name="q" value="{{.Query}}" placeholder="SQL query, e.g. select * from some_table limit 10" spellcheck="false" autocomplete="off">
 </form>
@@ -3777,15 +3839,29 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
 
 // statsJS fills in per-table stats on sqlite listing pages one table at a
 // time, with a progress indicator, so listings of huge databases render
-// instantly instead of waiting on every COUNT(*).
+// instantly instead of waiting on every COUNT(*). As it goes it totals rows
+// and bytes, and appends them to the summary line when the sweep finishes.
 const statsJS = `<script>
 (function () {
   var prog = document.getElementById("statprog");
+  var sum = document.getElementById("listsum");
   var rows = Array.prototype.slice.call(document.querySelectorAll("table.listing tr[data-name]"))
     .filter(function (tr) { return tr.getAttribute("data-name") !== ".."; });
   if (!rows.length) { if (prog) prog.remove(); return; }
+  var totalRows = 0, totalBytes = 0;
+  function human(n) {
+    var units = ["B", "KB", "MB", "GB", "TB"], i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (i ? n.toFixed(1) : n) + " " + units[i];
+  }
+  function finish() {
+    prog.remove();
+    if (!sum) return;
+    sum.textContent += " · " + totalRows + (totalRows === 1 ? " row" : " rows");
+    if (totalBytes > 0) sum.textContent += " · " + human(totalBytes);
+  }
   function next(i) {
-    if (i >= rows.length) { prog.remove(); return; }
+    if (i >= rows.length) { finish(); return; }
     var name = rows[i].getAttribute("data-name");
     var pct = Math.round(100 * i / rows.length);
     prog.textContent = "computing table stats — " + (i + 1) + " of " + rows.length + ": " + name + " …";
@@ -3796,6 +3872,8 @@ const statsJS = `<script>
         var metas = rows[i].querySelectorAll("td.meta");
         if (metas[0]) metas[0].textContent = st.detail;
         if (metas[1]) metas[1].textContent = st.bytes;
+        totalRows += st.rows || 0;
+        totalBytes += st.size || 0;
       })
       .catch(function () {})
       .then(function () { next(i + 1); });
