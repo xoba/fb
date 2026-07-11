@@ -2855,7 +2855,7 @@ var tableTemplate = template.Must(template.New("table").Parse(dataTableDefine + 
 <p class="summary">{{.Summary}}</p>
 {{range .Sheets}}{{template "datatable" .}}{{end}}{{if .Schema}}<h2 class="sheet">schema</h2>
 <div class="schema">{{.Schema}}</div>
-{{end}}` + pageFooter + `</body>
+{{end}}` + cellFocusJS + pageFooter + `</body>
 </html>
 `))
 
@@ -2880,11 +2880,13 @@ func (s fileServer) renderCellView(w http.ResponseWriter, r *http.Request, info 
 	}
 	chars := len([]rune(text))
 	page := cellPage{
-		Title:    title,
-		Crumbs:   crumbs,
-		Where:    where,
-		Detail:   fmt.Sprintf("%d character%s", chars, plural(chars)),
-		BackHref: backHref,
+		Title:  title,
+		Crumbs: crumbs,
+		Where:  where,
+		Detail: fmt.Sprintf("%d character%s", chars, plural(chars)),
+		// The fragment carries the coordinates back so the table view can
+		// scroll the cell into view instead of resetting to the top left.
+		BackHref: fmt.Sprintf("%s#cell=%d,%d", backHref, row, col),
 		Text:     text,
 	}
 
@@ -3522,6 +3524,27 @@ const dataTableDefine = `{{define "datatable"}}{{if .Name}}<h2 class="sheet">{{.
 {{end}}{{end}}
 `
 
+// cellFocusJS scrolls the table cell named by a #cell=row,col fragment into
+// view and flashes it, so "back to table" from a full-cell page returns to
+// the spot the reader left rather than the top-left corner. Shared by the
+// directory and table templates; runs at the end of body.
+const cellFocusJS = `<script>
+(function () {
+  var m = /^#cell=(\d+),(\d+)$/.exec(location.hash);
+  if (!m) return;
+  var table = document.querySelector("table.data");
+  if (!table) return;
+  var tr = table.rows[+m[1] + 1]; // rows 0 and 1 are the coords and header
+  var td = tr && tr.cells[+m[2]]; // cell 0 is the row number
+  if (!td) return;
+  td.scrollIntoView({ block: "center", inline: "center" });
+  td.style.outline = "2px solid #0969da";
+  td.style.outlineOffset = "-2px";
+  setTimeout(function () { td.style.outline = ""; }, 2000);
+})();
+</script>
+`
+
 // dataTableCSS styles the coordinate-framed data tables plus the sqlite
 // query form; shared by the directory and table templates.
 const dataTableCSS = `  p.summary { color: #57606a; font-size: 0.85rem; }
@@ -3726,7 +3749,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
 {{range .Commits}}<tr><td class="hash">{{.Hash}}</td><td class="cmeta">{{.Date}}</td><td class="cmeta">{{.Author}}</td><td>{{.Subject}}</td></tr>
 {{end}}</table>{{end}}
 </section>{{end}}
-{{if .StatsAsync}}` + statsJS + `{{end}}` + pageFooter + `</body>
+{{if .StatsAsync}}` + statsJS + `{{end}}` + cellFocusJS + pageFooter + `</body>
 </html>
 `))
 

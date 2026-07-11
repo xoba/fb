@@ -115,6 +115,9 @@ plain text (valid UTF-8, no control characters beyond ordinary whitespace)
 the cut ends in a "… more" link to a page showing the complete cell, with
 breadcrumbs and a back link to the table; binary-ish content just gets an
 ellipsis. This works in every table view, including SQL query results.
+The back link returns to the cell's spot in the table — it carries the
+coordinates in the URL fragment, and the table scrolls the cell into view
+and flashes it — rather than resetting to the top-left corner.
 
 | Type | Notes |
 |------|-------|

@@ -997,6 +997,9 @@ func TestTruncatedCellsLinkToFullView(t *testing.T) {
 		if !strings.Contains(body, `<a class="more" href="?cell=1,2">`) {
 			t.Fatalf("table body = %q, want a more-link on the truncated text cell", body)
 		}
+		if !strings.Contains(body, "scrollIntoView") {
+			t.Fatalf("table body = %q, want the cell-focus script for #cell= fragments", body)
+		}
 		if strings.Contains(body, longText) {
 			t.Fatalf("table body = %q, want the long cell truncated", body)
 		}
@@ -1012,7 +1015,7 @@ func TestTruncatedCellsLinkToFullView(t *testing.T) {
 		for _, want := range []string{
 			longText,
 			"row 1, column 2 (comment)",
-			`href="notes.csv"`,
+			`href="notes.csv#cell=1,2"`,
 			"back to table",
 		} {
 			if !strings.Contains(body, want) {
@@ -1060,7 +1063,7 @@ func TestTruncatedCellsLinkToFullView(t *testing.T) {
 			t.Fatalf("cell status = %d; body: %s", rec.Code, rec.Body.String())
 		}
 		body = rec.Body.String()
-		for _, want := range []string{longText, "row 1, column 2 (comment)", `href="notes"`} {
+		for _, want := range []string{longText, "row 1, column 2 (comment)", `href="notes#cell=1,2"`} {
 			if !strings.Contains(body, want) {
 				t.Fatalf("cell body = %q, want %q", body, want)
 			}
@@ -1075,6 +1078,9 @@ func TestTruncatedCellsLinkToFullView(t *testing.T) {
 		if !strings.Contains(body, `class="more"`) || !strings.Contains(body, "cell=1,1") {
 			t.Fatalf("query body = %q, want a more-link on the truncated result cell", body)
 		}
+		if !strings.Contains(body, "scrollIntoView") {
+			t.Fatalf("query body = %q, want the cell-focus script for #cell= fragments", body)
+		}
 
 		rec = nav(server, "/app.sqlite/?q="+url.QueryEscape(query)+"&cell=1,1")
 		if rec.Code != http.StatusOK {
@@ -1083,7 +1089,7 @@ func TestTruncatedCellsLinkToFullView(t *testing.T) {
 		body = rec.Body.String()
 		// html/template writes "+" as &#43; inside href attributes.
 		backHref := strings.ReplaceAll(url.QueryEscape(query), "+", "&#43;")
-		for _, want := range []string{longText, "row 1, column 1 (comment)", `href="?q=` + backHref + `"`} {
+		for _, want := range []string{longText, "row 1, column 1 (comment)", `href="?q=` + backHref + `#cell=1,1"`} {
 			if !strings.Contains(body, want) {
 				t.Fatalf("query cell body = %q, want %q", body, want)
 			}
@@ -1116,7 +1122,7 @@ func TestTruncatedCellsLinkToFullView(t *testing.T) {
 			t.Fatalf("cell status = %d; body: %s", rec.Code, rec.Body.String())
 		}
 		body = rec.Body.String()
-		for _, want := range []string{longText, "row 1, column 2 (comment)", `href="Sheet1"`} {
+		for _, want := range []string{longText, "row 1, column 2 (comment)", `href="Sheet1#cell=1,2"`} {
 			if !strings.Contains(body, want) {
 				t.Fatalf("cell body = %q, want %q", body, want)
 			}
