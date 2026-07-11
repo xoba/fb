@@ -1855,9 +1855,20 @@ func (s fileServer) serveTable(w http.ResponseWriter, r *http.Request, name stri
 
 	header, rows := records[0], records[1:]
 
+	if ref := r.URL.Query().Get("cell"); ref != "" {
+		row, col, ok := parseCellCoord(ref)
+		if !ok || row > len(rows) {
+			http.NotFound(w, r)
+			return
+		}
+		s.renderCellView(w, r, info, s.breadcrumbs(path.Dir(name)), path.Base(name),
+			header, rows[row-1], row, col, (&url.URL{Path: path.Base(name)}).String())
+		return
+	}
+
 	page := s.tablePageFor(name)
 	page.Summary = fmt.Sprintf("%d rows × %d columns", len(rows), len(header))
-	page.Sheets = []sheetView{makeSheet("", header, rows)}
+	page.Sheets = []sheetView{makeSheet("", header, displayCells(rows), cellSelfHref)}
 	s.renderTablePage(w, r, name, info, page)
 }
 
@@ -1884,8 +1895,10 @@ func (s fileServer) renderTablePage(w http.ResponseWriter, r *http.Request, name
 
 // makeSheet builds one displayed table, capping rows at maxTableRows.
 // Column numbers span the widest displayed row so coordinates stay
-// meaningful even when rows are ragged.
-func makeSheet(name string, header []string, rows [][]string) sheetView {
+// meaningful even when rows are ragged. cellHref returns the href of the
+// full-text view for a Cut cell's 1-based display coordinates; without one,
+// Cut cells fall back to a plain ellipsis.
+func makeSheet(name string, header []string, rows [][]tableCell, cellHref func(row, col int) string) sheetView {
 	sheet := sheetView{Name: name, Header: header}
 
 	if len(rows) > maxTableRows {
@@ -1906,9 +1919,39 @@ func makeSheet(name string, header []string, rows [][]string) sheetView {
 
 	sheet.Rows = make([]tableRow, len(rows))
 	for i, cells := range rows {
+		for j := range cells {
+			if !cells[j].Cut {
+				continue
+			}
+			if cellHref != nil {
+				cells[j].More = cellHref(i+1, j+1)
+			} else {
+				cells[j].Text += "…"
+			}
+		}
 		sheet.Rows[i] = tableRow{N: i + 1, Cells: cells}
 	}
 	return sheet
+}
+
+// cellSelfHref addresses a cell's full-text view on the current page URL.
+func cellSelfHref(row, col int) string {
+	return fmt.Sprintf("?cell=%d,%d", row, col)
+}
+
+// parseCellCoord parses a 1-based "row,col" reference from a table view's
+// ?cell= parameter, bounded by the rows a table view can display.
+func parseCellCoord(ref string) (row, col int, ok bool) {
+	rs, cs, found := strings.Cut(ref, ",")
+	if !found {
+		return 0, 0, false
+	}
+	row, rErr := strconv.Atoi(rs)
+	col, cErr := strconv.Atoi(cs)
+	if rErr != nil || cErr != nil || row < 1 || col < 1 || row > maxTableRows {
+		return 0, 0, false
+	}
+	return row, col, true
 }
 
 type tablePage struct {
@@ -1931,7 +1974,16 @@ type sheetView struct {
 
 type tableRow struct {
 	N     int
-	Cells []string
+	Cells []tableCell
+}
+
+// tableCell is one displayed table cell. Cut marks text cut short at
+// maxCellChars whose full content is plain text; makeSheet turns Cut cells
+// into "… more" links by filling More with the full-text view's href.
+type tableCell struct {
+	Text string
+	Cut  bool
+	More string
 }
 
 // Tabular containers — xlsx workbooks and sqlite databases — browse like
@@ -1989,7 +2041,14 @@ func (s fileServer) serveContainerListing(w http.ResponseWriter, r *http.Request
 			page.QueryForm = true
 			page.Query = strings.TrimSpace(r.URL.Query().Get("q"))
 			if page.Query != "" {
-				sheet, qErr := sqliteQuerySheet(r.Context(), db, page.Query)
+				if ref := r.URL.Query().Get("cell"); ref != "" {
+					s.serveQueryCell(w, r, db, name, info, page.Query, ref)
+					return
+				}
+				query := page.Query
+				sheet, qErr := sqliteQuerySheet(r.Context(), db, query, func(row, col int) string {
+					return fmt.Sprintf("?q=%s&cell=%d,%d", url.QueryEscape(query), row, col)
+				})
 				if qErr != nil {
 					page.QueryError = qErr.Error()
 				} else {
@@ -2028,7 +2087,7 @@ func (s fileServer) serveContainerListing(w http.ResponseWriter, r *http.Request
 
 // sqliteQuerySheet runs one read-only query and shapes the result as a
 // displayable sheet, reading at most maxTableRows rows.
-func sqliteQuerySheet(ctx context.Context, db *sql.DB, query string) (sheetView, error) {
+func sqliteQuerySheet(ctx context.Context, db *sql.DB, query string, cellHref func(row, col int) string) (sheetView, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
@@ -2043,7 +2102,7 @@ func sqliteQuerySheet(ctx context.Context, db *sql.DB, query string) (sheetView,
 		return sheetView{}, err
 	}
 
-	var body [][]string
+	var body [][]tableCell
 	truncated := false
 	for rows.Next() {
 		if len(body) == maxTableRows {
@@ -2060,7 +2119,7 @@ func sqliteQuerySheet(ctx context.Context, db *sql.DB, query string) (sheetView,
 		return sheetView{}, err
 	}
 
-	sheet := makeSheet("", cols, body)
+	sheet := makeSheet("", cols, body, cellHref)
 	sheet.Summary = fmt.Sprintf("%d row%s × %d column%s", len(body), plural(len(body)), len(cols), plural(len(cols)))
 	if truncated {
 		sheet.Summary = fmt.Sprintf("first %d rows × %d column%s", maxTableRows, len(cols), plural(len(cols)))
@@ -2068,10 +2127,61 @@ func sqliteQuerySheet(ctx context.Context, db *sql.DB, query string) (sheetView,
 	return sheet, nil
 }
 
+// serveQueryCell serves the full-text view of one cell of a query result,
+// addressed by the 1-based display coordinates of the result sheet.
+func (s fileServer) serveQueryCell(w http.ResponseWriter, r *http.Request, db *sql.DB, name string, info fs.FileInfo, query, ref string) {
+	row, col, ok := parseCellCoord(ref)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	header, cells, err := sqliteQueryRow(r.Context(), db, query, row)
+	if err != nil {
+		log.Printf("query cell of %s: %v", name, err)
+		http.NotFound(w, r)
+		return
+	}
+	if cells == nil {
+		http.NotFound(w, r)
+		return
+	}
+	s.renderCellView(w, r, info, s.breadcrumbs(name), "query",
+		header, cells, row, col, (&url.URL{RawQuery: "q=" + url.QueryEscape(query)}).String())
+}
+
+// sqliteQueryRow re-runs a query and returns the full text of its row'th
+// result row (1-based); a nil row means the result has fewer rows.
+func sqliteQueryRow(ctx context.Context, db *sql.DB, query string, row int) (header, cells []string, err error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	header, err = rows.Columns()
+	if err != nil {
+		return nil, nil, err
+	}
+	for i := 0; i < row; i++ {
+		if !rows.Next() {
+			return header, nil, rows.Err()
+		}
+	}
+	cells, err = scanSQLiteRow(rows, len(header), csvSQLiteValue)
+	return header, cells, err
+}
+
 // serveContainerMember serves one sheet or table: a table page for browser
 // navigations, CSV bytes otherwise.
 func (s fileServer) serveContainerMember(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo, member string) {
 	if r.URL.Query().Get("raw") != "1" && wantsDocument(r.Header) {
+		if ref := r.URL.Query().Get("cell"); ref != "" {
+			s.serveMemberCell(w, r, name, info, member, ref)
+			return
+		}
 		s.serveMemberTable(w, r, name, info, member)
 		return
 	}
@@ -2081,13 +2191,15 @@ func (s fileServer) serveContainerMember(w http.ResponseWriter, r *http.Request,
 func (s fileServer) serveMemberTable(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo, member string) {
 	var (
 		header []string
-		body   [][]string
+		body   [][]tableCell
 		total  int64
 		schema string
 		err    error
 	)
 	if isXLSX(name) {
-		header, body, total, err = s.xlsxMemberRows(name, info, member)
+		var rows [][]string
+		header, rows, total, err = s.xlsxMemberRows(name, info, member)
+		body = displayCells(rows)
 	} else {
 		header, body, total, schema, err = s.sqliteMemberData(name, info, member, maxTableRows)
 	}
@@ -2097,7 +2209,7 @@ func (s fileServer) serveMemberTable(w http.ResponseWriter, r *http.Request, nam
 		return
 	}
 
-	sheet := makeSheet("", header, body)
+	sheet := makeSheet("", header, body, cellSelfHref)
 	if omitted := int(total) - len(sheet.Rows); omitted > 0 {
 		sheet.Omitted = omitted
 	}
@@ -2133,9 +2245,68 @@ func (s fileServer) xlsxMemberRows(name string, info fs.FileInfo, member string)
 	return header, body, int64(len(body)), nil
 }
 
+// serveMemberCell serves the full-text view of one cell of a sheet or table,
+// addressed by the 1-based display coordinates of the member table view.
+func (s fileServer) serveMemberCell(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo, member, ref string) {
+	row, col, ok := parseCellCoord(ref)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	var header, cells []string
+	var err error
+	if isXLSX(name) {
+		var body [][]string
+		header, body, _, err = s.xlsxMemberRows(name, info, member)
+		if err == nil && row <= len(body) {
+			cells = body[row-1]
+		}
+	} else {
+		header, cells, err = s.sqliteMemberRow(name, info, member, row)
+	}
+	if err != nil {
+		log.Printf("cell %s of %s: %v", member, name, err)
+		http.NotFound(w, r)
+		return
+	}
+	if cells == nil {
+		http.NotFound(w, r)
+		return
+	}
+	s.renderCellView(w, r, info, s.breadcrumbs(name), member,
+		header, cells, row, col, (&url.URL{Path: member}).String())
+}
+
+// sqliteMemberRow fetches one row of a table, full text, by its 1-based
+// position in the member table view. A nil row means the table is shorter.
+func (s fileServer) sqliteMemberRow(name string, info fs.FileInfo, member string, row int) (header, cells []string, err error) {
+	db, cleanup, err := s.openSQLite(name, info)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer cleanup()
+
+	rows, err := db.Query(fmt.Sprintf("SELECT * FROM %s LIMIT 1 OFFSET %d", quoteSQLiteIdent(member), row-1))
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	header, err = rows.Columns()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !rows.Next() {
+		return header, nil, rows.Err()
+	}
+	cells, err = scanSQLiteRow(rows, len(header), csvSQLiteValue)
+	return header, cells, err
+}
+
 // sqliteMemberData fetches one table's display rows, total count, and its
 // schema (the CREATE statements for the table and everything attached to it).
-func (s fileServer) sqliteMemberData(name string, info fs.FileInfo, member string, limit int) (header []string, body [][]string, total int64, schema string, err error) {
+func (s fileServer) sqliteMemberData(name string, info fs.FileInfo, member string, limit int) (header []string, body [][]tableCell, total int64, schema string, err error) {
 	db, cleanup, err := s.openSQLite(name, info)
 	if err != nil {
 		return nil, nil, 0, "", err
@@ -2553,8 +2724,8 @@ func quoteSQLiteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
-func scanSQLiteRows(rows *sql.Rows, cols int, format func(any) string) ([][]string, error) {
-	var body [][]string
+func scanSQLiteRows[T any](rows *sql.Rows, cols int, format func(any) T) ([][]T, error) {
+	var body [][]T
 	for rows.Next() {
 		cells, err := scanSQLiteRow(rows, cols, format)
 		if err != nil {
@@ -2565,7 +2736,7 @@ func scanSQLiteRows(rows *sql.Rows, cols int, format func(any) string) ([][]stri
 	return body, rows.Err()
 }
 
-func scanSQLiteRow(rows *sql.Rows, cols int, format func(any) string) ([]string, error) {
+func scanSQLiteRow[T any](rows *sql.Rows, cols int, format func(any) T) ([]T, error) {
 	holders := make([]any, cols)
 	for i := range holders {
 		holders[i] = new(any)
@@ -2573,7 +2744,7 @@ func scanSQLiteRow(rows *sql.Rows, cols int, format func(any) string) ([]string,
 	if err := rows.Scan(holders...); err != nil {
 		return nil, err
 	}
-	cells := make([]string, cols)
+	cells := make([]T, cols)
 	for i, h := range holders {
 		cells[i] = format(*h.(*any))
 	}
@@ -2592,26 +2763,47 @@ func csvSQLiteValue(v any) string {
 	}
 }
 
-// maxSQLiteCellChars keeps giant text or blob columns from wrecking the table.
-const maxSQLiteCellChars = 200
+// maxCellChars keeps giant text or blob columns from wrecking the table.
+const maxCellChars = 200
 
-func formatSQLiteValue(v any) string {
-	var text string
+// displayCell shapes one cell for table display, cutting text longer than
+// maxCellChars. Cells cut from plain text are marked Cut so the table can
+// link to the full content; text with binary junk just keeps the ellipsis.
+func displayCell(text string) tableCell {
+	runes := []rune(text)
+	if len(runes) <= maxCellChars {
+		return tableCell{Text: text}
+	}
+	if !isPlainText([]byte(text)) {
+		return tableCell{Text: string(runes[:maxCellChars]) + "…"}
+	}
+	return tableCell{Text: string(runes[:maxCellChars]), Cut: true}
+}
+
+// displayCells applies displayCell across raw string rows.
+func displayCells(rows [][]string) [][]tableCell {
+	out := make([][]tableCell, len(rows))
+	for i, cells := range rows {
+		out[i] = make([]tableCell, len(cells))
+		for j, text := range cells {
+			out[i][j] = displayCell(text)
+		}
+	}
+	return out
+}
+
+func formatSQLiteValue(v any) tableCell {
 	switch val := v.(type) {
 	case nil:
-		return "NULL"
+		return tableCell{Text: "NULL"}
 	case []byte:
 		if !isPlainText(val) {
-			return fmt.Sprintf("(%d-byte blob)", len(val))
+			return tableCell{Text: fmt.Sprintf("(%d-byte blob)", len(val))}
 		}
-		text = string(val)
+		return displayCell(string(val))
 	default:
-		text = fmt.Sprint(val)
+		return displayCell(fmt.Sprint(val))
 	}
-	if runes := []rune(text); len(runes) > maxSQLiteCellChars {
-		text = string(runes[:maxSQLiteCellChars]) + "…"
-	}
-	return text
 }
 
 func plural(n int) string {
@@ -2653,6 +2845,97 @@ var tableTemplate = template.Must(template.New("table").Parse(dataTableDefine + 
 {{range .Sheets}}{{template "datatable" .}}{{end}}{{if .Schema}}<h2 class="sheet">schema</h2>
 <div class="schema">{{.Schema}}</div>
 {{end}}` + pageFooter + `</body>
+</html>
+`))
+
+// renderCellView renders the full text of one table cell: header and cells
+// are the column names and the complete (untruncated) row, row and col the
+// cell's 1-based display coordinates, and backHref the table view to return
+// to. Only plain-text cells are served.
+func (s fileServer) renderCellView(w http.ResponseWriter, r *http.Request, info fs.FileInfo, crumbs []crumb, title string, header, cells []string, row, col int, backHref string) {
+	if col > len(cells) {
+		http.NotFound(w, r)
+		return
+	}
+	text := cells[col-1]
+	if !isPlainText([]byte(text)) {
+		http.NotFound(w, r)
+		return
+	}
+
+	where := fmt.Sprintf("row %d, column %d", row, col)
+	if col <= len(header) && header[col-1] != "" {
+		where += fmt.Sprintf(" (%s)", header[col-1])
+	}
+	chars := len([]rune(text))
+	page := cellPage{
+		Title:    title,
+		Crumbs:   crumbs,
+		Where:    where,
+		Detail:   fmt.Sprintf("%d character%s", chars, plural(chars)),
+		BackHref: backHref,
+		Text:     text,
+	}
+
+	var buf bytes.Buffer
+	if err := cellTemplate.Execute(&buf, page); err != nil {
+		log.Printf("render cell %s: %v", title, err)
+		http.Error(w, "cannot render cell", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.ServeContent(w, r, "cell.html", info.ModTime(), bytes.NewReader(buf.Bytes()))
+}
+
+type cellPage struct {
+	Title    string // the table's name in the nav, linking back to it
+	Crumbs   []crumb
+	Where    string // cell coordinates, e.g. `row 3, column 2 (email)`
+	Detail   string
+	BackHref string
+	Text     string
+}
+
+var cellTemplate = template.Must(template.New("cell").Parse(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/` + assetPrefix + `/favicon.png">
+<title>{{.Where}} — {{.Title}}</title>
+<style>
+  :root { color-scheme: light; }
+  html { color: #1a1a1a; background-color: #fdfdfd; }
+  body {
+    margin: 0 auto;
+    max-width: 70em;
+    padding: 50px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  @media (max-width: 600px) { body { padding: 12px; } }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  nav { margin-bottom: 1rem; font-size: 1.1rem; }
+  nav a { font-weight: 600; }
+  nav span.sep { color: #57606a; }
+  nav span.file { font-weight: 600; }
+  p.summary { color: #57606a; font-size: 0.85rem; }
+  pre.cell {
+    border: 1px solid #d0d7de;
+    background-color: #fff;
+    padding: 0.75rem 1rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+</style>
+` + dropJS + `</head>
+<body>
+<nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<a href="{{.BackHref}}">{{.Title}}</a><span class="sep">/</span><span class="file">{{.Where}}</span></nav>
+<p class="summary">{{.Detail}} — <a href="{{.BackHref}}">&larr; back to table</a></p>
+<pre class="cell">{{.Text}}</pre>
+` + pageFooter + `</body>
 </html>
 `))
 
@@ -3220,7 +3503,7 @@ const dataTableDefine = `{{define "datatable"}}{{if .Name}}<h2 class="sheet">{{.
 <table class="data">
 <tr class="coords"><td class="rownum"></td>{{range .ColNums}}<td class="colnum">{{.}}</td>{{end}}</tr>
 <tr><th class="corner"></th>{{range .Header}}<th>{{.}}</th>{{end}}</tr>
-{{range .Rows}}<tr><td class="rownum">{{.N}}</td>{{range .Cells}}<td>{{.}}</td>{{end}}</tr>
+{{range .Rows}}<tr><td class="rownum">{{.N}}</td>{{range .Cells}}<td>{{.Text}}{{if .More}}<a class="more" href="{{.More}}">&hellip;&nbsp;more</a>{{end}}</td>{{end}}</tr>
 {{end}}</table>
 </div>
 {{else}}<p class="summary">(empty)</p>
@@ -3279,6 +3562,7 @@ const dataTableCSS = `  p.summary { color: #57606a; font-size: 0.85rem; }
   table.data td.rownum { position: sticky; left: 0; z-index: 1; }
   table.data th.corner { left: 0; z-index: 3; }
   table.data tr.coords td.rownum { left: 0; z-index: 3; }
+  table.data a.more { white-space: nowrap; }
   div.schema { margin-top: 0.5rem; font-size: 0.85rem; overflow-x: auto; }
   form.query { margin: 0 0 1rem; }
   form.query input {

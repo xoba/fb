@@ -110,11 +110,17 @@ row-number column on the left, and a frozen column-number row on top, so
 coordinates stay visible while scrolling big tables. Coordinate cells are
 tinted pale blue to distinguish them from real data.
 
+Cells longer than 200 characters are cut short. When the full content is
+plain text (valid UTF-8, no control characters beyond ordinary whitespace)
+the cut ends in a "… more" link to a page showing the complete cell, with
+breadcrumbs and a back link to the table; binary-ish content just gets an
+ellipsis. This works in every table view, including SQL query results.
+
 | Type | Notes |
 |------|-------|
 | `.csv`, `.tsv` | First row treated as the header. Tolerant parsing (ragged rows, lazy quotes); files over 2 MB or that fail to parse are served plain. Display capped at 2000 rows. |
 | `.xlsx` | Browses like a directory: navigating to the file lists its sheets (with row counts), and each sheet renders as its own CSV-style table page. 10 MB cap. |
-| `.sqlite`, `.sqlite3`, `.db` | Browses like a directory of tables and views, each listed with its row × column counts and on-disk size including indexes (via the `dbstat` virtual table). The listing page has a SQL query box — results render as a table right beneath it. Each table's page shows the total row count, the first 2000 rows, and its highlighted schema. `NULL` shown literally, binary blobs as `(N-byte blob)`, huge text cells truncated. On-disk databases are opened in place, read-only, with no size limit — sqlite pages in only what a query touches. Databases inside archives are copied to a temp file first (the driver needs a real path) and capped at 100 MB. Write statements are rejected; non-SQLite `.db` files fall back to download. |
+| `.sqlite`, `.sqlite3`, `.db` | Browses like a directory of tables and views, each listed with its row × column counts and on-disk size including indexes (via the `dbstat` virtual table). The listing page has a SQL query box — results render as a table right beneath it. Each table's page shows the total row count, the first 2000 rows, and its highlighted schema. `NULL` shown literally, binary blobs as `(N-byte blob)`. On-disk databases are opened in place, read-only, with no size limit — sqlite pages in only what a query touches. Databases inside archives are copied to a temp file first (the driver needs a real path) and capped at 100 MB. Write statements are rejected; non-SQLite `.db` files fall back to download. |
 
 `run.sh` builds with the `sqlite_dbstat` and `sqlite_fts5` tags: dbstat
 powers the per-table sizes, and FTS5 lets queries against databases with

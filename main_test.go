@@ -973,6 +973,157 @@ func TestCSVAndTSVRenderedAsTables(t *testing.T) {
 	}
 }
 
+func TestTruncatedCellsLinkToFullView(t *testing.T) {
+	longText := strings.Repeat("lorem ipsum ", 30) // 360 chars, plain text
+	binaryText := strings.Repeat("x", maxCellChars) + "\x01binary tail"
+
+	nav := func(server fileServer, target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		return rec
+	}
+
+	t.Run("csv", func(t *testing.T) {
+		root := t.TempDir()
+		content := "name,comment,junk\nmike," + longText + "," + binaryText + "\n"
+		if err := os.WriteFile(filepath.Join(root, "notes.csv"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+		body := nav(server, "/notes.csv").Body.String()
+		if !strings.Contains(body, `<a class="more" href="?cell=1,2">`) {
+			t.Fatalf("table body = %q, want a more-link on the truncated text cell", body)
+		}
+		if strings.Contains(body, longText) {
+			t.Fatalf("table body = %q, want the long cell truncated", body)
+		}
+		if strings.Contains(body, `href="?cell=1,3"`) {
+			t.Fatalf("table body = %q, want no more-link on the binary cell", body)
+		}
+
+		rec := nav(server, "/notes.csv?cell=1,2")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("cell status = %d; body: %s", rec.Code, rec.Body.String())
+		}
+		body = rec.Body.String()
+		for _, want := range []string{
+			longText,
+			"row 1, column 2 (comment)",
+			`href="notes.csv"`,
+			"back to table",
+		} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("cell body = %q, want %q", body, want)
+			}
+		}
+
+		for _, target := range []string{
+			"/notes.csv?cell=1,3", // binary content
+			"/notes.csv?cell=2,1", // beyond the last row
+			"/notes.csv?cell=1,9", // beyond the last column
+			"/notes.csv?cell=bogus",
+		} {
+			if rec := nav(server, target); rec.Code != http.StatusNotFound {
+				t.Fatalf("GET %s = %d, want %d", target, rec.Code, http.StatusNotFound)
+			}
+		}
+	})
+
+	t.Run("sqlite", func(t *testing.T) {
+		root := t.TempDir()
+		db, err := sql.Open("sqlite3", filepath.Join(root, "app.sqlite"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`CREATE TABLE notes (author TEXT, comment TEXT, data BLOB);
+			INSERT INTO notes VALUES ('mike', ?, x'000102');`, longText); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+		body := nav(server, "/app.sqlite/notes").Body.String()
+		if !strings.Contains(body, `<a class="more" href="?cell=1,2">`) {
+			t.Fatalf("table body = %q, want a more-link on the truncated text cell", body)
+		}
+		if !strings.Contains(body, "(3-byte blob)") {
+			t.Fatalf("table body = %q, want the blob placeholder without a link", body)
+		}
+
+		rec := nav(server, "/app.sqlite/notes?cell=1,2")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("cell status = %d; body: %s", rec.Code, rec.Body.String())
+		}
+		body = rec.Body.String()
+		for _, want := range []string{longText, "row 1, column 2 (comment)", `href="notes"`} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("cell body = %q, want %q", body, want)
+			}
+		}
+
+		if rec := nav(server, "/app.sqlite/notes?cell=2,1"); rec.Code != http.StatusNotFound {
+			t.Fatalf("out-of-range cell = %d, want %d", rec.Code, http.StatusNotFound)
+		}
+
+		query := "select comment from notes"
+		body = nav(server, "/app.sqlite/?q="+url.QueryEscape(query)).Body.String()
+		if !strings.Contains(body, `class="more"`) || !strings.Contains(body, "cell=1,1") {
+			t.Fatalf("query body = %q, want a more-link on the truncated result cell", body)
+		}
+
+		rec = nav(server, "/app.sqlite/?q="+url.QueryEscape(query)+"&cell=1,1")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("query cell status = %d; body: %s", rec.Code, rec.Body.String())
+		}
+		body = rec.Body.String()
+		// html/template writes "+" as &#43; inside href attributes.
+		backHref := strings.ReplaceAll(url.QueryEscape(query), "+", "&#43;")
+		for _, want := range []string{longText, "row 1, column 1 (comment)", `href="?q=` + backHref + `"`} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("query cell body = %q, want %q", body, want)
+			}
+		}
+	})
+
+	t.Run("xlsx", func(t *testing.T) {
+		root := t.TempDir()
+		wb := excelize.NewFile()
+		for i, row := range [][]any{
+			{"name", "comment"},
+			{"mike", longText},
+		} {
+			if err := wb.SetSheetRow("Sheet1", fmt.Sprintf("A%d", i+1), &row); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := wb.SaveAs(filepath.Join(root, "data.xlsx")); err != nil {
+			t.Fatal(err)
+		}
+		server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+		body := nav(server, "/data.xlsx/Sheet1").Body.String()
+		if !strings.Contains(body, `<a class="more" href="?cell=1,2">`) {
+			t.Fatalf("sheet body = %q, want a more-link on the truncated text cell", body)
+		}
+
+		rec := nav(server, "/data.xlsx/Sheet1?cell=1,2")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("cell status = %d; body: %s", rec.Code, rec.Body.String())
+		}
+		body = rec.Body.String()
+		for _, want := range []string{longText, "row 1, column 2 (comment)", `href="Sheet1"`} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("cell body = %q, want %q", body, want)
+			}
+		}
+	})
+}
+
 func TestTarBrowsing(t *testing.T) {
 	makeTar := func(t *testing.T, gzipped bool) []byte {
 		t.Helper()
