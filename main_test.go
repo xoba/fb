@@ -750,6 +750,18 @@ func TestXLSXRenderedAsTables(t *testing.T) {
 	if _, err := wb.NewSheet("empty"); err != nil {
 		t.Fatal(err)
 	}
+	// data starting below row 1, as when a chart occupies the top of a sheet
+	if _, err := wb.NewSheet("offset"); err != nil {
+		t.Fatal(err)
+	}
+	for i, row := range [][]any{
+		{"metric", "value"},
+		{"count", 7},
+	} {
+		if err := wb.SetSheetRow("offset", fmt.Sprintf("B%d", i+3), &row); err != nil {
+			t.Fatal(err)
+		}
+	}
 	xlsxPath := filepath.Join(root, "data.xlsx")
 	if err := wb.SaveAs(xlsxPath); err != nil {
 		t.Fatal(err)
@@ -782,8 +794,9 @@ func TestXLSXRenderedAsTables(t *testing.T) {
 	for _, want := range []string{
 		`href="cities"`,
 		`href="empty"`,
-		"1 row", // the cities sheet has one data row
-		`id="listsum">2 sheets · 1 row</p>`,
+		`href="offset"`,
+		"1 row", // the cities and offset sheets have one data row each
+		`id="listsum">3 sheets · 2 rows</p>`,
 		`href="/data.xlsx?raw=1"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -807,6 +820,21 @@ func TestXLSXRenderedAsTables(t *testing.T) {
 		}
 	}
 
+	rec = nav("/data.xlsx/offset")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("offset sheet status = %d; body: %s", rec.Code, rec.Body.String())
+	}
+	body = rec.Body.String()
+	for _, want := range []string{
+		"<th></th><th>metric</th><th>value</th>", // blank rows above the data dropped
+		"<td></td><td>count</td><td>7</td>",
+		"1 row × 3 columns",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("offset sheet body = %q, want %q", body, want)
+		}
+	}
+
 	csvReq := httptest.NewRequest(http.MethodGet, "/data.xlsx/cities?raw=1", nil)
 	rec = httptest.NewRecorder()
 	server.ServeHTTP(rec, csvReq)
@@ -815,6 +843,13 @@ func TestXLSXRenderedAsTables(t *testing.T) {
 	}
 	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/csv") {
 		t.Fatalf("sheet csv Content-Type = %q, want text/csv", got)
+	}
+
+	csvReq = httptest.NewRequest(http.MethodGet, "/data.xlsx/offset?raw=1", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, csvReq)
+	if got := rec.Body.String(); got != ",metric,value\n,count,7\n" {
+		t.Fatalf("offset sheet csv = %q, want export without leading blank rows", got)
 	}
 
 	plain := httptest.NewRequest(http.MethodGet, "/data.xlsx", nil)

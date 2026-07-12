@@ -2253,6 +2253,7 @@ func (s fileServer) xlsxMemberRows(name string, info fs.FileInfo, member string)
 	if err != nil {
 		return nil, nil, 0, err
 	}
+	rows = dropLeadingEmptyRows(rows)
 	if len(rows) > 0 {
 		header, body = rows[0], rows[1:]
 	}
@@ -2489,7 +2490,7 @@ func (s fileServer) serveMemberCSV(w http.ResponseWriter, r *http.Request, name 
 			return
 		}
 		writeCSV(w, r, member, func(cw *csv.Writer) error {
-			for _, row := range rows {
+			for _, row := range dropLeadingEmptyRows(rows) {
 				if err := cw.Write(row); err != nil {
 					return err
 				}
@@ -2578,12 +2579,28 @@ func (s fileServer) xlsxMembers(name string, info fs.FileInfo) ([]containerMembe
 		if err != nil {
 			return nil, "", err
 		}
-		n := max(len(rows)-1, 0)
+		n := max(len(dropLeadingEmptyRows(rows))-1, 0)
 		total += n
 		members = append(members, containerMember{Name: sheet, Detail: fmt.Sprintf("%d row%s", n, plural(n))})
 	}
 	summary := fmt.Sprintf("%d sheet%s · %d row%s", len(members), plural(len(members)), total, plural(total))
 	return members, summary, nil
+}
+
+// dropLeadingEmptyRows discards blank rows above a sheet's data, so a sheet
+// whose contents start below row 1 (a common layout when a chart or title
+// occupies the top) yields its first populated row as the header rather than
+// a blank one.
+func dropLeadingEmptyRows(rows [][]string) [][]string {
+	for len(rows) > 0 {
+		for _, cell := range rows[0] {
+			if cell != "" {
+				return rows
+			}
+		}
+		rows = rows[1:]
+	}
+	return rows
 }
 
 // openSQLite opens a database read-only. On-disk databases are opened in
@@ -3595,11 +3612,11 @@ var dropJS = `<script>
 // template (for query results) and the table template.
 const dataTableDefine = `{{define "datatable"}}{{if .Name}}<h2 class="sheet">{{.Name}}</h2>
 {{end}}{{if .Summary}}<p class="summary">{{.Summary}}</p>
-{{end}}{{if .Header}}<div class="tablewrap">
+{{end}}{{if or .Header .Rows}}<div class="tablewrap">
 <table class="data">
 <tr class="coords"><td class="rownum"></td>{{range .ColNums}}<td class="colnum">{{.}}</td>{{end}}</tr>
-<tr><th class="corner"></th>{{range .Header}}<th>{{.}}</th>{{end}}</tr>
-{{range .Rows}}<tr><td class="rownum">{{.N}}</td>{{range .Cells}}<td>{{if .Link}}<a href="{{.Link}}" target="_blank" rel="noopener">{{.Text}}</a>{{else}}{{.Text}}{{end}}{{if .More}}<a class="more" href="{{.More}}">&hellip;&nbsp;more</a>{{end}}</td>{{end}}</tr>
+{{if .Header}}<tr><th class="corner"></th>{{range .Header}}<th>{{.}}</th>{{end}}</tr>
+{{end}}{{range .Rows}}<tr><td class="rownum">{{.N}}</td>{{range .Cells}}<td>{{if .Link}}<a href="{{.Link}}" target="_blank" rel="noopener">{{.Text}}</a>{{else}}{{.Text}}{{end}}{{if .More}}<a class="more" href="{{.More}}">&hellip;&nbsp;more</a>{{end}}</td>{{end}}</tr>
 {{end}}</table>
 </div>
 {{else}}<p class="summary">(empty)</p>
