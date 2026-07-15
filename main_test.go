@@ -1934,7 +1934,7 @@ func TestPagesLinkHealthzAndVersion(t *testing.T) {
 	}
 	server := fileServer{fsys: os.DirFS(root), pandoc: fakePandoc(t), dir: root}
 
-	for _, url := range []string{"/", "/code.go", "/data.csv", "/notes.md"} {
+	for _, url := range []string{"/", "/code.go", "/data.csv"} {
 		req := httptest.NewRequest(http.MethodGet, url, nil)
 		req.Header.Set("Sec-Fetch-Dest", "document")
 		rec := httptest.NewRecorder()
@@ -1947,6 +1947,18 @@ func TestPagesLinkHealthzAndVersion(t *testing.T) {
 		if !strings.Contains(body, "/_localmd/healthz") || !strings.Contains(body, "/_localmd/version") {
 			t.Errorf("%s lacks the healthz/version footer", url)
 		}
+	}
+
+	// Markdown pages render without the footer.
+	req := httptest.NewRequest(http.MethodGet, "/notes.md", nil)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/notes.md: status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if body := rec.Body.String(); strings.Contains(body, "/_localmd/healthz") || strings.Contains(body, "/_localmd/version") {
+		t.Error("/notes.md unexpectedly has the healthz/version footer")
 	}
 }
 
@@ -2119,10 +2131,20 @@ if [ -z "$pagetitle" ]; then
   exit 5
 fi
 
-if [ -z "$footer" ]; then
-  echo "missing --include-after-body" >&2
-  exit 6
-fi
+case "$format" in
+  markdown*)
+    if [ -n "$footer" ]; then
+      echo "unexpected --include-after-body for markdown" >&2
+      exit 6
+    fi
+    ;;
+  *)
+    if [ -z "$footer" ]; then
+      echo "missing --include-after-body" >&2
+      exit 6
+    fi
+    ;;
+esac
 
 if ! grep -q "color-scheme: light" "$header"; then
   echo "missing readability CSS" >&2
@@ -2136,7 +2158,9 @@ if [ "$toc" -eq 1 ]; then
   printf '<nav id="TOC"></nav>'
 fi
 printf '<p>rendered markdown</p><!--fmt:%s-->' "$format"
-cat "$footer"
+if [ -n "$footer" ]; then
+  cat "$footer"
+fi
 printf '</body></html>'
 `
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {

@@ -820,8 +820,12 @@ func (s fileServer) renderDocument(ctx context.Context, name string, opts render
 				"-V", "monobackgroundcolor=#f6f8fa",
 				"-V", "maxwidth=42em",
 			)
-			if p, err := pandocFooterFile(); err == nil {
-				args = append(args, "--include-after-body", p)
+			// Markdown pages render clean, without the healthz/version
+			// footer that closes every other page.
+			if format != pandocFormats[".md"] {
+				if p, err := pandocFooterFile(); err == nil {
+					args = append(args, "--include-after-body", p)
+				}
 			}
 		}
 		return args
@@ -3525,8 +3529,9 @@ type dirEntryView struct {
 // large files take a while) and the browser navigates to the stored copy,
 // which renders through the ordinary pipeline like any other file.
 // pageFooter links the health and version probes from the bottom of every
-// rendered page. Inline styles keep it self-contained, so templates and
-// pandoc output can append it without touching their own CSS.
+// rendered page except markdown documents, which stay clean. Inline styles
+// keep it self-contained, so templates and pandoc output can append it
+// without touching their own CSS.
 const pageFooter = `<footer style="margin-top:3rem;padding-top:0.5rem;border-top:1px solid #eaeef0;font-size:0.75rem;color:#8c959f"><a style="color:#8c959f" href="/` + assetPrefix + `/healthz">healthz</a> &middot; <a style="color:#8c959f" href="/` + assetPrefix + `/version">version</a></footer>
 `
 
