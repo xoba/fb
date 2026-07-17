@@ -1512,6 +1512,90 @@ func TestPrettySQL(t *testing.T) {
 	}
 }
 
+func TestJSONPrettyPrinted(t *testing.T) {
+	root := t.TempDir()
+	minified := `{"a":[1,2],"b":{"c":"d"}}`
+	if err := os.WriteFile(filepath.Join(root, "data.json"), []byte(minified), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	nav := httptest.NewRequest(http.MethodGet, "/data.json", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Fatalf("Content-Type = %q, want highlighted text/html", got)
+	}
+	// The one-line input indents onto nine lines.
+	if body := rec.Body.String(); !strings.Contains(body, `id="L9"`) {
+		t.Fatalf("body = %q, want pretty-printed onto multiple lines", body)
+	}
+
+	raw := httptest.NewRequest(http.MethodGet, "/data.json", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, raw)
+	if got := rec.Body.String(); got != minified {
+		t.Fatalf("non-browser body = %q, want verbatim %q", got, minified)
+	}
+}
+
+func TestInvalidJSONShownAsIs(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "bad.json"), []byte(`{"a":`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/bad.json", nil)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="L1"`) || strings.Contains(body, `id="L2"`) {
+		t.Fatalf("body = %q, want the single original line untouched", body)
+	}
+}
+
+func TestOversizedJSONShownAsPlainText(t *testing.T) {
+	root := t.TempDir()
+	big := "[" + strings.Repeat(`"x",`, maxHighlightBytes/4) + `"x"]`
+	if err := os.WriteFile(filepath.Join(root, "big.json"), []byte(big), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	nav := httptest.NewRequest(http.MethodGet, "/big.json", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/plain") {
+		t.Fatalf("navigation Content-Type = %q, want text/plain", got)
+	}
+	if got := rec.Body.String(); got != big {
+		t.Fatalf("navigation body = %d bytes, want the %d original bytes verbatim", len(got), len(big))
+	}
+
+	raw := httptest.NewRequest(http.MethodGet, "/big.json", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, raw)
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("non-browser Content-Type = %q, want application/json", got)
+	}
+}
+
 func TestNewHighlightExtensions(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{

@@ -251,6 +251,9 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 		case ext == ".plist":
 			s.servePlist(w, r, name, info)
 			return
+		case ext == ".json":
+			s.serveJSON(w, r, name, info)
+			return
 		case highlightable(name):
 			s.serveSource(w, r, name, info)
 			return
@@ -1571,7 +1574,6 @@ var highlightExts = map[string]bool{
 	".java":       true,
 	".jl":         true,
 	".js":         true,
-	".json":       true,
 	".jsx":        true,
 	".kt":         true,
 	".lisp":       true,
@@ -1642,6 +1644,31 @@ func (s fileServer) serveSource(w http.ResponseWriter, r *http.Request, name str
 	}
 
 	s.renderSourcePage(w, r, name, info, path.Base(viewName(name)), string(src))
+}
+
+// serveJSON shows a JSON file pretty-printed and highlighted. Content that
+// does not parse as a single JSON value (syntax errors, concatenated values)
+// shows as-is; files too large to highlight display as plain text rather
+// than downloading under their application/json type.
+func (s fileServer) serveJSON(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
+	if info.Size() > maxHighlightBytes {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		s.serveRaw(w, r, name, info)
+		return
+	}
+
+	data, err := fs.ReadFile(s.fsys, name)
+	if err != nil {
+		http.Error(w, "cannot read file", http.StatusInternalServerError)
+		return
+	}
+
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, data, "", "  "); err == nil {
+		data = pretty.Bytes()
+	}
+
+	s.renderSourcePage(w, r, name, info, path.Base(viewName(name)), string(data))
 }
 
 // servePlist shows a property list as syntax-highlighted XML, converting

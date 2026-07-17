@@ -99,6 +99,10 @@ Plus exact filenames without useful extensions: `Makefile`, `makefile`,
 converted first with macOS's built-in `plutil` (elsewhere, binary plists
 fall back to download).
 
+`.json` files are pretty-printed (two-space indent) before highlighting;
+files that don't parse as JSON show as-is. Oversized ones display as plain
+text in the browser instead of downloading.
+
 Deliberately *not* highlighted: `.html` and `.svg` (the browser renders
 those better), `.txt` (prose reads better plain), `.md` (pandoc's job), and
 `go.mod` (chroma mis-identifies it). Files over 2 MB are served plain.
