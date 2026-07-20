@@ -254,6 +254,9 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 		case ext == ".json":
 			s.serveJSON(w, r, name, info)
 			return
+		case ext == ".typ":
+			s.serveTypst(w, r, name, info)
+			return
 		case highlightable(name):
 			s.serveSource(w, r, name, info)
 			return
@@ -1601,7 +1604,6 @@ var highlightExts = map[string]bool{
 	".toml":       true,
 	".ts":         true,
 	".tsx":        true,
-	".typ":        true,
 	".vue":        true,
 	".xml":        true,
 	".yaml":       true,
@@ -1670,6 +1672,52 @@ func (s fileServer) serveJSON(w http.ResponseWriter, r *http.Request, name strin
 	}
 
 	s.renderSourcePage(w, r, name, info, path.Base(viewName(name)), string(data))
+}
+
+// serveTypst shows a Typst file reformatted by typstyle and highlighted.
+// Without typstyle installed the file shows as written; erroneous sources
+// need no fallback because typstyle passes them through unchanged.
+func (s fileServer) serveTypst(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
+	if info.Size() > maxHighlightBytes {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		s.serveRaw(w, r, name, info)
+		return
+	}
+
+	data, err := fs.ReadFile(s.fsys, name)
+	if err != nil {
+		http.Error(w, "cannot read file", http.StatusInternalServerError)
+		return
+	}
+
+	if formatted, err := typstyleFormat(r.Context(), data); err == nil {
+		data = formatted
+	}
+
+	s.renderSourcePage(w, r, name, info, path.Base(viewName(name)), string(data))
+}
+
+func typstyleFormat(ctx context.Context, data []byte) ([]byte, error) {
+	typstyle, err := exec.LookPath("typstyle")
+	if err != nil {
+		return nil, err
+	}
+
+	cmd := exec.CommandContext(ctx, typstyle)
+	cmd.Stdin = bytes.NewReader(data)
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("typstyle: %s: %w", msg, err)
+	}
+	return out, nil
 }
 
 // servePlist shows a property list as syntax-highlighted XML, converting

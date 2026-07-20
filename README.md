@@ -103,6 +103,11 @@ fall back to download).
 files that don't parse as JSON show as-is. Oversized ones display as plain
 text in the browser instead of downloading.
 
+`.typ` files are reformatted with [typstyle](https://typstyle-rs.github.io/typstyle/)
+before highlighting, when it's installed; without it (or for sources typstyle
+can't parse) the file shows as written. Note the displayed line numbers are
+the formatter's, not the file's.
+
 Deliberately *not* highlighted: `.html` and `.svg` (the browser renders
 those better), `.txt` (prose reads better plain), `.md` (pandoc's job), and
 `go.mod` (chroma mis-identifies it). Files over 2 MB are served plain.

@@ -131,6 +131,33 @@ func TestServesTypstHighlighted(t *testing.T) {
 	}
 }
 
+func TestTypstReformatted(t *testing.T) {
+	if _, err := exec.LookPath("typstyle"); err != nil {
+		t.Skip("typstyle not available")
+	}
+
+	root := t.TempDir()
+	long := "#let xs = (111111111, 222222222, 333333333, 444444444, 555555555, 666666666, 777777777, 888888888)\n"
+	if err := os.WriteFile(filepath.Join(root, "long.typ"), []byte(long), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/long.typ", nil)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	// typstyle wraps the over-long one-line array onto ten lines.
+	if body := rec.Body.String(); !strings.Contains(body, `id="L10"`) {
+		t.Fatalf("body = %q, want ten reformatted lines", body)
+	}
+}
+
 func TestExtensionlessNamesHighlighted(t *testing.T) {
 	root := t.TempDir()
 	src := "all:\n\tgo build\n"
