@@ -88,8 +88,8 @@ linkable line numbers (`#L42`):
 > .diff .el .erb .erl .ex .exs .f .f90 .feature .fish .go .gradle .graphql
 > .groovy .h .hcl .hpp .hs .ini .java .jl .js .json .jsx .kt .lisp .lua
 > .mjs .nix .patch .php .pl .properties .proto .ps1 .py .r .rb .rs .s
-> .scala .scss .sh .sql .svelte .swift .tex .tf .toml .ts .tsx .vue .xml
-> .yaml .yml .zig .zsh`
+> .scala .scss .sh .sql .svelte .swift .tex .tf .toml .ts .tsx .typ .vue
+> .xml .yaml .yml .zig .zsh`
 
 Plus exact filenames without useful extensions: `Makefile`, `makefile`,
 `GNUmakefile`, `Dockerfile`, `CMakeLists.txt`, `.bashrc`, `.zshrc` — and
@@ -195,7 +195,7 @@ bypassed).
 | Treatment | Types |
 |-----------|-------|
 | Rendered as a document (pandoc) | `.md` `.rst` `.ipynb` `.doc` `.docx` `.odt` `.rtf` `.epub` |
-| Syntax-highlighted source | `.ada` `.adb` `.ads` `.awk` `.bash` `.bat` `.c` `.cc` `.clj` `.coffee` `.cpp` `.cs` `.css` `.dart` `.diff` `.el` `.erb` `.erl` `.ex` `.exs` `.f` `.f90` `.feature` `.fish` `.go` `.gradle` `.graphql` `.groovy` `.h` `.hcl` `.hpp` `.hs` `.ini` `.java` `.jl` `.js` `.json` `.jsx` `.kt` `.lisp` `.lua` `.mjs` `.nix` `.patch` `.php` `.pl` `.properties` `.proto` `.ps1` `.py` `.r` `.rb` `.rs` `.s` `.scala` `.scss` `.sh` `.sql` `.svelte` `.swift` `.tex` `.tf` `.toml` `.ts` `.tsx` `.vue` `.xml` `.yaml` `.yml` `.zig` `.zsh` |
+| Syntax-highlighted source | `.ada` `.adb` `.ads` `.awk` `.bash` `.bat` `.c` `.cc` `.clj` `.coffee` `.cpp` `.cs` `.css` `.dart` `.diff` `.el` `.erb` `.erl` `.ex` `.exs` `.f` `.f90` `.feature` `.fish` `.go` `.gradle` `.graphql` `.groovy` `.h` `.hcl` `.hpp` `.hs` `.ini` `.java` `.jl` `.js` `.json` `.jsx` `.kt` `.lisp` `.lua` `.mjs` `.nix` `.patch` `.php` `.pl` `.properties` `.proto` `.ps1` `.py` `.r` `.rb` `.rs` `.s` `.scala` `.scss` `.sh` `.sql` `.svelte` `.swift` `.tex` `.tf` `.toml` `.ts` `.tsx` `.typ` `.vue` `.xml` `.yaml` `.yml` `.zig` `.zsh` |
 | Syntax-highlighted by exact filename | `Makefile` `makefile` `GNUmakefile` `Dockerfile` `CMakeLists.txt` `.bashrc` `.zshrc` |
 | Highlighted as XML (binary converted via plutil) | `.plist` |
 | Displayed as tables | `.csv` `.tsv` (and every sheet/table inside the containers below) |

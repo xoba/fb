@@ -105,6 +105,32 @@ func TestServesGoSourceHighlighted(t *testing.T) {
 	}
 }
 
+func TestServesTypstHighlighted(t *testing.T) {
+	root := t.TempDir()
+	src := "#set page(width: 10cm)\n= Heading\nSome *bold* text.\n"
+	if err := os.WriteFile(filepath.Join(root, "doc.typ"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/doc.typ", nil)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Fatalf("Content-Type = %q, want highlighted text/html", got)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Heading") || !strings.Contains(body, "<span style=") {
+		t.Fatalf("body = %q, want highlighted typst tokens", body)
+	}
+}
+
 func TestExtensionlessNamesHighlighted(t *testing.T) {
 	root := t.TempDir()
 	src := "all:\n\tgo build\n"

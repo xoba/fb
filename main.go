@@ -1601,6 +1601,7 @@ var highlightExts = map[string]bool{
 	".toml":       true,
 	".ts":         true,
 	".tsx":        true,
+	".typ":        true,
 	".vue":        true,
 	".xml":        true,
 	".yaml":       true,
