@@ -2374,3 +2374,164 @@ func TestManifestHighlighted(t *testing.T) {
 		t.Fatalf("body lacks manifest content")
 	}
 }
+
+func requireGit(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+}
+
+// listingRow fetches a directory listing and returns the <tr> line for one
+// entry name, failing if it is absent.
+func listingRow(t *testing.T, server fileServer, dir, name string) string {
+	t.Helper()
+	body := fetchListing(t, server, dir)
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, `data-name="`+name+`"`) {
+			return line
+		}
+	}
+	t.Fatalf("listing %s has no row for %q:\n%s", dir, name, body)
+	return ""
+}
+
+func fetchListing(t *testing.T, server fileServer, dir string) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, dir, nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d, want 200", dir, rec.Code)
+	}
+	return rec.Body.String()
+}
+
+func TestGitWorktreeAnnotations(t *testing.T) {
+	requireGit(t)
+	root := t.TempDir()
+	writeAll := func(files map[string]string) {
+		t.Helper()
+		for name, content := range files {
+			p := filepath.Join(root, name)
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	writeAll(map[string]string{
+		".gitignore":    "ignored.txt\nbuild/\n",
+		"tracked.txt":   "one\n",
+		"sub/insub.txt": "one\n",
+	})
+	runGit(t, root, "init", "-b", "main")
+	runGit(t, root, "add", ".")
+	runGit(t, root, "commit", "-m", "init")
+	writeAll(map[string]string{
+		"tracked.txt":   "changed\n", // modified, not staged
+		"staged.txt":    "new\n",     // staged below
+		"loose.txt":     "loose\n",   // untracked
+		"ignored.txt":   "art\n",     // gitignored file
+		"build/out.bin": "obj\n",     // gitignored directory
+		"sub/insub.txt": "changed\n", // modified inside tracked subdir
+		"untr/a.txt":    "a\n",       // wholly untracked directory
+	})
+	runGit(t, root, "add", "staged.txt")
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+
+	body := fetchListing(t, server, "/")
+	for _, want := range []string{
+		"branch main", "no upstream",
+		`<span class="bad">2 modified</span>`,
+		`<span class="bad">1 staged</span>`,
+		`<span class="bad">2 untracked</span>`, // loose.txt and untr/
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("root listing lacks %q", want)
+		}
+	}
+
+	for name, want := range map[string][]string{
+		"tracked.txt": {`class="gitb modified"`, `>M</span>`, `title="modified — not staged"`},
+		"staged.txt":  {`class="gitb staged"`, `>A</span>`, `title="new file — staged for commit"`},
+		"loose.txt":   {`class="gitb untracked"`, `>?</span>`},
+		"ignored.txt": {`class="gitdim"`, "gitignored"},
+		"build/":      {`class="gitdim"`, "gitignored"},
+		"untr/":       {`class="gitb untracked"`, `>?</span>`},
+		"sub/":        {`class="gitb modified"`, `>●</span>`, `title="1 modified within"`},
+	} {
+		row := listingRow(t, server, "/", name)
+		for _, w := range want {
+			if !strings.Contains(row, w) {
+				t.Errorf("row for %s = %s, want %q", name, row, w)
+			}
+		}
+	}
+	if row := listingRow(t, server, "/", "ignored.txt"); strings.Contains(row, "gitb") {
+		t.Errorf("ignored.txt should dim, not badge: %s", row)
+	}
+
+	// A clean tracked file carries no annotation at all.
+	runGit(t, root, "checkout", "--", "tracked.txt")
+	if row := listingRow(t, server, "/", "tracked.txt"); strings.Contains(row, "gitb") || strings.Contains(row, "gitdim") {
+		t.Errorf("clean file should be unannotated: %s", row)
+	}
+
+	// Inside a wholly untracked directory every entry is untracked.
+	if row := listingRow(t, server, "/untr/", "a.txt"); !strings.Contains(row, `class="gitb untracked"`) {
+		t.Errorf("file in untracked dir should be marked untracked: %s", row)
+	}
+	// Inside a gitignored directory every entry dims.
+	if row := listingRow(t, server, "/build/", "out.bin"); !strings.Contains(row, "gitdim") {
+		t.Errorf("file in ignored dir should dim: %s", row)
+	}
+	// Inside .git itself, no worktree annotations (the repository section
+	// already covers it).
+	if body := fetchListing(t, server, "/.git/"); strings.Contains(body, `<p class="gitline">`) || strings.Contains(body, `<span class="gitb`) {
+		t.Errorf(".git listing should have no worktree annotations")
+	}
+}
+
+func TestGitRootLineSyncWithOrigin(t *testing.T) {
+	requireGit(t)
+	origin := t.TempDir()
+	runGit(t, origin, "init", "--bare")
+	root := t.TempDir()
+	runGit(t, root, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(root, "f.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "add", "f.txt")
+	runGit(t, root, "commit", "-m", "one")
+	runGit(t, root, "remote", "add", "origin", origin)
+	runGit(t, root, "push", "-q", "-u", "origin", "main")
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+
+	body := fetchListing(t, server, "/")
+	for _, want := range []string{"in sync with origin/main", "clean"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("clean synced root lacks %q; body: %s", want, body)
+		}
+	}
+
+	runGit(t, root, "commit", "--allow-empty", "-m", "two")
+	if body := fetchListing(t, server, "/"); !strings.Contains(body, `<span class="bad">ahead 1 of origin/main</span>`) {
+		t.Errorf("root line lacks ahead marker; body: %s", body)
+	}
+}
+
+func TestNonRepoListingHasNoGitLine(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "f.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+	if body := fetchListing(t, server, "/"); strings.Contains(body, `<p class="gitline">`) || strings.Contains(body, `<span class="gitb`) {
+		t.Errorf("non-repo listing should have no git annotations")
+	}
+}

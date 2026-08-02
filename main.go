@@ -3145,11 +3145,21 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 	}
 	sortDirItems(items, key, desc)
 
+	var worktree *worktreeStatus
+	if s.dir != "" {
+		if worktree = s.worktreeStatusFor(r.Context(), name); worktree != nil {
+			page.GitLine = worktree.rootLine()
+		}
+	}
+
 	var dirs, files int
 	var total int64
 	for _, item := range items {
 		entry := item.entry
 		view := dirEntryView{Name: entry.Name(), Href: (&url.URL{Path: entry.Name()}).String()}
+		if worktree != nil {
+			view.Git = worktree.entryStatus(entry.Name(), entry.IsDir())
+		}
 		if entry.IsDir() {
 			view.Name += "/"
 			view.Href += "/"
@@ -3342,6 +3352,350 @@ func gitSection(ctx context.Context, gitDir string) *gitView {
 	}
 
 	return view
+}
+
+// gitFileStatus is one listing entry's relationship to its git worktree,
+// ready for the template: a short colored badge after the name with a
+// hover description, or a dimmed name for ignored files. The zero value
+// renders nothing (clean tracked files, non-repo listings).
+type gitFileStatus struct {
+	Badge string // "M", "?", "●", ... ; "" for none
+	Class string // CSS color class: conflict, modified, staged, untracked
+	Title string // hover description of the state
+	Dim   bool   // gitignored: fade the name instead of badging it
+}
+
+// gitStatusItem is one fragment of the repo-root "git:" line; Bad marks
+// the states worth noticing (dirty counts, ahead/behind).
+type gitStatusItem struct {
+	Text string
+	Bad  bool
+}
+
+// gitDirCounts aggregates the states found beneath one subdirectory of a
+// listing (and, summed, beneath the listing itself).
+type gitDirCounts struct {
+	conflicts, staged, modified, deleted, untracked int
+}
+
+func (c *gitDirCounts) any() bool {
+	return c.conflicts+c.staged+c.modified+c.deleted+c.untracked > 0
+}
+
+// facts renders the nonzero counts as "2 modified, 1 untracked" fragments.
+func (c *gitDirCounts) facts() []string {
+	var out []string
+	add := func(n int, noun string) {
+		if n > 0 {
+			out = append(out, fmt.Sprintf("%d %s", n, noun))
+		}
+	}
+	add(c.conflicts, "unmerged")
+	add(c.modified, "modified")
+	add(c.deleted, "deleted")
+	add(c.staged, "staged")
+	add(c.untracked, "untracked")
+	return out
+}
+
+// badge summarizes a subdirectory's contents as a small dot whose color
+// follows the most urgent state within, described fully on hover.
+func (c *gitDirCounts) badge() gitFileStatus {
+	class := "untracked"
+	switch {
+	case c.conflicts > 0:
+		class = "conflict"
+	case c.modified+c.deleted+c.staged > 0:
+		class = "modified"
+	}
+	return gitFileStatus{Badge: "●", Class: class, Title: strings.Join(c.facts(), ", ") + " within"}
+}
+
+// worktreeStatus is the parsed `git status` of one listing directory:
+// per-entry states for its direct children, aggregated counts for its
+// subdirectories, branch/upstream headers, and totals for the repo-root
+// summary line.
+type worktreeStatus struct {
+	branch   string // branch.head: "main", "(detached)", ...
+	oid      string // branch.oid, abbreviated
+	upstream string // branch.upstream: "origin/main", "" when unset
+	hasAB    bool   // branch.ab header present
+	ahead    int
+	behind   int
+	files    map[string]gitFileStatus // direct children by entry name
+	dirs     map[string]*gitDirCounts // subdirs with changes deeper down
+	counts   gitDirCounts             // totals across the whole listing subtree
+	all      gitFileStatus            // listing dir itself untracked/ignored: applies to every entry
+	isRoot   bool                     // listing dir is the worktree root
+}
+
+// findWorktreeRoot walks up from an OS directory looking for a .git entry
+// (directory, or file for linked worktrees and submodules) and returns the
+// directory holding it. Paths inside a .git directory itself return "" —
+// object and ref listings are not worktree files.
+func findWorktreeRoot(dir string) string {
+	for cur := dir; ; {
+		if filepath.Base(cur) == ".git" {
+			return ""
+		}
+		if fi, err := os.Stat(filepath.Join(cur, ".git")); err == nil && (fi.IsDir() || fi.Mode().IsRegular()) {
+			return cur
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return ""
+		}
+		cur = parent
+	}
+}
+
+// worktreeStatusFor runs git status scoped to one listing directory and
+// parses it, or returns nil when the directory is not in a worktree (or
+// git is missing, slow, or fails — annotations just don't appear).
+// --no-optional-locks keeps browsing from ever writing to the repository.
+func (s fileServer) worktreeStatusFor(ctx context.Context, name string) *worktreeStatus {
+	osDir := filepath.Join(s.dir, filepath.FromSlash(name))
+	root := findWorktreeRoot(osDir)
+	if root == "" {
+		return nil
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", osDir,
+		"--no-optional-locks", "status", "--porcelain=v2", "-z", "--branch", "--ignored=matching", "--", ".")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		log.Printf("git status in %s: %v", osDir, err)
+		return nil
+	}
+	relDir := ""
+	if rel, err := filepath.Rel(root, osDir); err == nil && rel != "." {
+		relDir = filepath.ToSlash(rel)
+	}
+	ws := parseWorktreeStatus(out.String(), relDir)
+	ws.isRoot = relDir == ""
+	return ws
+}
+
+// parseWorktreeStatus decodes NUL-separated `git status --porcelain=v2`
+// output, whose paths -z pins relative to the worktree root; relDir (the
+// listing directory relative to that root, "" at the root itself) is
+// stripped so entries key by listing name. Anything deeper than one level
+// is aggregated into its top-level subdirectory's counts.
+func parseWorktreeStatus(out, relDir string) *worktreeStatus {
+	ws := &worktreeStatus{
+		files: make(map[string]gitFileStatus),
+		dirs:  make(map[string]*gitDirCounts),
+	}
+	tokens := strings.Split(out, "\x00")
+	for i := 0; i < len(tokens); i++ {
+		line := tokens[i]
+		if line == "" {
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "# "); ok {
+			key, val, _ := strings.Cut(rest, " ")
+			switch key {
+			case "branch.head":
+				ws.branch = val
+			case "branch.oid":
+				if len(val) > 7 {
+					val = val[:7]
+				}
+				ws.oid = val
+			case "branch.upstream":
+				ws.upstream = val
+			case "branch.ab":
+				if _, err := fmt.Sscanf(val, "+%d -%d", &ws.ahead, &ws.behind); err == nil {
+					ws.hasAB = true
+				}
+			}
+			continue
+		}
+		var xy, path string
+		switch line[0] {
+		case '1':
+			fields := strings.SplitN(line, " ", 9)
+			if len(fields) < 9 {
+				continue
+			}
+			xy, path = fields[1], fields[8]
+		case '2':
+			fields := strings.SplitN(line, " ", 10)
+			if len(fields) < 10 {
+				continue
+			}
+			xy, path = fields[1], fields[9]
+			i++ // the following token is the rename's original path
+		case 'u':
+			fields := strings.SplitN(line, " ", 11)
+			if len(fields) < 11 {
+				continue
+			}
+			xy, path = fields[1], fields[10]
+		case '?', '!':
+			xy, path = string(line[0]), line[2:]
+		default:
+			continue
+		}
+		if relDir != "" {
+			if path == relDir+"/" {
+				// The listing directory itself is untracked or ignored:
+				// the state applies to everything in it.
+				ws.all = fileStatusFor(xy)
+				continue
+			}
+			rest, ok := strings.CutPrefix(path, relDir+"/")
+			if !ok {
+				continue
+			}
+			path = rest
+		}
+		ws.record(xy, path)
+	}
+	return ws
+}
+
+// record files one status entry under the direct child it belongs to,
+// keeping both the per-entry state and the listing-wide totals.
+func (ws *worktreeStatus) record(xy, path string) {
+	name, isDir := strings.CutSuffix(path, "/")
+	if child, _, nested := strings.Cut(name, "/"); nested {
+		// Deeper than the listing: fold into the subdirectory's counts.
+		// Ignored files inside tracked subdirectories are noise, not news.
+		if xy != "!" {
+			c := ws.dirs[child]
+			if c == nil {
+				c = &gitDirCounts{}
+				ws.dirs[child] = c
+			}
+			c.count(xy)
+			ws.counts.count(xy)
+		}
+		return
+	}
+	_ = isDir // untracked/ignored directories annotate like files
+	ws.files[name] = fileStatusFor(xy)
+	if xy != "!" {
+		ws.counts.count(xy)
+	}
+}
+
+func (c *gitDirCounts) count(xy string) {
+	switch {
+	case xy == "?":
+		c.untracked++
+	case len(xy) != 2: // conflict codes like "UU", "AA" have both set
+	case xy[0] == 'U' || xy[1] == 'U' || xy == "AA" || xy == "DD":
+		c.conflicts++
+	case xy[1] == 'D':
+		c.deleted++
+	case xy[1] != '.':
+		c.modified++
+	default:
+		c.staged++
+	}
+}
+
+// stagedNouns names the staged states by their index letter for badge
+// tooltips: "A" reads better as "new file" than as bare "added".
+var stagedNouns = map[byte]string{
+	'M': "modified", 'A': "new file", 'D': "deleted", 'R': "renamed", 'C': "copied", 'T': "type changed",
+}
+
+// fileStatusFor maps one porcelain XY code (or "?"/"!") to its badge.
+func fileStatusFor(xy string) gitFileStatus {
+	switch xy {
+	case "?":
+		return gitFileStatus{Badge: "?", Class: "untracked", Title: "untracked — not added to git"}
+	case "!":
+		return gitFileStatus{Dim: true, Title: "gitignored"}
+	}
+	if len(xy) != 2 {
+		return gitFileStatus{}
+	}
+	x, y := xy[0], xy[1]
+	if x == 'U' || y == 'U' || xy == "AA" || xy == "DD" {
+		return gitFileStatus{Badge: "!", Class: "conflict", Title: "merge conflict — unmerged"}
+	}
+	switch {
+	case x != '.' && y != '.':
+		return gitFileStatus{Badge: string(x) + string(y), Class: "modified", Title: "staged, with further unstaged changes"}
+	case y != '.':
+		noun := stagedNouns[y]
+		if noun == "" {
+			noun = "changed"
+		}
+		return gitFileStatus{Badge: string(y), Class: "modified", Title: noun + " — not staged"}
+	case x != '.':
+		noun := stagedNouns[x]
+		if noun == "" {
+			noun = "changed"
+		}
+		return gitFileStatus{Badge: string(x), Class: "staged", Title: noun + " — staged for commit"}
+	}
+	return gitFileStatus{}
+}
+
+// entryStatus resolves the annotation for one listing entry: a whole-dir
+// state if the listing itself is untracked/ignored, the entry's own state,
+// or (for subdirectories) the summary of changes within.
+func (ws *worktreeStatus) entryStatus(name string, isDir bool) gitFileStatus {
+	if ws.all.Badge != "" || ws.all.Dim {
+		return ws.all
+	}
+	if st, ok := ws.files[name]; ok {
+		return st
+	}
+	if isDir {
+		if c := ws.dirs[name]; c != nil && c.any() {
+			return c.badge()
+		}
+	}
+	return gitFileStatus{}
+}
+
+// rootLine builds the repo-root "git:" summary — branch, sync against the
+// upstream as of the last fetch, and dirty counts — shown only on the
+// worktree's top-level listing.
+func (ws *worktreeStatus) rootLine() []gitStatusItem {
+	if !ws.isRoot {
+		return nil
+	}
+	var items []gitStatusItem
+	switch {
+	case ws.branch == "(detached)" && ws.oid != "":
+		items = append(items, gitStatusItem{Text: "detached HEAD at " + ws.oid})
+	case ws.branch != "":
+		items = append(items, gitStatusItem{Text: "branch " + ws.branch})
+	}
+	switch {
+	case ws.hasAB && ws.ahead == 0 && ws.behind == 0:
+		items = append(items, gitStatusItem{Text: "in sync with " + ws.upstream})
+	case ws.hasAB:
+		var sync []string
+		if ws.ahead > 0 {
+			sync = append(sync, fmt.Sprintf("ahead %d", ws.ahead))
+		}
+		if ws.behind > 0 {
+			sync = append(sync, fmt.Sprintf("behind %d", ws.behind))
+		}
+		items = append(items, gitStatusItem{Text: strings.Join(sync, ", ") + " of " + ws.upstream, Bad: true})
+	default:
+		items = append(items, gitStatusItem{Text: "no upstream"})
+	}
+	if ws.counts.any() {
+		for _, f := range ws.counts.facts() {
+			items = append(items, gitStatusItem{Text: f, Bad: true})
+		}
+	} else {
+		items = append(items, gitStatusItem{Text: "clean"})
+	}
+	return items
 }
 
 // Sort keys accepted in the ?sort= query parameter.
@@ -3584,6 +3938,7 @@ type directoryPage struct {
 	Readme     template.HTML
 	ReadmeText string
 	Git        *gitView
+	GitLine    []gitStatusItem
 }
 
 type crumb struct {
@@ -3598,6 +3953,7 @@ type dirEntryView struct {
 	Blurb   string
 	Size    string
 	ModTime string
+	Git     gitFileStatus
 }
 
 // dropJS lets any rendered page accept a drag-and-dropped file: the file is
@@ -3875,6 +4231,22 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
     font-variant-numeric: tabular-nums;
     width: 1%;
   }
+  /* Git worktree annotations: small colored badges after names, hover
+     titles carry the words; ignored files fade instead of badging. */
+  span.gitb {
+    margin-left: 0.5em;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.7rem;
+    font-weight: 600;
+    cursor: default;
+  }
+  span.gitb.modified { color: #9a6700; }
+  span.gitb.staged { color: #1a7f37; }
+  span.gitb.untracked { color: #6e7781; }
+  span.gitb.conflict { color: #cf222e; }
+  a.gitdim { opacity: 0.55; }
+  p.gitline { margin: -0.3rem 0 0.6rem; font-size: 0.85rem; color: #57606a; }
+  p.gitline span.bad { color: #9a6700; font-weight: 600; }
   section.readme { margin-top: 2rem; border-top: 1px solid #d0d7de; }
   section.readme h1.readme-title { font-size: 1rem; color: #57606a; font-weight: 600; }
   section.readme pre.readme-text {
@@ -3903,6 +4275,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if .RawHref}}<a class="raw" href="{{.RawHref}}">raw</a>{{end}}</nav>
 {{if .Blurb}}<p class="blurb">{{.Blurb}}</p>
 {{end}}{{if .Summary}}<p class="summary" id="listsum">{{.Summary}}</p>
+{{end}}{{with .GitLine}}<p class="gitline">git: {{range $i, $it := .}}{{if $i}}<span class="sep"> &middot; </span>{{end}}<span{{if $it.Bad}} class="bad"{{end}}>{{$it.Text}}</span>{{end}}</p>
 {{end}}{{if .QueryForm}}<form class="query" method="get" action="">
 <input type="text" name="q" value="{{.Query}}" placeholder="SQL query, e.g. select * from some_table limit 10" spellcheck="false" autocomplete="off">
 </form>
@@ -3911,7 +4284,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
 {{end}}{{end}}{{if .StatsAsync}}<p class="summary" id="statprog"></p>
 {{end}}{{if .SortLinks}}<div class="sort">sort: {{range $i, $l := .SortLinks}}{{if $i}} &middot; {{end}}<a {{if $l.Active}}class="active" {{end}}href="{{$l.Href}}">{{$l.Label}}{{if $l.Active}} {{$l.Arrow}}{{end}}</a>{{end}}</div>
 {{end}}
-{{define "rows"}}{{range .}}<tr data-name="{{.Name}}">{{if .IsDir}}<td class="dname"><a href="{{.Href}}" title="{{.Name}}">{{.Name}}</a></td><td class="blurb"{{with .Blurb}} title="{{.}}"{{end}}>{{.Blurb}}</td>{{else}}<td class="fname" colspan="2"><a href="{{.Href}}" title="{{.Name}}">{{.Name}}</a></td>{{end}}<td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
+{{define "gitb"}}{{with .Git}}{{if .Badge}}<span class="gitb {{.Class}}" title="{{.Title}}">{{.Badge}}</span>{{end}}{{end}}{{end}}{{define "rows"}}{{range .}}<tr data-name="{{.Name}}">{{if .IsDir}}<td class="dname"><a {{if .Git.Dim}}class="gitdim" {{end}}href="{{.Href}}" title="{{.Name}}{{if .Git.Dim}} — {{.Git.Title}}{{end}}">{{.Name}}</a>{{template "gitb" .}}</td><td class="blurb"{{with .Blurb}} title="{{.}}"{{end}}>{{.Blurb}}</td>{{else}}<td class="fname" colspan="2"><a {{if .Git.Dim}}class="gitdim" {{end}}href="{{.Href}}" title="{{.Name}}{{if .Git.Dim}} — {{.Git.Title}}{{end}}">{{.Name}}</a>{{template "gitb" .}}</td>{{end}}<td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
 {{end}}{{end}}<table class="listing">
 {{template "rows" .Entries}}</table>
 {{if .Dotted}}<details class="dotfiles">

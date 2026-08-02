@@ -249,6 +249,18 @@ notice before any upload starts. Past drops remain browsable at
   (via pandoc); `README.txt` is shown preformatted as a fallback.
 - **Dot-files** — entries starting with `.` collapse into a "N dot-files"
   disclosure section at the bottom; one click expands them.
+- **Git worktrees** — inside a git working tree, entries carry small
+  colored badges after their names (amber `M` modified, green letter
+  staged, gray `?` untracked, red `!` merge conflict); hovering explains
+  the state in words. Gitignored files dim instead of badging, and a
+  subdirectory containing changes gets a dot whose hover text counts them
+  (`2 modified, 1 untracked within`). The worktree's top-level listing
+  adds a muted `git:` line under the summary — branch, sync against the
+  upstream as of the last fetch (`ahead 2 of origin/main`), and dirty
+  counts, with anything actionable in amber; `clean · in sync` otherwise.
+  One `git status` scoped to the listed directory per page view, with
+  `--no-optional-locks` so browsing never touches the repository, and a
+  3-second timeout after which the listing simply renders unannotated.
 - **Git repositories** — a listing that is itself a git repository
   directory (a `.git` directory, or a bare repository: anything with a
   `HEAD` file plus `objects` and `refs` directories) gets a section at the
