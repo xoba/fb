@@ -3148,7 +3148,7 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 	var worktree *worktreeStatus
 	if s.dir != "" {
 		if worktree = s.worktreeStatusFor(r.Context(), name); worktree != nil {
-			page.GitLine = worktree.rootLine()
+			page.GitLine = worktree.statusLine()
 		}
 	}
 
@@ -3186,6 +3186,35 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 		}
 	}
 	page.Summary = listingSummary(dirs, files, total)
+
+	// Files git reports but the directory no longer holds are deletions:
+	// give them ghost rows so a deleted file stays visible where it was.
+	// A vanished subdirectory git still has entries under gets one too.
+	if worktree != nil {
+		seen := make(map[string]bool, len(entries))
+		for _, entry := range entries {
+			seen[entry.Name()] = true
+		}
+		var ghosts []dirEntryView
+		for name, st := range worktree.files {
+			if !seen[name] {
+				ghosts = append(ghosts, dirEntryView{Name: name, Ghost: true, Git: st})
+			}
+		}
+		for name, c := range worktree.dirs {
+			if !seen[name] && c.any() {
+				ghosts = append(ghosts, dirEntryView{Name: name + "/", IsDir: true, Ghost: true, Git: c.badge()})
+			}
+		}
+		sort.Slice(ghosts, func(i, j int) bool { return ghosts[i].Name < ghosts[j].Name })
+		for _, g := range ghosts {
+			if strings.HasPrefix(g.Name, ".") {
+				page.Dotted = append(page.Dotted, g)
+			} else {
+				page.Entries = append(page.Entries, g)
+			}
+		}
+	}
 
 	if readme := findReadme(entries); readme != "" {
 		full := path.Join(name, readme)
@@ -3659,12 +3688,17 @@ func (ws *worktreeStatus) entryStatus(name string, isDir bool) gitFileStatus {
 	return gitFileStatus{}
 }
 
-// rootLine builds the repo-root "git:" summary — branch, sync against the
-// upstream as of the last fetch, and dirty counts — shown only on the
-// worktree's top-level listing.
-func (ws *worktreeStatus) rootLine() []gitStatusItem {
+// statusLine builds a listing's "git:" summary. The worktree root gets
+// the full line — branch, sync against the upstream as of the last fetch,
+// and dirty counts (or "clean"). Deeper listings get just the counts,
+// scoped to their own subtree, and only when something is dirty there.
+func (ws *worktreeStatus) statusLine() []gitStatusItem {
 	if !ws.isRoot {
-		return nil
+		var items []gitStatusItem
+		for _, f := range ws.counts.facts() {
+			items = append(items, gitStatusItem{Text: f, Bad: true})
+		}
+		return items
 	}
 	var items []gitStatusItem
 	switch {
@@ -3954,6 +3988,7 @@ type dirEntryView struct {
 	Size    string
 	ModTime string
 	Git     gitFileStatus
+	Ghost   bool // git knows the name but the file is gone from disk (deleted)
 }
 
 // dropJS lets any rendered page accept a drag-and-dropped file: the file is
@@ -4245,6 +4280,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
   span.gitb.untracked { color: #6e7781; }
   span.gitb.conflict { color: #cf222e; }
   a.gitdim { opacity: 0.55; }
+  span.gitghost { color: #8c959f; text-decoration: line-through; cursor: default; }
   p.gitline { margin: -0.3rem 0 0.6rem; font-size: 0.85rem; color: #57606a; }
   p.gitline span.bad { color: #9a6700; font-weight: 600; }
   section.readme { margin-top: 2rem; border-top: 1px solid #d0d7de; }
@@ -4284,7 +4320,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
 {{end}}{{end}}{{if .StatsAsync}}<p class="summary" id="statprog"></p>
 {{end}}{{if .SortLinks}}<div class="sort">sort: {{range $i, $l := .SortLinks}}{{if $i}} &middot; {{end}}<a {{if $l.Active}}class="active" {{end}}href="{{$l.Href}}">{{$l.Label}}{{if $l.Active}} {{$l.Arrow}}{{end}}</a>{{end}}</div>
 {{end}}
-{{define "gitb"}}{{with .Git}}{{if .Badge}}<span class="gitb {{.Class}}" title="{{.Title}}">{{.Badge}}</span>{{end}}{{end}}{{end}}{{define "rows"}}{{range .}}<tr data-name="{{.Name}}">{{if .IsDir}}<td class="dname"><a {{if .Git.Dim}}class="gitdim" {{end}}href="{{.Href}}" title="{{.Name}}{{if .Git.Dim}} — {{.Git.Title}}{{end}}">{{.Name}}</a>{{template "gitb" .}}</td><td class="blurb"{{with .Blurb}} title="{{.}}"{{end}}>{{.Blurb}}</td>{{else}}<td class="fname" colspan="2"><a {{if .Git.Dim}}class="gitdim" {{end}}href="{{.Href}}" title="{{.Name}}{{if .Git.Dim}} — {{.Git.Title}}{{end}}">{{.Name}}</a>{{template "gitb" .}}</td>{{end}}<td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
+{{define "ename"}}{{if .Ghost}}<span class="gitghost" title="{{.Name}} — {{.Git.Title}}">{{.Name}}</span>{{else}}<a {{if .Git.Dim}}class="gitdim" {{end}}href="{{.Href}}" title="{{.Name}}{{if .Git.Dim}} — {{.Git.Title}}{{end}}">{{.Name}}</a>{{end}}{{with .Git}}{{if .Badge}}<span class="gitb {{.Class}}" title="{{.Title}}">{{.Badge}}</span>{{end}}{{end}}{{end}}{{define "rows"}}{{range .}}<tr data-name="{{.Name}}">{{if .IsDir}}<td class="dname">{{template "ename" .}}</td><td class="blurb"{{with .Blurb}} title="{{.}}"{{end}}>{{.Blurb}}</td>{{else}}<td class="fname" colspan="2">{{template "ename" .}}</td>{{end}}<td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
 {{end}}{{end}}<table class="listing">
 {{template "rows" .Entries}}</table>
 {{if .Dotted}}<details class="dotfiles">

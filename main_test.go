@@ -2535,3 +2535,76 @@ func TestNonRepoListingHasNoGitLine(t *testing.T) {
 		t.Errorf("non-repo listing should have no git annotations")
 	}
 }
+
+func TestGitDeletedFilesGetGhostRowsAndSubdirHeaders(t *testing.T) {
+	requireGit(t)
+	root := t.TempDir()
+	for name, content := range map[string]string{
+		"sub/keep.txt":  "keep\n",
+		"sub/gone.txt":  "bye\n",
+		"gonedir/a.txt": "a\n",
+		"gonedir/b.txt": "b\n",
+		"staged.txt":    "s\n",
+	} {
+		p := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGit(t, root, "init", "-b", "main")
+	runGit(t, root, "add", ".")
+	runGit(t, root, "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(root, "sub/keep.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "sub/gone.txt")); err != nil { // unstaged deletion
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "gonedir")); err != nil { // whole tracked dir gone
+		t.Fatal(err)
+	}
+	runGit(t, root, "rm", "-q", "staged.txt") // staged deletion
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+
+	// The subdirectory gets its own scoped header and a ghost row for the
+	// deleted file.
+	body := fetchListing(t, server, "/sub/")
+	for _, want := range []string{
+		`<p class="gitline">git: <span class="bad">1 modified</span><span class="sep"> &middot; </span><span class="bad">1 deleted</span></p>`,
+		`<span class="gitghost" title="gone.txt — deleted — not staged">gone.txt</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("sub listing lacks %q; body: %s", want, body)
+		}
+	}
+
+	// The root counts everything below, ghosts the staged deletion, and
+	// ghosts the vanished directory with its counts on hover.
+	body = fetchListing(t, server, "/")
+	for _, want := range []string{
+		"1 modified", "3 deleted", "branch main",
+		`<span class="gitghost" title="staged.txt — deleted — staged for commit">staged.txt</span>`,
+		`<span class="gitghost" title="gonedir/ — 2 deleted within">gonedir/</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("root listing lacks %q; body: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `data-name="gone.txt"`) {
+		t.Errorf("sub/gone.txt should not appear at the root, only in sub/")
+	}
+
+	// A clean subtree stays headerless: revert everything and check.
+	runGit(t, root, "checkout", "--", ".")
+	runGit(t, root, "reset", "-q", "--hard", "HEAD")
+	if body := fetchListing(t, server, "/sub/"); strings.Contains(body, `<p class="gitline">`) {
+		t.Errorf("clean subdir should have no git line")
+	}
+	if body := fetchListing(t, server, "/"); !strings.Contains(body, "clean") {
+		t.Errorf("clean root should say clean")
+	}
+}

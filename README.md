@@ -254,10 +254,15 @@ notice before any upload starts. Past drops remain browsable at
   staged, gray `?` untracked, red `!` merge conflict); hovering explains
   the state in words. Gitignored files dim instead of badging, and a
   subdirectory containing changes gets a dot whose hover text counts them
-  (`2 modified, 1 untracked within`). The worktree's top-level listing
-  adds a muted `git:` line under the summary — branch, sync against the
-  upstream as of the last fetch (`ahead 2 of origin/main`), and dirty
-  counts, with anything actionable in amber; `clean · in sync` otherwise.
+  (`2 modified, 1 untracked within`). A file deleted from HEAD but gone
+  from disk keeps a ghost row — struck-through, unlinked — where it used
+  to be, as does a vanished tracked directory. The worktree's top-level
+  listing adds a muted `git:` line under the summary — branch, sync
+  against the upstream as of the last fetch (`ahead 2 of origin/main`),
+  and dirty counts, with anything actionable in amber; `clean · in sync`
+  otherwise. Listings deeper in the worktree get the same line with just
+  the counts, scoped to their own subtree, only when something is dirty
+  there.
   One `git status` scoped to the listed directory per page view, with
   `--no-optional-locks` so browsing never touches the repository, and a
   3-second timeout after which the listing simply renders unannotated.
