@@ -311,6 +311,37 @@ func isLoopbackHost(hostport string) bool {
 	return false
 }
 
+// heavyWorkSlots bounds how much individually-capped heavyweight work —
+// pandoc renders, tar extractions, sqlite temp copies, HEIC conversions,
+// parquet decodes, in-memory query staging — runs at once. The per-request
+// caps mean little if a page can open unlimited parallel navigations; this
+// keeps a burst from multiplying the caps into real memory/CPU exhaustion.
+const heavyWorkSlots = 4
+
+var heavySem = make(chan struct{}, heavyWorkSlots)
+
+// acquireHeavy takes a heavyweight-work slot, waiting until one frees up or
+// the context is canceled.
+func acquireHeavy(ctx context.Context) (release func(), ok bool) {
+	select {
+	case heavySem <- struct{}{}:
+		return func() { <-heavySem }, true
+	case <-ctx.Done():
+		return nil, false
+	}
+}
+
+// tryAcquireHeavy takes a slot without waiting, for optional decoration
+// (like README previews) that is better skipped than queued.
+func tryAcquireHeavy() (release func(), ok bool) {
+	select {
+	case heavySem <- struct{}{}:
+		return func() { <-heavySem }, true
+	default:
+		return nil, false
+	}
+}
+
 // parseRootArg accepts an optional serve path; with none the server offers
 // the config file's root, or failing that the user's home directory.
 func parseRootArg(args []string, configured string) (string, error) {
@@ -576,7 +607,16 @@ func (s fileServer) descendArchive(w http.ResponseWriter, r *http.Request, arcNa
 
 	var arc fs.FS
 	if isTarName(arcName) {
+		// Tars extract fully into memory; zips stay lazy and cheap, so
+		// only extraction takes a heavyweight slot. It is released before
+		// routing so nested archives don't pile up slots.
+		release, ok := acquireHeavy(r.Context())
+		if !ok {
+			http.Error(w, "server busy", http.StatusServiceUnavailable)
+			return
+		}
 		arc, err = tarFS(viewName(arcName), f, info)
+		release()
 	} else {
 		arc, err = zipFS(f, info)
 	}
@@ -1430,6 +1470,12 @@ func (s fileServer) serveDocument(w http.ResponseWriter, r *http.Request, name s
 		s.serveRaw(w, r, name, info)
 		return
 	}
+	release, ok := acquireHeavy(r.Context())
+	if !ok {
+		http.Error(w, "server busy", http.StatusServiceUnavailable)
+		return
+	}
+	defer release()
 	html, err := s.renderDocument(r.Context(), name, renderOptions{
 		format:     format,
 		standalone: true,
@@ -1897,6 +1943,12 @@ var (
 // including GPS) and returns the path of the converted file, cached per
 // (path, size, mtime) so repeat views are instant.
 func (s fileServer) heicJPEG(ctx context.Context, name string, info fs.FileInfo) (string, error) {
+	release, ok := acquireHeavy(ctx)
+	if !ok {
+		return "", fmt.Errorf("server busy: %w", ctx.Err())
+	}
+	defer release()
+
 	heicCacheOnce.Do(func() {
 		heicCachePath, heicCacheErr = os.MkdirTemp("", "fb-heic-")
 	})
@@ -2737,14 +2789,26 @@ func (s fileServer) serveParquet(w http.ResponseWriter, r *http.Request, name st
 		s.serveRaw(w, r, name, info)
 		return
 	}
-	src, err := fs.ReadFile(s.fsys, name)
-	if err != nil {
+	release, ok := acquireHeavy(r.Context())
+	if !ok {
+		http.Error(w, "server busy", http.StatusServiceUnavailable)
+		return
+	}
+	src, readErr := fs.ReadFile(s.fsys, name)
+	var header []string
+	var rows [][]string
+	var total int64
+	var parseErr error
+	if readErr == nil {
+		header, rows, total, parseErr = parquetRows(src)
+	}
+	release()
+	if readErr != nil {
 		http.Error(w, "cannot read file", http.StatusInternalServerError)
 		return
 	}
-	header, rows, total, err := parquetRows(src)
-	if err != nil {
-		log.Printf("parse parquet %s: %v", name, err)
+	if parseErr != nil {
+		log.Printf("parse parquet %s: %v", name, parseErr)
 		s.serveRaw(w, r, name, info)
 		return
 	}
@@ -3060,7 +3124,7 @@ func (s fileServer) serveContainerListing(w http.ResponseWriter, r *http.Request
 			}
 		}
 	} else {
-		db, cleanup, dbErr := s.openSQLite(name, info)
+		db, cleanup, dbErr := s.openSQLite(r.Context(), name, info)
 		if dbErr == nil {
 			defer cleanup()
 			// On-disk databases can be huge: serve the listing instantly
@@ -3323,7 +3387,7 @@ func (s fileServer) sqliteMemberRow(ctx context.Context, name string, info fs.Fi
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	db, cleanup, err := s.openSQLite(name, info)
+	db, cleanup, err := s.openSQLite(ctx, name, info)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -3352,7 +3416,7 @@ func (s fileServer) sqliteMemberData(ctx context.Context, name string, info fs.F
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	db, cleanup, err := s.openSQLite(name, info)
+	db, cleanup, err := s.openSQLite(ctx, name, info)
 	if err != nil {
 		return nil, nil, 0, "", err
 	}
@@ -3530,7 +3594,7 @@ func (s fileServer) serveMemberCSV(w http.ResponseWriter, r *http.Request, name 
 		return
 	}
 
-	db, cleanup, err := s.openSQLite(name, info)
+	db, cleanup, err := s.openSQLite(r.Context(), name, info)
 	if err != nil {
 		log.Printf("open sqlite %s: %v", name, err)
 		http.NotFound(w, r)
@@ -3649,11 +3713,20 @@ type memTable struct {
 // query box that sqlite databases do. Header cells become column names
 // (sanitized and deduplicated; blanks become c1, c2, …), and a column whose
 // non-empty cells all parse as integers or reals gets that type, so sums
-// and sorts behave numerically. The database is rebuilt per request:
-// sources are small (the csv and xlsx viewer caps) and may change between
-// requests. Once loaded it is locked with PRAGMA query_only, matching the
-// read-only stance of the on-disk sqlite path.
+// and sorts behave numerically. Sources are small (the csv and xlsx viewer
+// caps); the build runs under a heavyweight-work slot with a timeout. Once
+// loaded it is locked with PRAGMA query_only, matching the read-only
+// stance of the on-disk sqlite path.
 func loadMemoryDB(ctx context.Context, tables []memTable) (*sql.DB, func(), error) {
+	release, ok := acquireHeavy(ctx)
+	if !ok {
+		return nil, nil, fmt.Errorf("server busy: %w", ctx.Err())
+	}
+	defer release()
+
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
 	db, err := sql.Open("sqlite", "file::memory:")
 	if err != nil {
 		return nil, nil, err
@@ -3810,17 +3883,24 @@ func sqlCellValue(cell, typ string) any {
 // join across sheets. Sheet names sanitize to identifiers (tableIdent), so
 // "Q1 Sales" is queried as Q1_Sales, without quoting.
 func (s fileServer) xlsxMemoryDB(ctx context.Context, name string, info fs.FileInfo) (*sql.DB, func(), error) {
+	release, ok := acquireHeavy(ctx)
+	if !ok {
+		return nil, nil, fmt.Errorf("server busy: %w", ctx.Err())
+	}
+
 	wb, err := s.openXLSX(name, info)
 	if err != nil {
+		release()
 		return nil, nil, err
 	}
-	defer wb.Close()
 
 	var tables []memTable
 	seen := map[string]bool{}
 	for _, sheet := range wb.GetSheetList() {
 		rows, err := wb.GetRows(sheet)
 		if err != nil {
+			wb.Close()
+			release()
 			return nil, nil, err
 		}
 		rows = dropLeadingEmptyRows(rows)
@@ -3829,6 +3909,8 @@ func (s fileServer) xlsxMemoryDB(ctx context.Context, name string, info fs.FileI
 		}
 		tables = append(tables, memTable{name: tableIdent(sheet, seen), header: rows[0], rows: rows[1:]})
 	}
+	wb.Close()
+	release() // loadMemoryDB takes its own slot
 	if len(tables) == 0 {
 		return nil, nil, errors.New("workbook has no data to query")
 	}
@@ -3883,9 +3965,9 @@ func tableIdent(name string, seen map[string]bool) string {
 // statement-level screening above that). On-disk databases are opened in
 // place, with no size limit — sqlite pages in only what a query touches.
 // Archive-backed databases are copied to a temp file first (the driver
-// needs a real path), capped at maxSQLiteBytes; the returned cleanup closes
-// the handle and removes any copy.
-func (s fileServer) openSQLite(name string, info fs.FileInfo) (*sql.DB, func(), error) {
+// needs a real path), capped at maxSQLiteBytes and under a heavyweight-work
+// slot; the returned cleanup closes the handle and removes any copy.
+func (s fileServer) openSQLite(ctx context.Context, name string, info fs.FileInfo) (*sql.DB, func(), error) {
 	if s.dir != "" {
 		dsn := &url.URL{
 			Scheme:   "file",
@@ -3905,6 +3987,12 @@ func (s fileServer) openSQLite(name string, info fs.FileInfo) (*sql.DB, func(), 
 	if info.Size() > maxSQLiteBytes {
 		return nil, nil, fmt.Errorf("database too large (%d bytes)", info.Size())
 	}
+
+	release, ok := acquireHeavy(ctx)
+	if !ok {
+		return nil, nil, fmt.Errorf("server busy: %w", ctx.Err())
+	}
+	defer release()
 
 	src, err := s.fsys.Open(name)
 	if err != nil {
@@ -4055,7 +4143,7 @@ func (s fileServer) serveSQLiteStat(w http.ResponseWriter, r *http.Request, name
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	db, cleanup, err := s.openSQLite(name, info)
+	db, cleanup, err := s.openSQLite(ctx, name, info)
 	if err != nil {
 		http.Error(w, "cannot open database", http.StatusInternalServerError)
 		return
@@ -4526,12 +4614,17 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 			return err == nil && info.Size() <= maxDocumentBytes
 		}
 		if strings.EqualFold(path.Ext(readme), ".md") && previewable() {
-			html, err := s.renderDocument(r.Context(), full, renderOptions{})
-			if err != nil {
-				log.Printf("pandoc failed for %s: %v", full, err)
-			} else {
-				page.ReadmeName = readme
-				page.Readme = template.HTML(html)
+			// A preview is decoration: skip it rather than queue behind
+			// heavy work.
+			if release, ok := tryAcquireHeavy(); ok {
+				html, err := s.renderDocument(r.Context(), full, renderOptions{})
+				release()
+				if err != nil {
+					log.Printf("pandoc failed for %s: %v", full, err)
+				} else {
+					page.ReadmeName = readme
+					page.Readme = template.HTML(html)
+				}
 			}
 		} else if !strings.EqualFold(path.Ext(readme), ".md") && previewable() {
 			if text, err := fs.ReadFile(s.fsys, full); err == nil {
