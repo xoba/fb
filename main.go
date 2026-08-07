@@ -7,10 +7,12 @@ import (
 	"compress/bzip2"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"embed"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -361,6 +363,15 @@ type fileServer struct {
 }
 
 func (s fileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Baseline hardening on every response: no MIME sniffing (a file's
+	// bytes stay their declared type), no embedding as a cross-origin
+	// subresource, no framing of fb pages (which keeps planted content —
+	// see handleDrop — from being driven from another site in iframes).
+	h := w.Header()
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Cross-Origin-Resource-Policy", "same-origin")
+	h.Set("Content-Security-Policy", "frame-ancestors 'none'")
+
 	name := requestName(r.URL.Path)
 
 	if name == assetPrefix || strings.HasPrefix(name, assetPrefix+"/") {
@@ -714,7 +725,19 @@ func (s fileServer) serveRaw(w http.ResponseWriter, r *http.Request, name string
 	w.Header().Set("Content-Disposition",
 		mime.FormatMediaType("inline", map[string]string{"filename": path.Base(name)}))
 
+	// Active document types still display inline, but sandboxed: an HTML or
+	// SVG file under the serve root (a cloned repo's docs, a downloaded
+	// report) renders, while its scripts never run on fb's origin — where
+	// they could read every served file.
+	extType := mime.TypeByExtension(strings.ToLower(path.Ext(viewName(name))))
+	if activeContentType(extType) {
+		w.Header().Set("Content-Security-Policy", "sandbox; frame-ancestors 'none'")
+	}
+
 	if rs, ok := f.(io.ReadSeeker); ok {
+		if head, err := readHead(rs); err == nil {
+			guardSniffedHTML(w, extType, head)
+		}
 		http.ServeContent(w, r, path.Base(name), info.ModTime(), rs)
 		return
 	}
@@ -728,7 +751,43 @@ func (s fileServer) serveRaw(w http.ResponseWriter, r *http.Request, name string
 		http.Error(w, "archive member too large", http.StatusRequestEntityTooLarge)
 		return
 	}
+	guardSniffedHTML(w, extType, data)
 	http.ServeContent(w, r, path.Base(name), info.ModTime(), bytes.NewReader(data))
+}
+
+// activeContentType reports whether a MIME type lets the browser execute
+// script in the serving origin when the content is navigated to.
+func activeContentType(ctype string) bool {
+	base, _, _ := strings.Cut(ctype, ";")
+	switch strings.TrimSpace(base) {
+	case "text/html", "image/svg+xml", "application/xhtml+xml":
+		return true
+	}
+	return false
+}
+
+// readHead returns the first few hundred bytes of rs, restoring the read
+// position, for content sniffing ahead of http.ServeContent.
+func readHead(rs io.ReadSeeker) ([]byte, error) {
+	head := make([]byte, 512)
+	n, err := rs.Read(head)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if _, err := rs.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	return head[:n], nil
+}
+
+// guardSniffedHTML keeps a file whose extension yields no MIME type from
+// being typed text/html by http.ServeContent's first-512-bytes sniffing: an
+// extensionless payload of markup would otherwise execute on fb's origin.
+// It displays as plain text instead.
+func guardSniffedHTML(w http.ResponseWriter, extType string, head []byte) {
+	if extType == "" && strings.HasPrefix(http.DetectContentType(head), "text/html") {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	}
 }
 
 // wantsDocument reports whether a request is a browser navigation, as opposed
@@ -796,6 +855,10 @@ func (s fileServer) serveInternal(w http.ResponseWriter, r *http.Request, name s
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		if !sameOrigin(r) {
+			http.Error(w, "cross-site request rejected", http.StatusForbidden)
+			return
+		}
 		s.handleDrop(w, r)
 		return
 	}
@@ -804,6 +867,10 @@ func (s fileServer) serveInternal(w http.ResponseWriter, r *http.Request, name s
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", "POST")
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !sameOrigin(r) {
+			http.Error(w, "cross-site request rejected", http.StatusForbidden)
 			return
 		}
 		s.handleCd(w, r)
@@ -834,6 +901,29 @@ func (s fileServer) serveInternal(w http.ResponseWriter, r *http.Request, name s
 	}
 
 	serveAsset(w, r, name)
+}
+
+// sameOrigin reports whether a POST to a state-changing endpoint comes from
+// fb's own pages or a non-browser client, rejecting cross-site forgeries:
+// fb runs unauthenticated on loopback, so without this a web page the victim
+// visits could fire CORS-simple POSTs at /_fb/drop (planting files that are
+// then served back from fb's origin) or /_fb/cd (triggering disk searches).
+// Browsers always mark cross-site posts in Sec-Fetch-Site; curl and scripts
+// send neither marker nor Origin and are the same-machine clients the
+// endpoints exist for.
+func sameOrigin(r *http.Request) bool {
+	switch sfs := r.Header.Get("Sec-Fetch-Site"); sfs {
+	case "", "same-origin", "same-site", "none":
+	default:
+		return false
+	}
+	if o := r.Header.Get("Origin"); o != "" {
+		u, err := url.Parse(o)
+		if err != nil || !isLoopbackHost(u.Host) {
+			return false
+		}
+	}
+	return true
 }
 
 var (
@@ -870,7 +960,11 @@ func (s fileServer) handleDrop(w http.ResponseWriter, r *http.Request) {
 		base = "dropped"
 	}
 
-	seq := fmt.Sprintf("%06d", dropSeq.Add(1))
+	// The directory name keeps its sequence-number prefix (drops stay
+	// chronologically ordered in listings) plus a random suffix, so a page
+	// that managed to post a drop still cannot address it blindly —
+	// /_fb/drops/ URLs must not be guessable.
+	seq := fmt.Sprintf("%06d-%s", dropSeq.Add(1), dropSuffix())
 	if err := os.MkdirAll(filepath.Join(dir, seq), 0o755); err != nil {
 		http.Error(w, "cannot store drop", http.StatusInternalServerError)
 		return
@@ -892,6 +986,18 @@ func (s fileServer) handleDrop(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprint(w, (&url.URL{Path: "/" + assetPrefix + "/drops/" + seq + "/" + base}).String())
+}
+
+// dropSuffix returns 16 hex characters of randomness for a drop directory
+// name, making drop URLs unguessable (see handleDrop).
+func dropSuffix() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Entropy failure must not lose the upload; the sequence number
+		// still keeps names unique.
+		return "x"
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // maxCdChildren caps how many immediate child names the browser reports for
