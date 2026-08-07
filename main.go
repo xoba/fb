@@ -53,6 +53,7 @@ import (
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/microcosm-cc/bluemonday"
+	"github.com/parquet-go/parquet-go"
 	"github.com/rwcarlsen/goexif/exif"
 	exiftiff "github.com/rwcarlsen/goexif/tiff"
 	"github.com/xuri/excelize/v2"
@@ -434,6 +435,9 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 		switch {
 		case tableDelims[ext] != 0:
 			s.serveTable(w, r, name, info)
+			return
+		case ext == ".parquet":
+			s.serveParquet(w, r, name, info)
 			return
 		case isTabularContainer(name):
 			// Gate on viewability before serveContainerListing's trailing
@@ -2683,7 +2687,14 @@ func (s fileServer) serveTable(w http.ResponseWriter, r *http.Request, name stri
 	}
 
 	header, rows := records[0], records[1:]
+	summary := fmt.Sprintf("%d rows × %d columns", len(rows), len(header))
+	s.serveParsedTable(w, r, name, info, header, rows, summary)
+}
 
+// serveParsedTable is the shared tail of every single-file table view
+// (csv/tsv, parquet): the query box, full-cell views, and the rendered
+// table page, all over already-parsed rows.
+func (s fileServer) serveParsedTable(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo, header []string, rows [][]string, summary string) {
 	if query := strings.TrimSpace(r.URL.Query().Get("q")); query != "" {
 		s.serveTableQuery(w, r, name, info, header, rows, query)
 		return
@@ -2702,9 +2713,111 @@ func (s fileServer) serveTable(w http.ResponseWriter, r *http.Request, name stri
 
 	page := s.tablePageFor(name)
 	page.QueryForm = true
-	page.Summary = fmt.Sprintf("%d rows × %d columns", len(rows), len(header))
+	page.Summary = summary
 	page.Sheets = []sheetView{makeSheet("", header, displayCells(rows), cellSelfHref)}
 	s.renderTablePage(w, r, name, info, page)
+}
+
+// Parquet files render and query exactly like csv: decoded to strings once
+// (they are small under the cap) and passed through the shared table page
+// and in-memory sqlite query machinery as a table named t.
+
+const (
+	// maxParquetBytes caps how large a parquet file is decoded.
+	maxParquetBytes = 20 << 20
+
+	// maxParquetRows caps how many rows are decoded — display shows 2000
+	// anyway, and the cap bounds what a query loads; the summary line says
+	// when it bites.
+	maxParquetRows = 100_000
+)
+
+func (s fileServer) serveParquet(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
+	if info.Size() > maxParquetBytes {
+		s.serveRaw(w, r, name, info)
+		return
+	}
+	src, err := fs.ReadFile(s.fsys, name)
+	if err != nil {
+		http.Error(w, "cannot read file", http.StatusInternalServerError)
+		return
+	}
+	header, rows, total, err := parquetRows(src)
+	if err != nil {
+		log.Printf("parse parquet %s: %v", name, err)
+		s.serveRaw(w, r, name, info)
+		return
+	}
+	summary := fmt.Sprintf("%d rows × %d columns", len(rows), len(header))
+	if int64(len(rows)) < total {
+		summary = fmt.Sprintf("first %d of %d rows × %d columns", len(rows), total, len(header))
+	}
+	s.serveParsedTable(w, r, name, info, header, rows, summary)
+}
+
+// parquetRows decodes a parquet file into a header and string rows,
+// reading at most maxParquetRows. Column order follows the schema; NULL
+// values become empty strings. The decoder panics on some malformed
+// inputs, so the recover turns those into ordinary errors and the file
+// falls back to a raw download.
+func parquetRows(data []byte) (header []string, rows [][]string, total int64, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("parquet decode: %v", p)
+		}
+	}()
+
+	pf, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	// The generic map reader cannot derive a schema from its type
+	// parameter; the file's own schema supplies it.
+	reader := parquet.NewGenericReader[map[string]any](bytes.NewReader(data), pf.Schema())
+	defer reader.Close()
+	total = reader.NumRows()
+	for _, f := range reader.Schema().Fields() {
+		header = append(header, f.Name())
+	}
+
+	buf := make([]map[string]any, 256)
+	for len(rows) < maxParquetRows {
+		for i := range buf {
+			buf[i] = make(map[string]any, len(header))
+		}
+		n, readErr := reader.Read(buf)
+		for _, rec := range buf[:n] {
+			row := make([]string, len(header))
+			for i, col := range header {
+				if v, ok := rec[col]; ok && v != nil {
+					row[i] = parquetCellString(v)
+				}
+			}
+			rows = append(rows, row)
+			if len(rows) == maxParquetRows {
+				break
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return nil, nil, 0, readErr
+		}
+		if n == 0 {
+			break
+		}
+	}
+	return header, rows, total, nil
+}
+
+// parquetCellString formats one decoded parquet value for display and
+// querying: byte arrays as text, everything else via fmt.
+func parquetCellString(v any) string {
+	if b, ok := v.([]byte); ok {
+		return string(b)
+	}
+	return fmt.Sprint(v)
 }
 
 // serveTableQuery answers the query box on a csv/tsv page: the parsed file

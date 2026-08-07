@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/parquet-go/parquet-go"
 	"github.com/xuri/excelize/v2"
 	"golang.org/x/image/tiff"
 )
@@ -827,6 +828,62 @@ func TestCSVQueryBox(t *testing.T) {
 	body = nav("/data.csv?q=" + url.QueryEscape("drop table t")).Body.String()
 	if !strings.Contains(body, "only single read-only queries") {
 		t.Fatalf("write not rejected: %q", body)
+	}
+}
+
+func TestParquetRenderedAndQueryable(t *testing.T) {
+	root := t.TempDir()
+	type cityRow struct {
+		City       string `parquet:"city"`
+		Population int64  `parquet:"population"`
+	}
+	f, err := os.Create(filepath.Join(root, "cities.parquet"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pw := parquet.NewGenericWriter[cityRow](f)
+	if _, err := pw.Write([]cityRow{
+		{City: "new orleans", Population: 364136},
+		{City: "portland", Population: 652503},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := pw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+	nav := func(target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// The file renders as a table with the query box.
+	body := nav("/cities.parquet").Body.String()
+	for _, want := range []string{"<th>city</th>", "<td>new orleans</td>", "2 rows × 2 columns", `name="q"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("parquet table lacks %q in %.400s", want, body)
+		}
+	}
+
+	// Queries run against it as table t, numerically.
+	body = nav("/cities.parquet?q=" + url.QueryEscape("select sum(population) as total from t")).Body.String()
+	if !strings.Contains(body, "<td>1016639</td>") {
+		t.Fatalf("parquet query failed: %q", body)
+	}
+
+	// Non-navigations still get the raw bytes.
+	plain := httptest.NewRequest(http.MethodGet, "/cities.parquet", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, plain)
+	if !bytes.HasPrefix(rec.Body.Bytes(), []byte("PAR1")) {
+		t.Fatalf("raw fetch not parquet bytes: %.20q", rec.Body.String())
 	}
 }
 

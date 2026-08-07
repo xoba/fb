@@ -209,11 +209,13 @@ URL cell links its visible prefix to the full URL.
 | Type | Notes |
 |------|-------|
 | `.csv`, `.tsv` | First row treated as the header. Tolerant parsing (ragged rows, lazy quotes); files over 2 MB or that fail to parse are served plain. Display capped at 2000 rows. The page has a SQL query box — the file is queryable as a table named `t`. |
+| `.parquet` | Renders and queries like csv (table `t`), decoded in pure Go. Column order follows the schema; NULLs show empty. 20 MB cap, first 100k rows decoded (the summary says when that bites). Files that fail to decode fall back to download. |
 | `.xlsx` | Browses like a directory: navigating to the file lists its sheets (with row counts), and each sheet renders as its own CSV-style table page. Blank rows above a sheet's data are skipped, so the first populated row becomes the header. 10 MB cap. The workbook listing has a SQL query box with one table per sheet — joins across sheets work. |
 | `.sqlite`, `.sqlite3`, `.db` | Browses like a directory of tables and views, each listed with its row × column counts and on-disk size including indexes (via the `dbstat` virtual table). The listing page has a SQL query box — results render as a table right beneath it. Each table's page shows the total row count, the first 2000 rows, and its highlighted schema. `NULL` shown literally, binary blobs as `(N-byte blob)`. On-disk databases are opened in place, read-only, with no size limit — sqlite pages in only what a query touches. Databases inside archives are copied to a temp file first (the driver needs a real path) and capped at 100 MB. The query box accepts only a single read-only statement (`SELECT`, `WITH`, or `EXPLAIN`) — enforced before the query reaches sqlite, on top of `mode=ro` and `PRAGMA query_only` — and non-SQLite `.db` files fall back to download. |
 
-The query boxes on csv/tsv pages and xlsx listings run real SQLite: the
-file is loaded into an in-memory database — a csv/tsv file as a table
+The query boxes on csv/tsv/parquet pages and xlsx listings run real
+SQLite: the file is loaded into an in-memory database — a csv, tsv, or
+parquet file as a table
 named `t`, a workbook as one table per sheet, with sheet names sanitized
 to identifiers (`Q1 Sales` is queried as `Q1_Sales`). Columns whose
 cells all parse as numbers get numeric typing, so `sum()` and `order by`
@@ -287,7 +289,7 @@ extensionless files that sniff as markup display as plain text.
 | Syntax-highlighted source | `.ada` `.adb` `.ads` `.awk` `.bash` `.bat` `.c` `.cc` `.clj` `.coffee` `.cpp` `.cs` `.css` `.dart` `.diff` `.el` `.erb` `.erl` `.ex` `.exs` `.f` `.f90` `.feature` `.fish` `.go` `.gradle` `.graphql` `.groovy` `.h` `.hcl` `.hpp` `.hs` `.ini` `.java` `.jl` `.js` `.json` `.jsx` `.kt` `.lisp` `.lua` `.mf` `.mjs` `.nix` `.patch` `.php` `.pl` `.properties` `.proto` `.ps1` `.py` `.r` `.rb` `.rs` `.s` `.scala` `.scss` `.sh` `.sql` `.svelte` `.swift` `.tex` `.tf` `.toml` `.ts` `.tsx` `.typ` `.vue` `.xml` `.yaml` `.yml` `.zig` `.zsh` |
 | Syntax-highlighted by exact filename | `Makefile` `makefile` `GNUmakefile` `Dockerfile` `CMakeLists.txt` `.bashrc` `.zshrc` |
 | Highlighted as XML (binary converted via plutil) | `.plist` |
-| Displayed as tables | `.csv` `.tsv` (and every sheet/table inside the containers below) |
+| Displayed as tables | `.csv` `.tsv` `.parquet` (and every sheet/table inside the containers below) |
 | Browsed like directories | `.zip` `.jar` `.tar` `.tar.gz` `.tgz` `.tar.bz2` `.xlsx` `.sqlite` `.sqlite3` `.db` |
 | Image pages with EXIF readout | `.jpg` `.jpeg` `.png` `.gif` `.webp` `.bmp` `.tif` `.tiff` `.heic` `.heif` |
 | Video player pages | `.mov` `.mp4` `.m4v` `.webm` |
