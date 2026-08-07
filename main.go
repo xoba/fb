@@ -2796,7 +2796,7 @@ func (s fileServer) serveContainerListing(w http.ResponseWriter, r *http.Request
 			// a progress indicator. Archive-backed ones are small; compute
 			// synchronously.
 			page.StatsAsync = s.dir != ""
-			members, page.Summary, err = sqliteMemberList(db, !page.StatsAsync)
+			members, page.Summary, err = sqliteMemberList(r.Context(), db, !page.StatsAsync)
 
 			page.QueryForm = true
 			page.Query = strings.TrimSpace(r.URL.Query().Get("q"))
@@ -2964,7 +2964,7 @@ func (s fileServer) serveMemberTable(w http.ResponseWriter, r *http.Request, nam
 		header, rows, total, err = s.xlsxMemberRows(name, info, member)
 		body = displayCells(rows)
 	} else {
-		header, body, total, schema, err = s.sqliteMemberData(name, info, member, maxTableRows)
+		header, body, total, schema, err = s.sqliteMemberData(r.Context(), name, info, member, maxTableRows)
 	}
 	if err != nil {
 		log.Printf("member %s of %s: %v", member, name, err)
@@ -3027,7 +3027,7 @@ func (s fileServer) serveMemberCell(w http.ResponseWriter, r *http.Request, name
 			cells = body[row-1]
 		}
 	} else {
-		header, cells, err = s.sqliteMemberRow(name, info, member, row)
+		header, cells, err = s.sqliteMemberRow(r.Context(), name, info, member, row)
 	}
 	if err != nil {
 		log.Printf("cell %s of %s: %v", member, name, err)
@@ -3044,14 +3044,17 @@ func (s fileServer) serveMemberCell(w http.ResponseWriter, r *http.Request, name
 
 // sqliteMemberRow fetches one row of a table, full text, by its 1-based
 // position in the member table view. A nil row means the table is shorter.
-func (s fileServer) sqliteMemberRow(name string, info fs.FileInfo, member string, row int) (header, cells []string, err error) {
+func (s fileServer) sqliteMemberRow(ctx context.Context, name string, info fs.FileInfo, member string, row int) (header, cells []string, err error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
 	db, cleanup, err := s.openSQLite(name, info)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer cleanup()
 
-	rows, err := db.Query(fmt.Sprintf("SELECT * FROM %s LIMIT 1 OFFSET %d", quoteSQLiteIdent(member), row-1))
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT * FROM %s LIMIT 1 OFFSET %d", quoteSQLiteIdent(member), row-1))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -3070,7 +3073,10 @@ func (s fileServer) sqliteMemberRow(name string, info fs.FileInfo, member string
 
 // sqliteMemberData fetches one table's display rows, total count, and its
 // schema (the CREATE statements for the table and everything attached to it).
-func (s fileServer) sqliteMemberData(name string, info fs.FileInfo, member string, limit int) (header []string, body [][]tableCell, total int64, schema string, err error) {
+func (s fileServer) sqliteMemberData(ctx context.Context, name string, info fs.FileInfo, member string, limit int) (header []string, body [][]tableCell, total int64, schema string, err error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
 	db, cleanup, err := s.openSQLite(name, info)
 	if err != nil {
 		return nil, nil, 0, "", err
@@ -3078,11 +3084,11 @@ func (s fileServer) sqliteMemberData(name string, info fs.FileInfo, member strin
 	defer cleanup()
 
 	quoted := quoteSQLiteIdent(member)
-	if err := db.QueryRow("SELECT COUNT(*) FROM " + quoted).Scan(&total); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+quoted).Scan(&total); err != nil {
 		return nil, nil, 0, "", err
 	}
 
-	rows, err := db.Query(fmt.Sprintf("SELECT * FROM %s LIMIT %d", quoted, limit))
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT * FROM %s LIMIT %d", quoted, limit))
 	if err != nil {
 		return nil, nil, 0, "", err
 	}
@@ -3097,7 +3103,7 @@ func (s fileServer) sqliteMemberData(name string, info fs.FileInfo, member strin
 		return nil, nil, 0, "", err
 	}
 
-	schemaRows, err := db.Query(
+	schemaRows, err := db.QueryContext(ctx,
 		"SELECT sql FROM sqlite_master WHERE tbl_name = ? AND sql IS NOT NULL ORDER BY rowid", member)
 	if err != nil {
 		return nil, nil, 0, "", err
@@ -3257,7 +3263,10 @@ func (s fileServer) serveMemberCSV(w http.ResponseWriter, r *http.Request, name 
 	}
 	defer cleanup()
 
-	rows, err := db.Query("SELECT * FROM " + quoteSQLiteIdent(member))
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	rows, err := db.QueryContext(ctx, "SELECT * FROM "+quoteSQLiteIdent(member))
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -3422,8 +3431,11 @@ func (s fileServer) openSQLite(name string, info fs.FileInfo) (*sql.DB, func(), 
 // row/column counts and footprint synchronously — appropriate only for small
 // (archive-backed) databases; large on-disk ones get their stats (and the
 // summary's row/byte totals) filled in asynchronously by statsJS instead.
-func sqliteMemberList(db *sql.DB, withStats bool) ([]containerMember, string, error) {
-	rows, err := db.Query(`SELECT name, type FROM sqlite_master
+func sqliteMemberList(ctx context.Context, db *sql.DB, withStats bool) ([]containerMember, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	rows, err := db.QueryContext(ctx, `SELECT name, type FROM sqlite_master
 		WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name`)
 	if err != nil {
 		return nil, "", err
@@ -3461,7 +3473,7 @@ func sqliteMemberList(db *sql.DB, withStats bool) ([]containerMember, string, er
 	var totalRows, totalSize int64
 	for i := range members {
 		if withStats {
-			st := sqliteTableStat(db, members[i].Name, kinds[i])
+			st := sqliteTableStat(ctx, db, members[i].Name, kinds[i])
 			members[i].Detail, members[i].Bytes = st.Detail, st.Bytes
 			totalRows += st.Rows
 			totalSize += st.Size
@@ -3490,12 +3502,12 @@ type sqliteStat struct {
 
 // sqliteTableStat computes one member's listing metadata: "N rows × M
 // columns" (prefixed for views) and its on-disk footprint including indexes
-// via dbstat.
-func sqliteTableStat(db *sql.DB, member, kind string) sqliteStat {
+// via dbstat. The caller bounds ctx with a timeout.
+func sqliteTableStat(ctx context.Context, db *sql.DB, member, kind string) sqliteStat {
 	st := sqliteStat{Detail: kind}
 
 	var size int64
-	if err := db.QueryRow(`SELECT COALESCE(SUM(s.pgsize), 0)
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(SUM(s.pgsize), 0)
 		FROM dbstat('main', 1) s JOIN sqlite_master m ON s.name = m.name
 		WHERE m.tbl_name = ?`, member).Scan(&size); err == nil && size > 0 {
 		st.Size = size
@@ -3503,11 +3515,11 @@ func sqliteTableStat(db *sql.DB, member, kind string) sqliteStat {
 	}
 
 	var count int64
-	if err := db.QueryRow("SELECT COUNT(*) FROM " + quoteSQLiteIdent(member)).Scan(&count); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+quoteSQLiteIdent(member)).Scan(&count); err != nil {
 		return st // e.g. a view over a missing table
 	}
 	var cols int
-	if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info(?)", member).Scan(&cols); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_table_info(?)", member).Scan(&cols); err != nil {
 		return st
 	}
 
@@ -3524,6 +3536,9 @@ func sqliteTableStat(db *sql.DB, member, kind string) sqliteStat {
 func (s fileServer) serveSQLiteStat(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
 	member := r.URL.Query().Get("stat")
 
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
 	db, cleanup, err := s.openSQLite(name, info)
 	if err != nil {
 		http.Error(w, "cannot open database", http.StatusInternalServerError)
@@ -3532,13 +3547,13 @@ func (s fileServer) serveSQLiteStat(w http.ResponseWriter, r *http.Request, name
 	defer cleanup()
 
 	var kind string
-	if err := db.QueryRow("SELECT type FROM sqlite_master WHERE name = ?", member).Scan(&kind); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT type FROM sqlite_master WHERE name = ?", member).Scan(&kind); err != nil {
 		http.NotFound(w, r)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(sqliteTableStat(db, member, kind))
+	json.NewEncoder(w).Encode(sqliteTableStat(ctx, db, member, kind))
 }
 
 func quoteSQLiteIdent(name string) string {
