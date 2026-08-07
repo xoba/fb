@@ -2057,11 +2057,26 @@ func (s fileServer) heicJPEG(ctx context.Context, name string, info fs.FileInfo)
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, sips, "-s", "format", "jpeg", in, "--out", out)
+	// Convert into a temp file and rename, so a concurrent reader of the
+	// cache path never sees a partial JPEG.
+	tmp, err := os.CreateTemp(heicCachePath, "out-*.jpg")
+	if err != nil {
+		return "", err
+	}
+	tmpName := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return "", err
+	}
+	cmd := exec.CommandContext(ctx, sips, "-s", "format", "jpeg", in, "--out", tmpName)
 	cmd.WaitDelay = 5 * time.Second
 	if outBytes, err := cmd.CombinedOutput(); err != nil {
-		os.Remove(out)
+		os.Remove(tmpName)
 		return "", fmt.Errorf("sips: %s: %w", strings.TrimSpace(string(outBytes)), err)
+	}
+	if err := os.Rename(tmpName, out); err != nil {
+		os.Remove(tmpName)
+		return "", err
 	}
 	return out, nil
 }
@@ -2188,7 +2203,11 @@ func (f exifWalkFunc) Walk(name exif.FieldName, tag *exiftiff.Tag) error {
 
 // exifRows extracts every readable EXIF field, sorted by name, with a
 // friendly GPS coordinate row (and the decoded position) when present.
+// goexif is unmaintained and panics on some crafted EXIF; a bad image
+// simply shows no EXIF block.
 func exifRows(data []byte) (rows []kvRow, lat, long float64, hasGPS bool) {
+	defer func() { _ = recover() }()
+
 	x, err := exif.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, 0, 0, false
