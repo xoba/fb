@@ -3142,12 +3142,9 @@ func (s fileServer) serveContainerListing(w http.ResponseWriter, r *http.Request
 	var members []containerMember
 	var err error
 	if isXLSX(name) {
-		members, page.Summary, err = s.xlsxMembers(name, info)
+		members, page.Summary, page.QueryHint, err = s.xlsxMembers(name, info)
 		if err == nil {
 			page.QueryForm = true
-			if len(members) > 0 {
-				page.QueryHint = tableIdent(members[0].Name, map[string]bool{})
-			}
 			page.Query = strings.TrimSpace(r.URL.Query().Get("q"))
 			if page.Query != "" {
 				if !readOnlySQL(page.Query) {
@@ -3714,26 +3711,35 @@ func (s fileServer) openXLSX(name string, info fs.FileInfo) (*excelize.File, err
 	return excelize.OpenReader(bytes.NewReader(data))
 }
 
-func (s fileServer) xlsxMembers(name string, info fs.FileInfo) ([]containerMember, string, error) {
+func (s fileServer) xlsxMembers(name string, info fs.FileInfo) (members []containerMember, summary, queryHint string, err error) {
 	wb, err := s.openXLSX(name, info)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	defer wb.Close()
 
-	var members []containerMember
 	var total int
+	hintSeen := map[string]bool{}
 	for _, sheet := range wb.GetSheetList() {
 		rows, err := wb.GetRows(sheet)
 		if err != nil {
-			return nil, "", err
+			return nil, "", "", err
 		}
-		n := max(len(dropLeadingEmptyRows(rows))-1, 0)
+		rows = dropLeadingEmptyRows(rows)
+		n := max(len(rows)-1, 0)
 		total += n
 		members = append(members, containerMember{Name: sheet, Detail: fmt.Sprintf("%d row%s", n, plural(n))})
+		// Mirror xlsxMemoryDB's table construction so the hint names a
+		// table the query database actually has: dataless sheets are
+		// skipped, and idents dedup in sheet order.
+		if len(rows) > 0 {
+			if ident := tableIdent(sheet, hintSeen); queryHint == "" {
+				queryHint = ident
+			}
+		}
 	}
-	summary := fmt.Sprintf("%d sheet%s · %d row%s", len(members), plural(len(members)), total, plural(total))
-	return members, summary, nil
+	summary = fmt.Sprintf("%d sheet%s · %d row%s", len(members), plural(len(members)), total, plural(total))
+	return members, summary, queryHint, nil
 }
 
 // dropLeadingEmptyRows discards blank rows above a sheet's data, so a sheet
