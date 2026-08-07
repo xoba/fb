@@ -426,7 +426,10 @@ Rendering choices: pandoc converts documents (the only external program);
 table template. MathJax is embedded in the binary and served under `/_fb/`,
 so math works offline. Pages are styled inline — no external assets — with
 a GitHub-ish look; a `.fb.css` file in any directory (or ancestor)
-is linked into rendered markdown beneath it, nearest file winning.
+is linked into rendered markdown beneath it, nearest file winning. That
+trusts the directory's CSS: it can restyle the page and load external
+URLs (though never run script), so don't browse hostile trees expecting
+their `.fb.css` to be inert.
 
 Everything is served with aggressive no-cache headers (the point is seeing
 your *current* files), except the embedded MathJax assets, which only change
