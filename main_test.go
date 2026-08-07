@@ -923,7 +923,7 @@ func TestSQLiteRenderedAsTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`CREATE TABLE users (name TEXT, email TEXT, age INTEGER);
-		INSERT INTO users VALUES ('mike', 'mra@xoba.com', 55), ('nobody', NULL, NULL);`); err != nil {
+		INSERT INTO users VALUES ('mike', 'mike@example.com', 55), ('nobody', NULL, NULL);`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -992,7 +992,7 @@ func TestSQLiteRenderedAsTables(t *testing.T) {
 	for _, want := range []string{
 		"2 rows × 3 columns",
 		"<th>name</th><th>email</th><th>age</th>",
-		"<td>mike</td><td>mra@xoba.com</td><td>55</td>",
+		"<td>mike</td><td>mike@example.com</td><td>55</td>",
 		"<td>NULL</td>",
 		`href="users?raw=1"`,
 		`<h2 class="sheet">schema</h2>`,
@@ -1006,7 +1006,7 @@ func TestSQLiteRenderedAsTables(t *testing.T) {
 	csvReq := httptest.NewRequest(http.MethodGet, "/app.sqlite/users?raw=1", nil)
 	rec = httptest.NewRecorder()
 	server.ServeHTTP(rec, csvReq)
-	if got := rec.Body.String(); got != "name,email,age\nmike,mra@xoba.com,55\nnobody,,\n" {
+	if got := rec.Body.String(); got != "name,email,age\nmike,mike@example.com,55\nnobody,,\n" {
 		t.Fatalf("table csv = %q, want csv export with empty NULLs", got)
 	}
 
@@ -2626,8 +2626,8 @@ func TestGitWorktreeAnnotations(t *testing.T) {
 		"tracked.txt": {`class="gitb modified"`, `>M</span>`, `title="modified — not staged"`},
 		"staged.txt":  {`class="gitb staged"`, `>A</span>`, `title="new file — staged for commit"`},
 		"loose.txt":   {`class="gitb untracked"`, `>?</span>`},
-		"ignored.txt": {`class="gitdim"`, "gitignored"},
-		"build/":      {`class="gitdim"`, "gitignored"},
+		"ignored.txt": {`class="gitb ignored"`, `>i</span>`, `title="gitignored"`},
+		"build/":      {`class="gitb ignored"`, `>i</span>`, `title="gitignored"`},
 		"untr/":       {`class="gitb untracked"`, `>?</span>`},
 		"sub/":        {`class="gitb modified"`, `>●</span>`, `title="1 modified within"`},
 	} {
@@ -2638,13 +2638,9 @@ func TestGitWorktreeAnnotations(t *testing.T) {
 			}
 		}
 	}
-	if row := listingRow(t, server, "/", "ignored.txt"); strings.Contains(row, "gitb") {
-		t.Errorf("ignored.txt should dim, not badge: %s", row)
-	}
-
 	// A clean tracked file carries no annotation at all.
 	runGit(t, root, "checkout", "--", "tracked.txt")
-	if row := listingRow(t, server, "/", "tracked.txt"); strings.Contains(row, "gitb") || strings.Contains(row, "gitdim") {
+	if row := listingRow(t, server, "/", "tracked.txt"); strings.Contains(row, "gitb") {
 		t.Errorf("clean file should be unannotated: %s", row)
 	}
 
@@ -2652,9 +2648,9 @@ func TestGitWorktreeAnnotations(t *testing.T) {
 	if row := listingRow(t, server, "/untr/", "a.txt"); !strings.Contains(row, `class="gitb untracked"`) {
 		t.Errorf("file in untracked dir should be marked untracked: %s", row)
 	}
-	// Inside a gitignored directory every entry dims.
-	if row := listingRow(t, server, "/build/", "out.bin"); !strings.Contains(row, "gitdim") {
-		t.Errorf("file in ignored dir should dim: %s", row)
+	// Inside a gitignored directory every entry is badged ignored.
+	if row := listingRow(t, server, "/build/", "out.bin"); !strings.Contains(row, `class="gitb ignored"`) {
+		t.Errorf("file in ignored dir should be marked ignored: %s", row)
 	}
 	// Inside .git itself, no worktree annotations (the repository section
 	// already covers it).

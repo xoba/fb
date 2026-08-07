@@ -1,0 +1,10 @@
+# Findings scan.sh has surfaced that are accepted rather than scrubbed.
+# One POSIX extended regex per line; matching sweep hits are ignored.
+
+# The author's public email, used as a sqlite test fixture until Aug 2026
+# (mike@example.com since) and present in commit authorship regardless.
+^mra@xoba\.com$
+
+# The author's home directory, mentioned in a comment of the original
+# launcher script ("md", deleted May 2024); survives only in old commits.
+^/Users/mra$

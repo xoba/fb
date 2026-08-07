@@ -3755,13 +3755,12 @@ func gitSection(ctx context.Context, gitDir string) *gitView {
 
 // gitFileStatus is one listing entry's relationship to its git worktree,
 // ready for the template: a short colored badge after the name with a
-// hover description, or a dimmed name for ignored files. The zero value
-// renders nothing (clean tracked files, non-repo listings).
+// hover description. The zero value renders nothing (clean tracked files,
+// non-repo listings).
 type gitFileStatus struct {
-	Badge string // "M", "?", "●", ... ; "" for none
-	Class string // CSS color class: conflict, modified, staged, untracked
+	Badge string // "M", "?", "i", "●", ... ; "" for none
+	Class string // CSS color class: conflict, modified, staged, untracked, ignored
 	Title string // hover description of the state
-	Dim   bool   // gitignored: fade the name instead of badging it
 }
 
 // gitStatusItem is one fragment of the repo-root "git:" line; Bad marks
@@ -4012,7 +4011,7 @@ func fileStatusFor(xy string) gitFileStatus {
 	case "?":
 		return gitFileStatus{Badge: "?", Class: "untracked", Title: "untracked — not added to git"}
 	case "!":
-		return gitFileStatus{Dim: true, Title: "gitignored"}
+		return gitFileStatus{Badge: "i", Class: "ignored", Title: "gitignored"}
 	}
 	if len(xy) != 2 {
 		return gitFileStatus{}
@@ -4044,7 +4043,7 @@ func fileStatusFor(xy string) gitFileStatus {
 // state if the listing itself is untracked/ignored, the entry's own state,
 // or (for subdirectories) the summary of changes within.
 func (ws *worktreeStatus) entryStatus(name string, isDir bool) gitFileStatus {
-	if ws.all.Badge != "" || ws.all.Dim {
+	if ws.all.Badge != "" {
 		return ws.all
 	}
 	if st, ok := ws.files[name]; ok {
@@ -4707,7 +4706,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
   span.gitb.staged { color: #1a7f37; }
   span.gitb.untracked { color: #6e7781; }
   span.gitb.conflict { color: #cf222e; }
-  a.gitdim { opacity: 0.55; }
+  span.gitb.ignored { color: #8c959f; font-weight: 400; }
   span.gitghost { color: #8c959f; text-decoration: line-through; cursor: default; }
   p.gitline { margin: -0.3rem 0 0.6rem; font-size: 0.85rem; color: #57606a; }
   p.gitline span.bad { color: #9a6700; font-weight: 600; }
@@ -4748,7 +4747,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
 {{end}}{{end}}{{if .StatsAsync}}<p class="summary" id="statprog"></p>
 {{end}}{{if .SortLinks}}<div class="sort">sort: {{range $i, $l := .SortLinks}}{{if $i}} &middot; {{end}}<a {{if $l.Active}}class="active" {{end}}href="{{$l.Href}}">{{$l.Label}}{{if $l.Active}} {{$l.Arrow}}{{end}}</a>{{end}}</div>
 {{end}}
-{{define "ename"}}{{if .Ghost}}<span class="gitghost" title="{{.Name}} — {{.Git.Title}}">{{.Name}}</span>{{else}}<a {{if .Git.Dim}}class="gitdim" {{end}}href="{{.Href}}" title="{{.Name}}{{if .Git.Dim}} — {{.Git.Title}}{{end}}">{{.Name}}</a>{{end}}{{with .Git}}{{if .Badge}}<span class="gitb {{.Class}}" title="{{.Title}}">{{.Badge}}</span>{{end}}{{end}}{{end}}{{define "rows"}}{{range .}}<tr data-name="{{.Name}}">{{if .IsDir}}<td class="dname">{{template "ename" .}}</td><td class="blurb"{{with .Blurb}} title="{{.}}"{{end}}>{{.Blurb}}</td>{{else}}<td class="fname" colspan="2">{{template "ename" .}}</td>{{end}}<td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
+{{define "ename"}}{{if .Ghost}}<span class="gitghost" title="{{.Name}} — {{.Git.Title}}">{{.Name}}</span>{{else}}<a href="{{.Href}}" title="{{.Name}}">{{.Name}}</a>{{end}}{{with .Git}}{{if .Badge}}<span class="gitb {{.Class}}" title="{{.Title}}">{{.Badge}}</span>{{end}}{{end}}{{end}}{{define "rows"}}{{range .}}<tr data-name="{{.Name}}">{{if .IsDir}}<td class="dname">{{template "ename" .}}</td><td class="blurb"{{with .Blurb}} title="{{.}}"{{end}}>{{.Blurb}}</td>{{else}}<td class="fname" colspan="2">{{template "ename" .}}</td>{{end}}<td class="meta">{{.Size}}</td><td class="meta">{{.ModTime}}</td></tr>
 {{end}}{{end}}<table class="listing">
 {{template "rows" .Entries}}</table>
 {{if .Dotted}}<details class="dotfiles">

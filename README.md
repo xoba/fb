@@ -265,8 +265,8 @@ Folders outside the serve root are rejected by name.
   disclosure section at the bottom; one click expands them.
 - **Git worktrees** — inside a git working tree, entries carry small
   colored badges after their names (amber `M` modified, green letter
-  staged, gray `?` untracked, red `!` merge conflict); hovering explains
-  the state in words. Gitignored files dim instead of badging, and a
+  staged, gray `?` untracked, red `!` merge conflict, muted `i`
+  gitignored); hovering explains the state in words. A
   subdirectory containing changes gets a dot whose hover text counts them
   (`2 modified, 1 untracked within`). A file deleted from HEAD but gone
   from disk keeps a ghost row — struck-through, unlinked — where it used
