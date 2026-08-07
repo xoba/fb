@@ -2,9 +2,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Manage local_md as a macOS LaunchAgent: a per-user service that starts at
+# Manage fb as a macOS LaunchAgent: a per-user service that starts at
 # login, restarts if it crashes, and can be stopped/started/redeployed at
-# will. Logs go to ~/Library/Logs/localmd.log.
+# will. Logs go to ~/Library/Logs/fb.log.
 #
 # Usage:
 #   ./service.sh install     build, write the LaunchAgent plist, and start
@@ -17,15 +17,15 @@ cd "$(dirname "$0")"
 #   ./service.sh uninstall   stop and remove the LaunchAgent
 #
 # The serve root defaults to /; override at install time:
-#   LOCALMD_ROOT=~/notes ./service.sh install    (serve ~/notes instead of /)
+#   FB_ROOT=~/notes ./service.sh install    (serve ~/notes instead of /)
 
-LABEL="com.xoba.localmd"
+LABEL="com.xoba.fb"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 DOMAIN="gui/$(id -u)"
 REPO="$PWD"
-BIN="$REPO/localmd"
-LOG="$HOME/Library/Logs/localmd.log"
-ROOT="${LOCALMD_ROOT:-/}"
+BIN="$REPO/fb"
+LOG="$HOME/Library/Logs/fb.log"
+ROOT="${FB_ROOT:-/}"
 
 build() {
     # Build to a temp name and rename over, so a running binary is replaced
@@ -72,7 +72,7 @@ EOF
 
 loaded() { launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; }
 
-version() { curl -fsS --max-time 3 http://localhost:3030/_localmd/version 2>/dev/null; }
+version() { curl -fsS --max-time 3 http://localhost:3030/_fb/version 2>/dev/null; }
 
 # verify_deploy polls the version endpoint until the served git revision
 # matches HEAD (the revision go build stamps into the binary), so a
@@ -119,7 +119,7 @@ status() {
     else
         echo "$LABEL is not loaded"
     fi
-    if curl -fsS -o /dev/null --max-time 3 http://localhost:3030/_localmd/healthz; then
+    if curl -fsS -o /dev/null --max-time 3 http://localhost:3030/_fb/healthz; then
         echo "http://localhost:3030/ is responding"
         version | sed 's/^/  /'
     else

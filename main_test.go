@@ -363,7 +363,7 @@ func TestLocalCSSLinkedOutermostFirst(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{".localmd.css", "sub/.localmd.css"} {
+	for _, name := range []string{".fb.css", "sub/.fb.css"} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte("body {}\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -382,10 +382,10 @@ func TestLocalCSSLinkedOutermostFirst(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	body := rec.Body.String()
-	rootCSS := strings.Index(body, `href="/.localmd.css"`)
-	subCSS := strings.Index(body, `href="/sub/.localmd.css"`)
+	rootCSS := strings.Index(body, `href="/.fb.css"`)
+	subCSS := strings.Index(body, `href="/sub/.fb.css"`)
 	if rootCSS < 0 || subCSS < 0 {
-		t.Fatalf("body = %q, want both .localmd.css links", body)
+		t.Fatalf("body = %q, want both .fb.css links", body)
 	}
 	if rootCSS > subCSS {
 		t.Fatalf("root css at %d after sub css at %d, want outermost first", rootCSS, subCSS)
@@ -1931,15 +1931,15 @@ func TestDragAndDropUpload(t *testing.T) {
 	server := fileServer{fsys: os.DirFS(t.TempDir()), pandoc: "unused"}
 
 	src := "package main\n"
-	post := httptest.NewRequest(http.MethodPost, "/_localmd/drop?name="+url.QueryEscape("../sneaky/prog.go"), strings.NewReader(src))
+	post := httptest.NewRequest(http.MethodPost, "/_fb/drop?name="+url.QueryEscape("../sneaky/prog.go"), strings.NewReader(src))
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, post)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("drop status = %d; body: %s", rec.Code, rec.Body.String())
 	}
 	href := rec.Body.String()
-	if !strings.HasPrefix(href, "/_localmd/drops/") || !strings.HasSuffix(href, "/prog.go") {
-		t.Fatalf("drop href = %q, want sanitized path under /_localmd/drops/", href)
+	if !strings.HasPrefix(href, "/_fb/drops/") || !strings.HasSuffix(href, "/prog.go") {
+		t.Fatalf("drop href = %q, want sanitized path under /_fb/drops/", href)
 	}
 
 	nav := httptest.NewRequest(http.MethodGet, href, nil)
@@ -1960,14 +1960,14 @@ func TestDragAndDropUpload(t *testing.T) {
 	listing := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec = httptest.NewRecorder()
 	server.ServeHTTP(rec, listing)
-	if !strings.Contains(rec.Body.String(), "/_localmd/drop?name=") {
+	if !strings.Contains(rec.Body.String(), "/_fb/drop?name=") {
 		t.Fatalf("directory listing lacks the drag-and-drop script")
 	}
-	if !strings.Contains(rec.Body.String(), "/_localmd/favicon.png") {
+	if !strings.Contains(rec.Body.String(), "/_fb/favicon.png") {
 		t.Fatalf("directory listing lacks the favicon link")
 	}
 
-	big := httptest.NewRequest(http.MethodPost, "/_localmd/drop?name=big.tar", bytes.NewReader(make([]byte, maxDropBytes+1)))
+	big := httptest.NewRequest(http.MethodPost, "/_fb/drop?name=big.tar", bytes.NewReader(make([]byte, maxDropBytes+1)))
 	rec = httptest.NewRecorder()
 	server.ServeHTTP(rec, big)
 	if rec.Code == http.StatusOK {
@@ -1983,7 +1983,7 @@ func postCd(t *testing.T, server fileServer, req cdRequest) *httptest.ResponseRe
 	if err != nil {
 		t.Fatal(err)
 	}
-	post := httptest.NewRequest(http.MethodPost, "/_localmd/cd", bytes.NewReader(body))
+	post := httptest.NewRequest(http.MethodPost, "/_fb/cd", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, post)
 	return rec
@@ -2143,7 +2143,7 @@ func TestWalkDirsSeedsProbedTogether(t *testing.T) {
 func TestServesFavicon(t *testing.T) {
 	server := fileServer{fsys: os.DirFS(t.TempDir()), pandoc: "unused"}
 
-	req := httptest.NewRequest(http.MethodGet, "/_localmd/favicon.png", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_fb/favicon.png", nil)
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 
@@ -2248,7 +2248,7 @@ func TestPagesLinkHealthzAndVersion(t *testing.T) {
 			continue
 		}
 		body := rec.Body.String()
-		if !strings.Contains(body, "/_localmd/healthz") || !strings.Contains(body, "/_localmd/version") {
+		if !strings.Contains(body, "/_fb/healthz") || !strings.Contains(body, "/_fb/version") {
 			t.Errorf("%s lacks the healthz/version footer", url)
 		}
 	}
@@ -2261,7 +2261,7 @@ func TestPagesLinkHealthzAndVersion(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/notes.md: status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if body := rec.Body.String(); strings.Contains(body, "/_localmd/healthz") || strings.Contains(body, "/_localmd/version") {
+	if body := rec.Body.String(); strings.Contains(body, "/_fb/healthz") || strings.Contains(body, "/_fb/version") {
 		t.Error("/notes.md unexpectedly has the healthz/version footer")
 	}
 }
@@ -2269,7 +2269,7 @@ func TestPagesLinkHealthzAndVersion(t *testing.T) {
 func TestHealthzEndpoint(t *testing.T) {
 	server := fileServer{fsys: os.DirFS(t.TempDir()), pandoc: "unused"}
 
-	req := httptest.NewRequest(http.MethodGet, "/_localmd/healthz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_fb/healthz", nil)
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 
@@ -2284,7 +2284,7 @@ func TestHealthzEndpoint(t *testing.T) {
 func TestVersionEndpoint(t *testing.T) {
 	server := fileServer{fsys: os.DirFS(t.TempDir()), pandoc: "unused"}
 
-	req := httptest.NewRequest(http.MethodGet, "/_localmd/version", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_fb/version", nil)
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 
@@ -2323,7 +2323,7 @@ func TestDirectoryWithoutTrailingSlashRedirects(t *testing.T) {
 func TestServesEmbeddedMathJax(t *testing.T) {
 	server := fileServer{fsys: os.DirFS(t.TempDir()), pandoc: "unused"}
 
-	req := httptest.NewRequest(http.MethodGet, "/_localmd/mathjax/tex-mml-chtml.js", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_fb/mathjax/tex-mml-chtml.js", nil)
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 
@@ -2347,9 +2347,18 @@ func TestParseRootArg(t *testing.T) {
 		t.Fatalf("parseRootArg returned %q, want /", root)
 	}
 
+	// No argument serves the home directory.
+	for _, args := range [][]string{nil, {}} {
+		root, err := parseRootArg(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if root == "" || root != userHome() {
+			t.Fatalf("parseRootArg(%q) = %q, want home directory %q", args, root, userHome())
+		}
+	}
+
 	for _, args := range [][]string{
-		nil,
-		{},
 		{"/", "/tmp"},
 		{"--root", "/"},
 		{"-h"},

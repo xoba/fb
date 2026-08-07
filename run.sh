@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Start the local_md server.
+# Start the fb server.
 #
 # Usage:
 #   ./run.sh [SERVE_PATH]

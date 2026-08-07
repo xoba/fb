@@ -1,20 +1,36 @@
-# local_md
+# fb
 
-A local filesystem browser for `http://localhost:3030` that renders files as
+A local file browser for `http://localhost:3030` that renders files as
 readable HTML instead of making you download them. Point it at a directory
-(typically `/`) and everything under it becomes browsable, with Markdown,
-office documents, notebooks, source code, spreadsheets, databases, and
-archives all displayed in a form meant for reading.
-
-```
-./run.sh            # serve / (the whole filesystem)
-./run.sh ~/notes    # serve a narrower root
-```
+(your home directory by default) and everything under it becomes browsable,
+with Markdown, office documents, notebooks, source code, spreadsheets,
+databases, and archives all displayed in a form meant for reading.
 
 The server listens only on loopback (`127.0.0.1:3030` and `[::1]:3030`).
 Requires `pandoc` on the PATH; everything else is compiled in.
 
-## Running as a service
+## Installing
+
+```
+brew install xoba/tap/fb    # installs pandoc alongside
+brew services start fb      # serve your home directory, starting at login
+open http://localhost:3030/
+```
+
+Or with Go: `go install xoba.com/fb@latest` (then `brew install pandoc`
+if it's not already present).
+
+Run `fb` with no argument to serve your home directory, or pass a path
+to serve a different root — `fb /` makes the whole filesystem browsable.
+
+## Developing
+
+```
+./run.sh            # go run, serving / (the whole filesystem)
+./run.sh ~/notes    # serve a narrower root
+```
+
+## Running as a service from source
 
 `run.sh` runs the server in the foreground; for something that is always
 there when you're logged in, install it as a macOS LaunchAgent instead:
@@ -23,20 +39,20 @@ there when you're logged in, install it as a macOS LaunchAgent instead:
 ./service.sh install     # build, install the LaunchAgent, and start
 ./service.sh redeploy    # after changing code: rebuild and restart
 ./service.sh status      # launchd state plus an HTTP probe
-./service.sh logs        # tail ~/Library/Logs/localmd.log
+./service.sh logs        # tail ~/Library/Logs/fb.log
 ./service.sh stop        # stop until 'start' or next login
 ./service.sh uninstall   # stop and remove the LaunchAgent
 ```
 
 The service starts at login, restarts automatically if it crashes, and
-logs to `~/Library/Logs/localmd.log`. The generated plist
-(`~/Library/LaunchAgents/com.xoba.localmd.plist`) runs the compiled
-`localmd` binary with a PATH that includes `/opt/homebrew/bin` so pandoc
+logs to `~/Library/Logs/fb.log`. The generated plist
+(`~/Library/LaunchAgents/com.xoba.fb.plist`) runs the compiled
+`fb` binary with a PATH that includes `/opt/homebrew/bin` so pandoc
 is found. The serve root defaults to `/`; install with
-`LOCALMD_ROOT=~/notes ./service.sh install` to serve a narrower root.
+`FB_ROOT=~/notes ./service.sh install` to serve a narrower root.
 
-The server exposes two probes: `/_localmd/healthz` answers `ok`, and
-`/_localmd/version` reports the git revision, commit time, and dirty
+The server exposes two probes: `/_fb/healthz` answers `ok`, and
+`/_fb/version` reports the git revision, commit time, and dirty
 flag that `go build` stamps into the binary (all `unknown` under
 `go run`). `redeploy` and `install` poll the version endpoint until the
 served revision matches git HEAD, so a redeploy either confirms the new
@@ -214,7 +230,7 @@ And filenames with special roles inside directory listings:
 |----------|------|
 | `blurb.txt` | Shown atop its directory's listing and on the directory's row in the parent listing |
 | `README.md`, `README.txt` | Rendered inline at the bottom of the listing |
-| `.localmd.css` | Linked as a stylesheet into markdown rendered at or below its directory |
+| `.fb.css` | Linked as a stylesheet into markdown rendered at or below its directory |
 | `index.html` | Viewable in place rather than redirecting back to the directory |
 
 ## Drag and drop
@@ -227,7 +243,7 @@ ordinary pipeline — a dropped notebook renders, a dropped zip browses, a
 dropped database gets the query box. A floating monitor shows upload
 progress; files over 100 MB (the largest viewer cap) are rejected with a
 notice before any upload starts. Past drops remain browsable at
-`/_localmd/drops/` until the OS cleans the temp directory.
+`/_fb/drops/` until the OS cleans the temp directory.
 
 Drop a *folder* and nothing is uploaded — the folder already lives on the
 machine this server browses, so the page simply navigates to its listing:
@@ -314,9 +330,9 @@ Rendering choices: pandoc converts documents (the only external program);
 [chroma](https://github.com/alecthomas/chroma) highlights code in pure Go;
 `encoding/csv`, [excelize](https://github.com/xuri/excelize), and
 [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) feed the shared
-table template. MathJax is embedded in the binary and served under `/_localmd/`,
+table template. MathJax is embedded in the binary and served under `/_fb/`,
 so math works offline. Pages are styled inline — no external assets — with
-a GitHub-ish look; a `.localmd.css` file in any directory (or ancestor)
+a GitHub-ish look; a `.fb.css` file in any directory (or ancestor)
 is linked into rendered markdown beneath it, nearest file winning.
 
 Everything is served with aggressive no-cache headers (the point is seeing

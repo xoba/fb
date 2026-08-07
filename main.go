@@ -63,12 +63,12 @@ const (
 
 	// assetPrefix is a reserved URL namespace for resources embedded in the
 	// binary (MathJax and its fonts). Filesystem paths under it are shadowed.
-	assetPrefix = "_localmd"
+	assetPrefix = "_fb"
 
 	// localCSSName, when present in a served markdown file's directory or any
 	// ancestor up to the serve root, is linked into the rendered page. Outer
 	// directories are linked first so the nearest file wins the cascade.
-	localCSSName = ".localmd.css"
+	localCSSName = ".fb.css"
 )
 
 //go:embed assets/mathjax assets/favicon.png
@@ -77,7 +77,7 @@ var embeddedAssets embed.FS
 func main() {
 	rootArg, err := parseRootArg(os.Args[1:])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Usage: %s SERVE_PATH\n", filepath.Base(os.Args[0]))
+		fmt.Fprintf(os.Stderr, "Usage: %s [SERVE_PATH]\n\nServes SERVE_PATH (default: your home directory) at http://localhost:3030/\n", filepath.Base(os.Args[0]))
 		os.Exit(2)
 	}
 
@@ -129,11 +129,19 @@ func serveLoopback(handler http.Handler) error {
 	return <-errc
 }
 
+// parseRootArg accepts an optional serve path; with none the server offers
+// the user's home directory.
 func parseRootArg(args []string) (string, error) {
-	if len(args) != 1 || args[0] == "-h" || args[0] == "--help" {
-		return "", errors.New("expected one serve path")
+	switch {
+	case len(args) == 0:
+		if home := userHome(); home != "" {
+			return home, nil
+		}
+		return "", errors.New("cannot determine home directory; pass a serve path")
+	case len(args) == 1 && args[0] != "-h" && args[0] != "--help":
+		return args[0], nil
 	}
-	return args[0], nil
+	return "", errors.New("expected at most one serve path")
 }
 
 func resolveRoot(root string) (string, error) {
@@ -585,7 +593,7 @@ func serveVersion(w http.ResponseWriter) {
 	fmt.Fprintf(w, "revision: %s\nvcs.time: %s\nmodified: %s\ngo: %s\n", revision, vcsTime, modified, goVersion)
 }
 
-// serveInternal handles the reserved /_localmd/ namespace: embedded assets,
+// serveInternal handles the reserved /_fb/ namespace: embedded assets,
 // the drag-and-drop upload and directory-cd endpoints, browsing of dropped
 // files, and the health and version probes.
 func (s fileServer) serveInternal(w http.ResponseWriter, r *http.Request, name string) {
@@ -656,7 +664,7 @@ var (
 // dropsDir is the per-process directory holding drag-and-dropped files.
 func dropsDir() (string, error) {
 	dropsOnce.Do(func() {
-		dropsPath, dropsErr = os.MkdirTemp("", "localmd-drops-")
+		dropsPath, dropsErr = os.MkdirTemp("", "fb-drops-")
 	})
 	return dropsPath, dropsErr
 }
@@ -1274,7 +1282,7 @@ var (
 // process, for pandoc --include-after-body (which only accepts files).
 func pandocFooterFile() (string, error) {
 	footerOnce.Do(func() {
-		f, err := os.CreateTemp("", "localmd-pandoc-footer-*.html")
+		f, err := os.CreateTemp("", "fb-pandoc-footer-*.html")
 		if err != nil {
 			footerErr = err
 			return
@@ -1305,7 +1313,7 @@ func mathjaxFile() (string, error) {
 			mathjaxErr = err
 			return
 		}
-		f, err := os.CreateTemp("", "localmd-mathjax-*.js")
+		f, err := os.CreateTemp("", "fb-mathjax-*.js")
 		if err != nil {
 			mathjaxErr = err
 			return
@@ -1321,7 +1329,7 @@ func mathjaxFile() (string, error) {
 	return mathjaxPath, mathjaxErr
 }
 
-// stylesheetLinks returns URL paths of every .localmd.css found between the
+// stylesheetLinks returns URL paths of every .fb.css found between the
 // filesystem root and the markdown file's directory, outermost first.
 func (s fileServer) stylesheetLinks(name string) []string {
 	var dirs []string
@@ -1341,11 +1349,11 @@ func (s fileServer) stylesheetLinks(name string) []string {
 }
 
 // writePandocHeader writes the shared header include, followed by stylesheet
-// links for any .localmd.css files so they can override the built-in styles.
+// links for any .fb.css files so they can override the built-in styles.
 // (pandoc's --css links land before header-includes, which would invert the
 // cascade — hence emitting the link tags here instead.)
 func writePandocHeader(stylesheets []string) (string, func(), error) {
-	f, err := os.CreateTemp("", "localmd-pandoc-header-*.html")
+	f, err := os.CreateTemp("", "fb-pandoc-header-*.html")
 	if err != nil {
 		return "", func() {}, err
 	}
@@ -1527,7 +1535,7 @@ var (
 // (path, size, mtime) so repeat views are instant.
 func (s fileServer) heicJPEG(ctx context.Context, name string, info fs.FileInfo) (string, error) {
 	heicCacheOnce.Do(func() {
-		heicCachePath, heicCacheErr = os.MkdirTemp("", "localmd-heic-")
+		heicCachePath, heicCacheErr = os.MkdirTemp("", "fb-heic-")
 	})
 	if heicCacheErr != nil {
 		return "", heicCacheErr
@@ -1905,7 +1913,7 @@ var imageTemplate = template.Must(template.New("image").Parse(`<!DOCTYPE html>
 // highlightExts lists source-file extensions served as syntax-highlighted HTML
 // pages when a browser navigates to them. Subresource fetches and non-browser
 // clients (see wantsDocument), plus anything requested with ?raw=1, get the
-// file verbatim — so .localmd.css and stylesheets referenced by served HTML
+// file verbatim — so .fb.css and stylesheets referenced by served HTML
 // keep working as real stylesheets. Deliberately absent: .md (pandoc), .html
 // and .svg (the browser renders those), and .txt (prose reads better plain).
 var highlightExts = map[string]bool{
@@ -3085,7 +3093,7 @@ func (s fileServer) openSQLite(name string, info fs.FileInfo) (*sql.DB, func(), 
 	}
 	defer src.Close()
 
-	tmp, err := os.CreateTemp("", "localmd-sqlite-*.db")
+	tmp, err := os.CreateTemp("", "fb-sqlite-*.db")
 	if err != nil {
 		return nil, nil, err
 	}
