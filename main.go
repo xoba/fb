@@ -7,10 +7,13 @@ import (
 	"compress/bzip2"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"embed"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -74,7 +77,7 @@ var embeddedAssets embed.FS
 
 func main() {
 	usage := func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [-port N] [-open] [SERVE_PATH]\n\nServes SERVE_PATH (default: your home directory) on localhost.\nThe port defaults to $FB_PORT, then the config file, then 3030;\nif taken, the next free port is used (the startup log names it).\n-open points the default browser at the served URL.\nAn optional config file at ~/.config/fb/config ($XDG_CONFIG_HOME\nrespected) holds \"port = N\" and \"root = PATH\" lines — the way to\nconfigure the brew service, which takes no flags.\n", filepath.Base(os.Args[0]))
+		fmt.Fprintf(os.Stderr, "Usage: %s [-port N] [-open] [SERVE_PATH]\n\nServes SERVE_PATH (default: your home directory) on localhost.\nThe port defaults to $FB_PORT, then the config file, then 3030;\nif taken, the next free port is used (the startup log names it).\n-open points the default browser at the served URL.\nAn optional config file at ~/.config/fb/config ($XDG_CONFIG_HOME\nrespected) holds \"port = N\", \"root = PATH\", and \"auth = on|off\"\nlines — the way to configure the brew service, which takes no flags.\n", filepath.Base(os.Args[0]))
 	}
 	flag.Usage = usage
 	cfg := readConfig()
@@ -112,10 +115,22 @@ func main() {
 	}
 	url := fmt.Sprintf("http://localhost:%d/", bound)
 	log.Printf("serving %s at %s", root, url)
+
+	g := &guard{next: handler, hosts: allowedHosts(bound)}
+	if cfg.auth == "off" {
+		log.Printf("auth = off: anything that can reach localhost can read %s", root)
+	} else {
+		token, tokenPath, err := loadOrCreateToken()
+		if err != nil {
+			log.Fatalf("auth token: %v (or set \"auth = off\" in %s to serve without one)", err, configPath())
+		}
+		g.token, g.tokenPath = token, tokenPath
+		log.Printf("browsers authorize once with the token in %s", tokenPath)
+	}
 	if *openFlag {
 		openInBrowser(url)
 	}
-	if err := serve(handler, listeners); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := serve(g, listeners); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }
@@ -152,6 +167,7 @@ func defaultPort(configured int) int {
 type fileConfig struct {
 	port int
 	root string
+	auth string // "off" disables the token gate; unset or "on" keeps it
 }
 
 // configPath honors $XDG_CONFIG_HOME, falling back to ~/.config.
@@ -206,6 +222,13 @@ func readConfig() fileConfig {
 				value = filepath.Join(userHome(), strings.TrimPrefix(value, "~"))
 			}
 			cfg.root = value
+		case "auth":
+			switch strings.ToLower(value) {
+			case "on", "off":
+				cfg.auth = strings.ToLower(value)
+			default:
+				log.Printf("config %s: ignoring auth %q (want on or off)", path, value)
+			}
 		default:
 			log.Printf("config %s: ignoring unknown key %q", path, key)
 		}
@@ -259,6 +282,344 @@ func serve(handler http.Handler, listeners []net.Listener) error {
 	}
 
 	return <-errc
+}
+
+// guard wraps the file server in the request-level security checks. Two
+// facts make them necessary: loopback is shared by every user on the
+// machine, and browsers will happily send requests to it on behalf of
+// pages from anywhere. So: a Host allowlist refuses requests addressed
+// through an attacker-controlled name that resolves to 127.0.0.1 (DNS
+// rebinding), and a bearer-token gate proves a client acts for the user
+// whose files are served — possession of a file only that user can read —
+// rather than for some other local account. The gate covers everything
+// except the liveness probes service scripts poll, the assets compiled
+// into the (public) binary, and the authorization endpoint itself.
+type guard struct {
+	next      http.Handler
+	hosts     map[string]bool
+	token     string // empty when auth = off
+	tokenPath string
+}
+
+// allowedHosts is the set of Host values a loopback server can
+// legitimately be addressed by: the loopback names, bare or with the
+// bound port. A browser fills Host from the URL, so a rebinding page —
+// reached via a hostname the attacker points at 127.0.0.1 — cannot
+// produce one of these.
+func allowedHosts(port int) map[string]bool {
+	hosts := map[string]bool{}
+	for _, h := range []string{"localhost", "127.0.0.1", "[::1]"} {
+		hosts[h] = true
+		hosts[fmt.Sprintf("%s:%d", h, port)] = true
+	}
+	return hosts
+}
+
+func (g *guard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !g.hosts[strings.ToLower(r.Host)] {
+		http.Error(w, "unrecognized Host", http.StatusForbidden)
+		return
+	}
+
+	// On every response, HTML or raw: no content-type second-guessing by
+	// the browser, and no served paths leaking into the Referer of links
+	// followed off rendered pages.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+
+	if g.token == "" {
+		g.next.ServeHTTP(w, r)
+		return
+	}
+
+	name := requestName(r.URL.Path)
+	if name == assetPrefix+"/auth" {
+		g.serveAuth(w, r)
+		return
+	}
+	if authExempt(name) {
+		g.next.ServeHTTP(w, r)
+		return
+	}
+	if g.authorized(r) {
+		g.next.ServeHTTP(w, r)
+		return
+	}
+
+	// A valid ?token= authorizes a request directly — how scripts that
+	// prefer URLs to headers pass it. A browser navigation instead earns
+	// the cookie and a redirect with the token stripped, so the secret
+	// neither lingers in the address bar nor lands in history.
+	if tok := r.URL.Query().Get("token"); tok != "" && g.tokenMatches(tok) {
+		if wantsDocument(r.Header) && r.Method == http.MethodGet {
+			g.setCookie(w)
+			u := *r.URL
+			q := u.Query()
+			q.Del("token")
+			u.RawQuery = q.Encode()
+			http.Redirect(w, r, u.RequestURI(), http.StatusSeeOther)
+			return
+		}
+		g.next.ServeHTTP(w, r)
+		return
+	}
+
+	preventCaching(w.Header(), r.Header)
+	if wantsDocument(r.Header) && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		g.authPage(w, r.URL.RequestURI(), "")
+		return
+	}
+	http.Error(w, "authorization required: send the token from "+g.tokenPath+
+		` as "Authorization: Bearer ..." or ?token=`, http.StatusUnauthorized)
+}
+
+// authorized reports whether the request carries the token: by cookie (how
+// a browser holds it after authorizing once) or Authorization header (how
+// curl and scripts send it).
+func (g *guard) authorized(r *http.Request) bool {
+	if c, err := r.Cookie(authCookieName); err == nil && g.tokenMatches(c.Value) {
+		return true
+	}
+	if b, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && g.tokenMatches(strings.TrimSpace(b)) {
+		return true
+	}
+	return false
+}
+
+func (g *guard) tokenMatches(candidate string) bool {
+	return subtle.ConstantTimeCompare([]byte(candidate), []byte(g.token)) == 1
+}
+
+const authCookieName = "fb_auth"
+
+// setCookie hands the browser the long-lived credential. HttpOnly keeps
+// page scripts from ever reading it; SameSite=Lax means cross-site
+// subresource fetches and POSTs do not carry it, which also shields the
+// drop/cd endpoints from cross-site request forgery.
+func (g *guard) setCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     authCookieName,
+		Value:    g.token,
+		Path:     "/",
+		MaxAge:   365 * 24 * 60 * 60,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// serveAuth handles the authorization form: a valid pasted token earns the
+// cookie and a redirect back to wherever the visitor was headed.
+func (g *guard) serveAuth(w http.ResponseWriter, r *http.Request) {
+	preventCaching(w.Header(), r.Header)
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	next := sanitizeNext(r.PostFormValue("next"))
+	if !g.tokenMatches(strings.TrimSpace(r.PostFormValue("token"))) {
+		g.authPage(w, next, "that token doesn't match")
+		return
+	}
+	g.setCookie(w)
+	http.Redirect(w, r, next, http.StatusSeeOther)
+}
+
+// sanitizeNext confines the post-authorization redirect to this server: a
+// local path, not scheme-relative, so the form cannot be aimed elsewhere.
+func sanitizeNext(next string) string {
+	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.HasPrefix(next, "/\\") {
+		return "/"
+	}
+	return next
+}
+
+// authExempt lists what an unauthorized client may fetch: the probes
+// service scripts poll (they reveal at most a git revision) and fb's
+// own assets and scripts, which are public bytes of a public
+// repository. Everything user-derived — files, listings, drops — stays
+// behind the token.
+func authExempt(name string) bool {
+	if base, ok := strings.CutPrefix(name, assetPrefix+"/"); ok && internalScripts[base] != "" {
+		return true
+	}
+	return name == assetPrefix+"/healthz" ||
+		name == assetPrefix+"/version" ||
+		name == assetPrefix+"/favicon.png" ||
+		strings.HasPrefix(name, assetPrefix+"/mathjax/")
+}
+
+func (g *guard) authPage(w http.ResponseWriter, next, problem string) {
+	var buf bytes.Buffer
+	err := authTemplate.Execute(&buf, struct {
+		TokenPath string
+		Next      string
+		Problem   string
+	}{g.tokenPath, next, problem})
+	if err != nil {
+		log.Printf("render auth page: %v", err)
+		http.Error(w, "authorization required", http.StatusUnauthorized)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", cspStrict)
+	w.WriteHeader(http.StatusUnauthorized)
+	w.Write(buf.Bytes())
+}
+
+var authTemplate = template.Must(template.New("auth").Parse(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/` + assetPrefix + `/favicon.png">
+<title>fb — authorize</title>
+<style>
+  :root { color-scheme: light; }
+  html { color: #1a1a1a; background-color: #fdfdfd; }
+  body {
+    margin: 0 auto;
+    max-width: 42em;
+    padding: 50px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  @media (max-width: 600px) { body { padding: 12px; } }
+  h1 { font-size: 1.2rem; }
+  p { line-height: 1.5; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.9em;
+    background-color: #f6f8fa;
+    padding: 0.15em 0.35em;
+    border-radius: 4px;
+  }
+  form { margin-top: 1.5rem; }
+  input[type="password"] {
+    width: 100%;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.9rem;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    box-sizing: border-box;
+  }
+  button {
+    margin-top: 0.75rem;
+    font: inherit;
+    padding: 0.4rem 1rem;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background-color: #f6f8fa;
+    cursor: pointer;
+  }
+  p.problem { color: #cf222e; }
+  p.hint { color: #57606a; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<h1>fb — authorize this browser</h1>
+<p>This server reads files as the user who runs it, so it needs proof you
+are that user. The token lives in a file only they can read:</p>
+<p><code>cat {{.TokenPath}}</code></p>
+<p>Run that in a terminal and paste the result below. This browser then
+stays authorized (a cookie holds the token; other browsers and other
+users' processes stay locked out).</p>
+{{with .Problem}}<p class="problem">{{.}}</p>
+{{end}}<form method="post" action="/` + assetPrefix + `/auth">
+<input type="hidden" name="next" value="{{.Next}}">
+<input type="password" name="token" placeholder="paste the token" autofocus autocomplete="off">
+<button type="submit">authorize</button>
+</form>
+<p class="hint">To serve without a token, put <code>auth = off</code> in
+the config file and restart.</p>
+</body>
+</html>
+`))
+
+// loadOrCreateToken returns the persistent auth secret, minting one on
+// first run. It lives beside the config file, readable only by the
+// serving user — the ability to read it is exactly what distinguishes
+// that user's own browsers and scripts from every other local process.
+func loadOrCreateToken() (token, path string, err error) {
+	cfgPath := configPath()
+	if cfgPath == "" {
+		return "", "", errors.New("cannot determine a config directory to keep the token in")
+	}
+	path = filepath.Join(filepath.Dir(cfgPath), "token")
+
+	if data, readErr := os.ReadFile(path); readErr == nil {
+		token = strings.TrimSpace(string(data))
+		if len(token) < 32 {
+			return "", "", fmt.Errorf("%s is too short to be a token; delete it to mint a fresh one", path)
+		}
+		if info, statErr := os.Stat(path); statErr == nil && info.Mode().Perm()&0o077 != 0 {
+			log.Printf("WARNING: %s is readable by other users (mode %o) — chmod 600 it", path, info.Mode().Perm())
+		}
+		return token, path, nil
+	}
+
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", "", err
+	}
+	token = hex.EncodeToString(raw)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", "", err
+	}
+	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+		return "", "", err
+	}
+	return token, path, nil
+}
+
+// The Content-Security-Policy for pages fb itself generates. Scripts are
+// the point: fb keeps every script it needs in same-origin files under
+// /_fb/ — none inline, because the two engines that emit fb's HTML both
+// rewrite inline script text (html/template strips comments, pandoc
+// reindents header includes), which no hash could survive — so
+// script-src 'self' is the whole story, and a <script> smuggled into
+// rendered content (a hostile README.md inside a downloaded archive, a
+// notebook cell, a crafted CSV cell) is inert. Images and media stay
+// wide open (markdown legitimately embeds remote images, and image
+// pages use OpenStreetMap tiles); they cannot read anything. The policy
+// applies only to HTML fb generates: files served raw — including
+// .html files, which render as themselves by design — are untouched.
+const cspRest = "; default-src 'none'; style-src 'self' 'unsafe-inline'; img-src * data:; media-src * data:; font-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'self'; frame-src *; object-src 'none'"
+
+const (
+	cspStrict = "script-src 'self'" + cspRest
+
+	// cspEmbed additionally allows data: scripts. Only for pandoc inputs
+	// that cannot smuggle raw HTML through their reader (binary office
+	// formats): --embed-resources inlines fb's script files as data:
+	// URIs, which the strict policy would block. Formats that can carry
+	// raw HTML (markdown, rst, ipynb, epub) always get the strict policy
+	// — for them, a data: script allowance would be an open door.
+	cspEmbed = "script-src 'self' data:" + cspRest
+)
+
+// internalScripts are fb's page scripts, served under /_fb/ so the CSP
+// can pin scripts to 'self'; each page references what it needs with an
+// ordinary <script src>.
+var internalScripts = map[string]string{
+	"drop.js":           dropJSBody,
+	"stats.js":          statsJSBody,
+	"cell-focus.js":     cellFocusJSBody,
+	"video.js":          videoMetaJSBody,
+	"mathjax-config.js": mathjaxConfigJSBody,
+}
+
+// embedCSPFormats maps pandoc input formats to the embed policy; see
+// cspEmbed. docFormat is textutil's HTML, whose text content textutil
+// escapes.
+var embedCSPFormats = map[string]bool{"docx": true, "odt": true, "rtf": true, docFormat: true}
+
+func documentCSP(format string) string {
+	if embedCSPFormats[format] {
+		return cspEmbed
+	}
+	return cspStrict
 }
 
 // parseRootArg accepts an optional serve path; with none the server offers
@@ -765,6 +1126,13 @@ func (s fileServer) serveInternal(w http.ResponseWriter, r *http.Request, name s
 		return
 	}
 
+	if base, ok := strings.CutPrefix(name, assetPrefix+"/"); ok && internalScripts[base] != "" {
+		w.Header().Set("Cache-Control", "max-age=86400")
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		io.WriteString(w, internalScripts[base])
+		return
+	}
+
 	if name == assetPrefix+"/drops" || strings.HasPrefix(name, assetPrefix+"/drops/") {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
@@ -1260,6 +1628,7 @@ func (s fileServer) serveDocument(w http.ResponseWriter, r *http.Request, name s
 	}
 
 	outName := strings.TrimSuffix(path.Base(name), path.Ext(name)) + ".html"
+	w.Header().Set("Content-Security-Policy", documentCSP(format))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	http.ServeContent(w, r, outName, info.ModTime(), bytes.NewReader(html))
 }
@@ -1297,17 +1666,7 @@ func (s fileServer) renderDocument(ctx context.Context, name string, opts render
 		content, format = converted, "html"
 	}
 
-	var header string
-	if opts.standalone {
-		var cleanup func()
-		header, cleanup, err = writePandocHeader(s.stylesheetLinks(name))
-		if err != nil {
-			return nil, err
-		}
-		defer cleanup()
-	}
-
-	buildArgs := func(embed bool) []string {
+	buildArgs := func(embed bool, header string) []string {
 		// --embed-resources inlines everything the page references, so the
 		// MathJax src must then be a real file, not our URL path: point it at
 		// a temp copy extracted from the binary's embedded assets.
@@ -1350,16 +1709,31 @@ func (s fileServer) renderDocument(ctx context.Context, name string, opts render
 		return args
 	}
 
+	// The header is built per attempt because its script references differ
+	// with embedding — see writePandocHeader.
+	render := func(embed bool) ([]byte, error) {
+		var header string
+		if opts.standalone {
+			h, cleanup, err := writePandocHeader(s.stylesheetLinks(name), embed)
+			if err != nil {
+				return nil, err
+			}
+			defer cleanup()
+			header = h
+		}
+		return runPandoc(ctx, s.pandoc, buildArgs(embed, header), content)
+	}
+
 	// Binary formats carry their images internally (pandoc's media bag);
 	// embed them as data URIs so they survive as a single HTML page. But
 	// embedding fails hard when a document references a resource that no
 	// longer exists, so fall back to a render with plain (possibly broken)
 	// references rather than no render at all.
 	embed := format != pandocFormats[".md"]
-	out, err := runPandoc(ctx, s.pandoc, buildArgs(embed), content)
+	out, err := render(embed)
 	if err != nil && embed {
 		log.Printf("pandoc --embed-resources failed for %s, retrying without: %v", name, err)
-		out, err = runPandoc(ctx, s.pandoc, buildArgs(false), content)
+		out, err = render(false)
 	}
 	return out, err
 }
@@ -1464,6 +1838,29 @@ func mathjaxFile() (string, error) {
 	return mathjaxPath, mathjaxErr
 }
 
+// scriptFiles caches per-process temp copies of fb's page scripts, for
+// pandoc --embed-resources runs, which need file paths rather than URLs.
+var scriptFiles sync.Map // script name -> temp path
+
+func scriptFile(name string) (string, error) {
+	if p, ok := scriptFiles.Load(name); ok {
+		return p.(string), nil
+	}
+	f, err := os.CreateTemp("", "fb-script-*.js")
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.WriteString(internalScripts[name]); err != nil {
+		f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	p, _ := scriptFiles.LoadOrStore(name, f.Name())
+	return p.(string), nil
+}
+
 // stylesheetLinks returns URL paths of every .fb.css found between the
 // filesystem root and the markdown file's directory, outermost first.
 func (s fileServer) stylesheetLinks(name string) []string {
@@ -1486,8 +1883,12 @@ func (s fileServer) stylesheetLinks(name string) []string {
 // writePandocHeader writes the shared header include, followed by stylesheet
 // links for any .fb.css files so they can override the built-in styles.
 // (pandoc's --css links land before header-includes, which would invert the
-// cascade — hence emitting the link tags here instead.)
-func writePandocHeader(stylesheets []string) (string, func(), error) {
+// cascade — hence emitting the link tags here instead.) With embed set, the
+// header's script references become temp-file paths: --embed-resources
+// resolves references as local files and fails hard on URL paths, so it
+// gets real files to inline. They arrive as data: scripts, which only the
+// office-format policy permits — see cspEmbed.
+func writePandocHeader(stylesheets []string, embed bool) (string, func(), error) {
 	f, err := os.CreateTemp("", "fb-pandoc-header-*.html")
 	if err != nil {
 		return "", func() {}, err
@@ -1499,8 +1900,19 @@ func writePandocHeader(stylesheets []string) (string, func(), error) {
 		}
 	}
 
+	header := pandocHeader
+	if embed {
+		for _, script := range []string{"mathjax-config.js", "drop.js"} {
+			p, err := scriptFile(script)
+			if err != nil {
+				continue // the URL reference stays; the embed run may then fall back
+			}
+			header = strings.Replace(header, `src="/`+assetPrefix+`/`+script+`"`, `src="`+p+`"`, 1)
+		}
+	}
+
 	var content strings.Builder
-	content.WriteString(pandocHeader)
+	content.WriteString(header)
 	for _, href := range stylesheets {
 		fmt.Fprintf(&content, "<link rel=\"stylesheet\" href=\"%s\">\n", href)
 	}
@@ -1552,6 +1964,7 @@ func (s fileServer) serveVideo(w http.ResponseWriter, r *http.Request, name stri
 		return
 	}
 
+	w.Header().Set("Content-Security-Policy", cspStrict)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	http.ServeContent(w, r, "index.html", info.ModTime(), bytes.NewReader(buf.Bytes()))
 }
@@ -1603,7 +2016,15 @@ var videoTemplate = template.Must(template.New("video").Parse(`<!DOCTYPE html>
 <table class="kv" id="vmeta">
 {{range .Rows}}<tr><td class="k">{{.K}}</td><td>{{.V}}</td></tr>
 {{end}}</table>
-<script>
+<script src="/` + assetPrefix + `/video.js"></script>
+` + pageFooter + `</body>
+</html>
+`))
+
+// videoMetaJSBody fills duration and dimensions into the video page's
+// readout from the browser's own decoder once the metadata loads; its
+// hash is in the CSP.
+const videoMetaJSBody = `
 document.querySelector("video").addEventListener("loadedmetadata", function () {
   var v = this, t = document.getElementById("vmeta");
   function row(k, val) {
@@ -1617,10 +2038,7 @@ document.querySelector("video").addEventListener("loadedmetadata", function () {
   }
   if (v.videoWidth) row("dimensions", v.videoWidth + " × " + v.videoHeight);
 });
-</script>
-` + pageFooter + `</body>
-</html>
-`))
+`
 
 // imageExts lists image types shown on a viewer page with a technical
 // readout (dimensions, file size, EXIF) beneath the image. The image itself
@@ -1828,6 +2246,7 @@ func (s fileServer) serveImage(w http.ResponseWriter, r *http.Request, name stri
 		return
 	}
 
+	w.Header().Set("Content-Security-Policy", cspStrict)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	http.ServeContent(w, r, "index.html", info.ModTime(), bytes.NewReader(buf.Bytes()))
 }
@@ -2309,6 +2728,7 @@ func (s fileServer) renderSourcePage(w http.ResponseWriter, r *http.Request, nam
 	}
 
 	outName := strings.TrimSuffix(path.Base(name), path.Ext(name)) + ".html"
+	w.Header().Set("Content-Security-Policy", cspStrict)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	http.ServeContent(w, r, outName, info.ModTime(), bytes.NewReader(buf.Bytes()))
 }
@@ -2494,6 +2914,7 @@ func (s fileServer) renderTablePage(w http.ResponseWriter, r *http.Request, name
 	}
 
 	outName := strings.TrimSuffix(path.Base(name), path.Ext(name)) + ".html"
+	w.Header().Set("Content-Security-Policy", cspStrict)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	http.ServeContent(w, r, outName, info.ModTime(), bytes.NewReader(buf.Bytes()))
 }
@@ -2688,6 +3109,7 @@ func (s fileServer) serveContainerListing(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	w.Header().Set("Content-Security-Policy", cspStrict)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(buf.Bytes()))
 }
@@ -3565,6 +3987,7 @@ func (s fileServer) renderCellView(w http.ResponseWriter, r *http.Request, info 
 		http.Error(w, "cannot render cell", http.StatusInternalServerError)
 		return
 	}
+	w.Header().Set("Content-Security-Policy", cspStrict)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	http.ServeContent(w, r, "cell.html", info.ModTime(), bytes.NewReader(buf.Bytes()))
 }
@@ -3758,6 +4181,7 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 		return
 	}
 
+	w.Header().Set("Content-Security-Policy", cspStrict)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(buf.Bytes()))
 }
@@ -4516,7 +4940,7 @@ type dirEntryView struct {
 const pageFooter = `<footer style="margin-top:3rem;padding-top:0.5rem;border-top:1px solid #eaeef0;font-size:0.75rem;color:#8c959f"><a style="color:#8c959f" href="/` + assetPrefix + `/healthz">healthz</a> &middot; <a style="color:#8c959f" href="/` + assetPrefix + `/version">version</a></footer>
 `
 
-var dropJS = `<script>
+var dropJSBody = `
 (function () {
   var maxDrop = ` + strconv.Itoa(maxDropBytes) + `;
   var maxChildren = ` + strconv.Itoa(maxCdChildren) + `;
@@ -4646,8 +5070,9 @@ var dropJS = `<script>
     xhr.send(f);
   });
 })();
-</script>
 `
+
+const dropJS = `<script src="/` + assetPrefix + `/drop.js"></script>` + "\n"
 
 // dataTableDefine is the shared "datatable" sub-template rendering one
 // sheetView as a coordinate-framed table; parsed into both the directory
@@ -4670,7 +5095,7 @@ const dataTableDefine = `{{define "datatable"}}{{if .Name}}<h2 class="sheet">{{.
 // view and flashes it, so "back to table" from a full-cell page returns to
 // the spot the reader left rather than the top-left corner. Shared by the
 // directory and table templates; runs at the end of body.
-const cellFocusJS = `<script>
+const cellFocusJSBody = `
 (function () {
   var m = /^#cell=(\d+),(\d+)$/.exec(location.hash);
   if (!m) return;
@@ -4684,8 +5109,9 @@ const cellFocusJS = `<script>
   td.style.outlineOffset = "-2px";
   setTimeout(function () { td.style.outline = ""; }, 2000);
 })();
-</script>
 `
+
+const cellFocusJS = `<script src="/` + assetPrefix + `/cell-focus.js"></script>` + "\n"
 
 // dataTableCSS styles the coordinate-framed data tables plus the sqlite
 // query form; shared by the directory and table templates.
@@ -4918,7 +5344,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
 // time, with a progress indicator, so listings of huge databases render
 // instantly instead of waiting on every COUNT(*). As it goes it totals rows
 // and bytes, and appends them to the summary line when the sweep finishes.
-const statsJS = `<script>
+const statsJSBody = `
 (function () {
   var prog = document.getElementById("statprog");
   var sum = document.getElementById("listsum");
@@ -4957,15 +5383,20 @@ const statsJS = `<script>
   }
   next(0);
 })();
-</script>
 `
 
-var pandocHeader = `<link rel="icon" href="/` + assetPrefix + `/favicon.png">
-<script>
+const statsJS = `<script src="/` + assetPrefix + `/stats.js"></script>` + "\n"
+
+// mathjaxConfigJSBody points MathJax at the embedded fonts; its hash is
+// in the CSP so pandoc-rendered pages may run it.
+var mathjaxConfigJSBody = `
   MathJax = {
     chtml: { fontURL: "/` + assetPrefix + `/mathjax/output/chtml/fonts/woff-v2" }
   };
-</script>
+`
+
+var pandocHeader = `<link rel="icon" href="/` + assetPrefix + `/favicon.png">
+<script src="/` + assetPrefix + `/mathjax-config.js"></script>
 <style>
   :root {
     color-scheme: light;

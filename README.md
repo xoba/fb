@@ -8,7 +8,8 @@ databases, and archives all displayed in a form meant for reading.
 
 The server listens only on loopback, on port 3030 by default — see
 [Configuration](#configuration) for changing that, and note that a taken
-port moves the server to the next free one. Requires `pandoc` on the
+port moves the server to the next free one. Browsers authorize once with
+a per-user token — see [Security](#security). Requires `pandoc` on the
 PATH; everything else is compiled in.
 
 ## Installing
@@ -37,6 +38,7 @@ way to configure the brew service, which can't take flags. It lives at
 # ~/.config/fb/config
 port = 8080
 root = ~/notes
+# auth = off      # serve without the token gate (see Security)
 ```
 
 Precedence, most powerful first: the `-port` flag, then `$FB_PORT`, then
@@ -56,6 +58,52 @@ try the next few ports, or check the log, where fb names the port it
 bound: `brew services info fb` shows the log location for the brew
 service (`$(brew --prefix)/var/log/fb.log`), and the from-source service
 logs to `~/Library/Logs/fb.log`.
+
+## Security
+
+fb serves your files, so it layers three defenses over plain HTTP:
+
+- **It listens only on loopback**, IPv4 and IPv6. Nothing on the network
+  can reach it.
+
+- **Requests must present a token** proving they act for the user whose
+  files are served. Loopback alone is not enough — every account on the
+  machine shares it — so the proof is possession of a file only that
+  user can read: `~/.config/fb/token`, minted on first run with mode
+  600. The first time a browser visits, fb shows an authorization page;
+  run the `cat` command it displays, paste the result, and that browser
+  is remembered from then on (an HttpOnly, SameSite=Lax cookie — which
+  also keeps cross-site pages from riding along on your session).
+  Scripts send the same token explicitly:
+
+  ```
+  curl -H "Authorization: Bearer $(cat ~/.config/fb/token)" localhost:3030/notes/plan.md
+  ```
+
+  `?token=...` works too; a browser navigation carrying it trades it
+  for the cookie and redirects with the token stripped from the URL.
+  To rotate the token, delete the file and restart the server (each
+  browser then re-authorizes). To serve without the gate — reasonable
+  on a genuinely single-user machine — put `auth = off` in the config
+  file.
+
+- **The Host header must name loopback** (`localhost`, `127.0.0.1`, or
+  `[::1]`, bare or with the port). A DNS-rebinding page — one whose
+  hostname the attacker re-points at 127.0.0.1 after it loads — still
+  carries its own hostname in Host, and is refused in any browser,
+  whatever the browser's own local-network protections.
+
+Rendered pages additionally carry a strict Content-Security-Policy:
+only fb's own scripts, named by hash, and the embedded MathJax may run.
+A `<script>` smuggled into content fb renders — a hostile `README.md`
+inside a downloaded archive, say, which would otherwise run right in
+the directory listing that inlines it — is inert. Two honest limits:
+files served raw are untouched, so navigating to a hostile `.html`
+file runs its scripts (that is what viewing an HTML file means) — the
+token gate is the wall that matters there; and in the non-markdown
+pandoc formats that can carry raw HTML (notebooks, rst, epub), TeX
+math shows as source and drag-and-drop stays off, since the scripts
+those pages would need arrive exactly the way smuggled ones would.
 
 ## Developing
 
@@ -195,7 +243,9 @@ toolchain, no build tags.
 
 A bonus of the directory model: fetching a sheet or table URL with
 `?raw=1` (or from a non-browser client) exports *that member* as CSV —
-`curl localhost:3030/finances.xlsx/revenue` emits real CSV.
+`curl -H "Authorization: Bearer $(cat ~/.config/fb/token)"
+localhost:3030/finances.xlsx/revenue` emits real CSV (see
+[Security](#security) for the token).
 
 ### Archives (browsed like directories)
 

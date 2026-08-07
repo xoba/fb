@@ -1095,7 +1095,7 @@ func TestTruncatedCellsLinkToFullView(t *testing.T) {
 		if !strings.Contains(body, `<a class="more" href="?cell=1,2">`) {
 			t.Fatalf("table body = %q, want a more-link on the truncated text cell", body)
 		}
-		if !strings.Contains(body, "scrollIntoView") {
+		if !strings.Contains(body, "/_fb/cell-focus.js") {
 			t.Fatalf("table body = %q, want the cell-focus script for #cell= fragments", body)
 		}
 		if strings.Contains(body, longText) {
@@ -1176,7 +1176,7 @@ func TestTruncatedCellsLinkToFullView(t *testing.T) {
 		if !strings.Contains(body, `class="more"`) || !strings.Contains(body, "cell=1,1") {
 			t.Fatalf("query body = %q, want a more-link on the truncated result cell", body)
 		}
-		if !strings.Contains(body, "scrollIntoView") {
+		if !strings.Contains(body, "/_fb/cell-focus.js") {
 			t.Fatalf("query body = %q, want the cell-focus script for #cell= fragments", body)
 		}
 
@@ -1515,7 +1515,7 @@ func TestSQLiteOpenedInPlaceWithDir(t *testing.T) {
 	for _, want := range []string{
 		`id="statprog"`,
 		`data-name="t"`,
-		"computing table stats",
+		"/_fb/stats.js",
 		`id="listsum">1 table</p>`, // member counts render instantly; totals arrive with the async stats
 	} {
 		if !strings.Contains(body, want) {
@@ -1960,7 +1960,7 @@ func TestDragAndDropUpload(t *testing.T) {
 	listing := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec = httptest.NewRecorder()
 	server.ServeHTTP(rec, listing)
-	if !strings.Contains(rec.Body.String(), "/_fb/drop?name=") {
+	if !strings.Contains(rec.Body.String(), "/_fb/drop.js") {
 		t.Fatalf("directory listing lacks the drag-and-drop script")
 	}
 	if !strings.Contains(rec.Body.String(), "/_fb/favicon.png") {
@@ -2844,5 +2844,276 @@ func TestGitDeletedFilesGetGhostRowsAndSubdirHeaders(t *testing.T) {
 	}
 	if body := fetchListing(t, server, "/"); !strings.Contains(body, "clean") {
 		t.Errorf("clean root should say clean")
+	}
+}
+
+const testToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func newTestGuard(root, token string) *guard {
+	return &guard{
+		next:      fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root},
+		hosts:     allowedHosts(3030),
+		token:     token,
+		tokenPath: "/nonexistent/fb/token",
+	}
+}
+
+func guardDo(g *guard, req *http.Request) *http.Response {
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+	return rec.Result()
+}
+
+func TestGuardRejectsForeignHosts(t *testing.T) {
+	g := newTestGuard(t.TempDir(), testToken)
+	for _, host := range []string{"evil.example", "evil.example:3030", "192.168.1.5:3030", "localhost.evil.example:3030"} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Host = host
+		if res := guardDo(g, req); res.StatusCode != http.StatusForbidden {
+			t.Errorf("Host %q: status = %d, want %d", host, res.StatusCode, http.StatusForbidden)
+		}
+	}
+	for _, host := range []string{"localhost:3030", "localhost", "127.0.0.1:3030", "[::1]:3030", "LOCALHOST:3030"} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Host = host
+		if res := guardDo(g, req); res.StatusCode == http.StatusForbidden {
+			t.Errorf("Host %q: rejected, want allowed through", host)
+		}
+	}
+}
+
+func TestGuardRequiresToken(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "secret.txt"), []byte("s3cret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := newTestGuard(root, testToken)
+
+	// A browser navigation gets the authorization page, which must not
+	// leak anything about the served tree.
+	nav := httptest.NewRequest(http.MethodGet, "/secret.txt", nil)
+	nav.Host = "localhost:3030"
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	res := guardDo(g, nav)
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusUnauthorized)
+	}
+	if strings.Contains(string(body), "s3cret") {
+		t.Fatalf("unauthorized response leaked file content")
+	}
+	if !strings.Contains(string(body), `action="/_fb/auth"`) {
+		t.Errorf("auth page lacks the form; body: %s", body)
+	}
+
+	// Anything else gets a plain 401.
+	raw := httptest.NewRequest(http.MethodGet, "/secret.txt", nil)
+	raw.Host = "localhost:3030"
+	if res := guardDo(g, raw); res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("non-navigation status = %d, want %d", res.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestGuardAuthFlow(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "f.txt"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := newTestGuard(root, testToken)
+
+	form := url.Values{"token": {testToken}, "next": {"/f.txt"}}
+	req := httptest.NewRequest(http.MethodPost, "/_fb/auth", strings.NewReader(form.Encode()))
+	req.Host = "localhost:3030"
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res := guardDo(g, req)
+	if res.StatusCode != http.StatusSeeOther {
+		t.Fatalf("auth status = %d, want %d", res.StatusCode, http.StatusSeeOther)
+	}
+	if loc := res.Header.Get("Location"); loc != "/f.txt" {
+		t.Errorf("Location = %q, want /f.txt", loc)
+	}
+	var cookie *http.Cookie
+	for _, c := range res.Cookies() {
+		if c.Name == authCookieName {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatal("no auth cookie set")
+	}
+	if !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.Path != "/" {
+		t.Errorf("cookie = %+v, want HttpOnly, SameSite=Lax, Path=/", cookie)
+	}
+
+	// The cookie now authorizes requests.
+	get := httptest.NewRequest(http.MethodGet, "/f.txt", nil)
+	get.Host = "localhost:3030"
+	get.AddCookie(cookie)
+	res = guardDo(g, get)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("with cookie: status = %d, want 200", res.StatusCode)
+	}
+	if body, _ := io.ReadAll(res.Body); string(body) != "hi\n" {
+		t.Errorf("body = %q, want file content", body)
+	}
+
+	// A wrong token earns a 401 and no cookie.
+	form = url.Values{"token": {"wrong"}, "next": {"/"}}
+	req = httptest.NewRequest(http.MethodPost, "/_fb/auth", strings.NewReader(form.Encode()))
+	req.Host = "localhost:3030"
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res = guardDo(g, req)
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("bad token status = %d, want 401", res.StatusCode)
+	}
+	if len(res.Cookies()) != 0 {
+		t.Errorf("bad token still set a cookie")
+	}
+}
+
+func TestGuardBearerAndQueryToken(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "f.txt"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := newTestGuard(root, testToken)
+
+	bearer := httptest.NewRequest(http.MethodGet, "/f.txt", nil)
+	bearer.Host = "localhost:3030"
+	bearer.Header.Set("Authorization", "Bearer "+testToken)
+	if res := guardDo(g, bearer); res.StatusCode != http.StatusOK {
+		t.Errorf("bearer status = %d, want 200", res.StatusCode)
+	}
+
+	// ?token= authorizes a plain fetch directly.
+	q := httptest.NewRequest(http.MethodGet, "/f.txt?token="+testToken, nil)
+	q.Host = "localhost:3030"
+	if res := guardDo(g, q); res.StatusCode != http.StatusOK {
+		t.Errorf("query token status = %d, want 200", res.StatusCode)
+	}
+
+	// On a navigation it earns the cookie and strips itself via redirect.
+	nav := httptest.NewRequest(http.MethodGet, "/f.txt?token="+testToken, nil)
+	nav.Host = "localhost:3030"
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	res := guardDo(g, nav)
+	if res.StatusCode != http.StatusSeeOther {
+		t.Fatalf("navigation query token status = %d, want 303", res.StatusCode)
+	}
+	if loc := res.Header.Get("Location"); loc != "/f.txt" {
+		t.Errorf("Location = %q, want /f.txt", loc)
+	}
+	if len(res.Cookies()) == 0 {
+		t.Errorf("navigation query token set no cookie")
+	}
+}
+
+func TestGuardExemptsProbesAndAssets(t *testing.T) {
+	g := newTestGuard(t.TempDir(), testToken)
+	for _, p := range []string{"/_fb/healthz", "/_fb/version", "/_fb/favicon.png", "/_fb/mathjax/tex-mml-chtml.js", "/_fb/drop.js", "/_fb/cell-focus.js"} {
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		req.Host = "localhost:3030"
+		if res := guardDo(g, req); res.StatusCode != http.StatusOK {
+			t.Errorf("%s: status = %d, want 200 without a token", p, res.StatusCode)
+		}
+	}
+}
+
+func TestGuardAuthOffServesDirectly(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "f.txt"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := newTestGuard(root, "")
+	req := httptest.NewRequest(http.MethodGet, "/f.txt", nil)
+	req.Host = "localhost:3030"
+	res := guardDo(g, req)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("auth off: status = %d, want 200", res.StatusCode)
+	}
+	if res.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Errorf("nosniff header missing with auth off")
+	}
+}
+
+func TestSanitizeNext(t *testing.T) {
+	for next, want := range map[string]string{
+		"":                     "/",
+		"/":                    "/",
+		"/sub/f.txt":           "/sub/f.txt",
+		"//evil.example":       "/",
+		`/\evil.example`:       "/",
+		"https://evil.example": "/",
+		"relative":             "/",
+	} {
+		if got := sanitizeNext(next); got != want {
+			t.Errorf("sanitizeNext(%q) = %q, want %q", next, got, want)
+		}
+	}
+}
+
+func TestLoadOrCreateToken(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	token, tokenPath, err := loadOrCreateToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(token) != 64 {
+		t.Errorf("token length = %d, want 64 hex chars", len(token))
+	}
+	info, err := os.Stat(tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("token file mode = %o, want 600", perm)
+	}
+	again, _, err := loadOrCreateToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != token {
+		t.Errorf("second load minted a different token")
+	}
+}
+
+func TestRenderedPagesCarryCSPAndRawDoesNot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "note.md"), []byte("# hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "prog.go"), []byte("package x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := fileServer{fsys: os.DirFS(root), pandoc: fakePandoc(t), dir: root}
+
+	// Rendered markdown carries the strict hash-pinned policy.
+	nav := httptest.NewRequest(http.MethodGet, "/note.md", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+	csp := rec.Result().Header.Get("Content-Security-Policy")
+	scriptSrc, _, _ := strings.Cut(csp, ";") // the script-src clause leads
+	if scriptSrc != "script-src 'self'" {
+		t.Errorf("markdown script-src = %q, want script-src 'self' alone", scriptSrc)
+	}
+
+	// So do listings and source views.
+	for _, p := range []string{"/", "/prog.go"} {
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		if csp := rec.Result().Header.Get("Content-Security-Policy"); !strings.Contains(csp, "script-src") {
+			t.Errorf("%s: CSP = %q, want script-src policy", p, csp)
+		}
+	}
+
+	// Raw bytes stay untouched — no policy rewriting what a script fetched.
+	raw := httptest.NewRequest(http.MethodGet, "/prog.go", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, raw)
+	if csp := rec.Result().Header.Get("Content-Security-Policy"); csp != "" {
+		t.Errorf("raw fetch CSP = %q, want none", csp)
 	}
 }
