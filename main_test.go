@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -2838,5 +2839,251 @@ func TestGitDeletedFilesGetGhostRowsAndSubdirHeaders(t *testing.T) {
 	}
 	if body := fetchListing(t, server, "/"); !strings.Contains(body, "clean") {
 		t.Errorf("clean root should say clean")
+	}
+}
+
+func TestSanitizeRenderedFragment(t *testing.T) {
+	in := `<h1 id="title">Hi</h1>` +
+		`<p onclick="alert(1)" class="x">text</p>` +
+		`<script>alert(1)</script>` +
+		`<style>body{display:none}</style>` +
+		`<a href="javascript:alert(1)">bad</a>` +
+		`<a href="#fn1">anchor</a>` +
+		`<a href="sibling.md">sibling</a>` +
+		`<a href="https://example.com/">ext</a>` +
+		`<img src="data:image/png;base64,AAAA" alt="dot">` +
+		`<img src="pic.png" onerror="alert(1)">` +
+		`<input type="checkbox" disabled checked>` +
+		`<li id="fn1"><a href="#fnref1" class="footnote-back">back</a></li>`
+	out := string(sanitizeRendered([]byte(in), false))
+
+	for _, want := range []string{
+		`<h1 id="title">Hi</h1>`,
+		`<p class="x">text</p>`,
+		`</p>bad`, // javascript: link loses its <a> wrapper, keeps its text
+		`href="#fn1"`, `href="sibling.md"`, `href="https://example.com/"`,
+		`src="data:image/png;base64,AAAA"`, `src="pic.png"`,
+		`type="checkbox"`, `disabled`, `checked`,
+		`id="fn1"`, `class="footnote-back"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("sanitized fragment lacks %q; out: %s", want, out)
+		}
+	}
+	for _, banned := range []string{"<script", "<style", "onclick", "onerror", "javascript:"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("sanitized fragment still contains %q; out: %s", banned, out)
+		}
+	}
+}
+
+func TestSanitizeRenderedStandaloneKeepsHead(t *testing.T) {
+	in := `<!doctype html><html><head><script>MathJax = {};</script>` +
+		`<style>body{color:#000}</style></head><body>` +
+		`<p>ok</p><script>alert(1)</script></body></html>`
+	out := string(sanitizeRendered([]byte(in), true))
+
+	// The head is server-generated: its script and style must survive.
+	for _, want := range []string{`<script>MathJax = {};</script>`, `<style>body{color:#000}</style>`, `<p>ok</p>`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("sanitized standalone lacks %q; out: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "alert(1)") {
+		t.Errorf("sanitized standalone still runs body script; out: %s", out)
+	}
+}
+
+func TestReadOnlySQL(t *testing.T) {
+	for query, want := range map[string]bool{
+		"select 1":                          true,
+		"  SELECT name FROM t  ":            true,
+		"select 1;":                         true, // lone trailing semicolon
+		"select 1; -- done":                 true,
+		"with x as (select 1) select * from x": true,
+		"EXPLAIN select 1":                  true,
+		"-- a comment\nselect 1":            true,
+		"/* c */ select 1":                  true,
+		"select ';'":                        true, // semicolon inside a string
+		`select ";" from t`:                 true,
+		"select 1; drop table t":            false,
+		"delete from users":                 false,
+		"vacuum into '/tmp/x.db'":           false,
+		"attach database '/tmp/x.db' as a":  false,
+		"select 1; attach database '/tmp/x' as a; create table a.t(b)": false,
+		"pragma query_only=off":             false,
+		"":                                  false,
+		"-- only a comment":                 false,
+	} {
+		if got := readOnlySQL(query); got != want {
+			t.Errorf("readOnlySQL(%q) = %v, want %v", query, got, want)
+		}
+	}
+}
+
+func TestHostGuard(t *testing.T) {
+	for host, want := range map[string]bool{
+		"localhost":       true,
+		"localhost:3030":  true,
+		"LOCALHOST:3031":  true,
+		"127.0.0.1":       true,
+		"127.0.0.1:3030":  true,
+		"[::1]:3030":      true,
+		"::1":             true,
+		"evil.com":        false,
+		"evil.com:3030":   false,
+		"127.0.0.1.evil.com": false,
+		"":                false,
+	} {
+		if got := isLoopbackHost(host); got != want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", host, got, want)
+		}
+	}
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "ok") })
+	guarded := hostGuard(inner)
+
+	rec := httptest.NewRecorder()
+	guarded.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://evil.com:3030/secret", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("rebinding host status = %d, want 403", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	guarded.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://localhost:3030/", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
+		t.Errorf("loopback host status = %d body = %q, want 200 ok", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSameOriginGate(t *testing.T) {
+	server := fileServer{fsys: os.DirFS(t.TempDir()), pandoc: "unused"}
+
+	// A cross-site POST to the drop endpoint is rejected...
+	post := httptest.NewRequest(http.MethodPost, "/_fb/drop?name=x.txt", strings.NewReader("x"))
+	post.Header.Set("Sec-Fetch-Site", "cross-site")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, post)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-site drop status = %d, want 403", rec.Code)
+	}
+
+	// ...as is one with a foreign Origin and no fetch metadata...
+	post = httptest.NewRequest(http.MethodPost, "/_fb/drop?name=x.txt", strings.NewReader("x"))
+	post.Header.Set("Origin", "https://evil.com")
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, post)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("foreign-origin drop status = %d, want 403", rec.Code)
+	}
+
+	// ...while fb's own pages and non-browser clients pass.
+	for _, hdr := range []http.Header{
+		{"Sec-Fetch-Site": {"same-origin"}},
+		{"Sec-Fetch-Site": {"same-origin"}, "Origin": {"http://localhost:3030"}},
+		{}, // curl sends neither
+	} {
+		post = httptest.NewRequest(http.MethodPost, "/_fb/drop?name=x.txt", strings.NewReader("x"))
+		post.Header = hdr
+		rec = httptest.NewRecorder()
+		server.ServeHTTP(rec, post)
+		if rec.Code != http.StatusOK {
+			t.Errorf("drop with headers %v status = %d, want 200", hdr, rec.Code)
+		}
+	}
+}
+
+func TestServeRawSandboxesActiveTypes(t *testing.T) {
+	root := t.TempDir()
+	for name, content := range map[string]string{
+		"page.html": "<html><body>hi</body></html>",
+		"logo.svg":  `<svg xmlns="http://www.w3.org/2000/svg"></svg>`,
+		"payload":   "<script>alert(1)</script>", // extensionless markup
+		"plain.txt": "just text",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+	get := func(target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		return rec
+	}
+
+	for _, name := range []string{"page.html", "logo.svg"} {
+		rec := get("/" + name)
+		if csp := rec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "sandbox") {
+			t.Errorf("%s CSP = %q, want sandbox", name, csp)
+		}
+		if !bytes.Equal(rec.Body.Bytes(), []byte("<html><body>hi</body></html>")) && name == "page.html" {
+			t.Errorf("%s body changed: %q", name, rec.Body.String())
+		}
+	}
+
+	rec := get("/payload")
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("extensionless markup Content-Type = %q, want text/plain", ct)
+	}
+
+	rec = get("/plain.txt")
+	if csp := rec.Header().Get("Content-Security-Policy"); strings.Contains(csp, "sandbox") {
+		t.Errorf("plain.txt CSP = %q, want no sandbox", csp)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("plain.txt Content-Type = %q, want text/plain", ct)
+	}
+}
+
+func TestGlobalHardeningHeaders(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "plain.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/plain.txt", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	for header, want := range map[string]string{
+		"X-Content-Type-Options":       "nosniff",
+		"Cross-Origin-Resource-Policy": "same-origin",
+		"Content-Security-Policy":      "frame-ancestors 'none'",
+	} {
+		if got := rec.Header().Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+}
+
+func TestSymlinkEscapeIsConfined(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on windows")
+	}
+	root := t.TempDir()
+	outside := t.TempDir()
+	secret := []byte("top secret\n")
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), secret, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	osRoot, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := fileServer{fsys: osRoot.FS(), pandoc: "unused"}
+
+	req := httptest.NewRequest(http.MethodGet, "/link/secret.txt", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK && strings.Contains(rec.Body.String(), "top secret") {
+		t.Fatalf("symlink escape served outside file; body: %s", rec.Body.String())
 	}
 }
