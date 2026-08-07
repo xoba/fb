@@ -79,13 +79,19 @@ var embeddedAssets embed.FS
 
 func main() {
 	usage := func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [-port N] [-open] [SERVE_PATH]\n\nServes SERVE_PATH (default: your home directory) on localhost.\nThe port defaults to $FB_PORT, then the config file, then 3030;\nif taken, the next free port is used (the startup log names it).\n-open points the default browser at the served URL.\nAn optional config file at ~/.config/fb/config ($XDG_CONFIG_HOME\nrespected) holds \"port = N\" and \"root = PATH\" lines — the way to\nconfigure the brew service, which takes no flags.\n", filepath.Base(os.Args[0]))
+		fmt.Fprintf(os.Stderr, "Usage: %s [-port N] [-open] [-version] [SERVE_PATH]\n\nServes SERVE_PATH (default: your home directory) on localhost.\nThe port defaults to $FB_PORT, then the config file, then 3030;\nif taken, the next free port is used (the startup log names it).\n-open points the default browser at the served URL.\nAn optional config file at ~/.config/fb/config ($XDG_CONFIG_HOME\nrespected) holds \"port = N\" and \"root = PATH\" lines — the way to\nconfigure the brew service, which takes no flags.\n", filepath.Base(os.Args[0]))
 	}
 	flag.Usage = usage
 	cfg := readConfig()
 	port := flag.Int("port", defaultPort(cfg.port), "localhost port to listen on")
 	openFlag := flag.Bool("open", false, "open the default browser at the served URL")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("fb %s\n", resolvedVersion())
+		return
+	}
 
 	rootArg, err := parseRootArg(flag.Args(), cfg.root)
 	if err != nil {
@@ -859,6 +865,18 @@ func serveAsset(w http.ResponseWriter, r *http.Request, name string) {
 // formula its own version. Unset under go run and plain go build.
 var version string
 
+// resolvedVersion is the release version: the ldflags stamp when present,
+// else the module version that go install records, else "unknown".
+func resolvedVersion() string {
+	if version != "" {
+		return version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return "unknown"
+}
+
 // serveVersion reports which build is running: the release version, the git
 // revision stamped into the binary by go build (absent under go run and go
 // test), the commit time, and whether the working tree was dirty.
@@ -867,12 +885,8 @@ var version string
 func serveVersion(w http.ResponseWriter) {
 	revision, vcsTime, modified := "unknown", "unknown", "unknown"
 	goVersion := runtime.Version()
-	v := version
 	if bi, ok := debug.ReadBuildInfo(); ok {
 		goVersion = bi.GoVersion
-		if v == "" && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
-			v = bi.Main.Version // set for go install xoba.com/fb@vX.Y.Z builds
-		}
 		for _, kv := range bi.Settings {
 			switch kv.Key {
 			case "vcs.revision":
@@ -884,11 +898,8 @@ func serveVersion(w http.ResponseWriter) {
 			}
 		}
 	}
-	if v == "" {
-		v = "unknown"
-	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	fmt.Fprintf(w, "version: %s\nrevision: %s\nvcs.time: %s\nmodified: %s\ngo: %s\n", v, revision, vcsTime, modified, goVersion)
+	fmt.Fprintf(w, "version: %s\nrevision: %s\nvcs.time: %s\nmodified: %s\ngo: %s\n", resolvedVersion(), revision, vcsTime, modified, goVersion)
 }
 
 // serveInternal handles the reserved /_fb/ namespace: embedded assets,
