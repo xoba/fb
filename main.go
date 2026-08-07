@@ -943,6 +943,10 @@ func serveAsset(w http.ResponseWriter, r *http.Request, name string) {
 // formula its own version. Unset under go run and plain go build.
 var version string
 
+// startTime anchors the version probe's uptime line — which is also how
+// a self-restart shows itself: fresh uptime, new version.
+var startTime = time.Now()
+
 // resolvedVersion is the release version: the ldflags stamp when present,
 // else the module version that go install records, else "unknown".
 func resolvedVersion() string {
@@ -977,7 +981,9 @@ func serveVersion(w http.ResponseWriter) {
 		}
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	fmt.Fprintf(w, "version: %s\nrevision: %s\nvcs.time: %s\nmodified: %s\ngo: %s\n", resolvedVersion(), revision, vcsTime, modified, goVersion)
+	fmt.Fprintf(w, "version: %s\nrevision: %s\nvcs.time: %s\nmodified: %s\ngo: %s\nuptime: %s (since %s)\n",
+		resolvedVersion(), revision, vcsTime, modified, goVersion,
+		time.Since(startTime).Round(time.Second), startTime.Format(time.RFC3339))
 }
 
 // serveInternal handles the reserved /_fb/ namespace: embedded assets,

@@ -977,8 +977,12 @@ func TestVersionEndpointShowsTag(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	serveVersion(rec)
-	if body := rec.Body.String(); !strings.Contains(body, "version: v9.9.9-test\n") {
+	body := rec.Body.String()
+	if !strings.Contains(body, "version: v9.9.9-test\n") {
 		t.Fatalf("version output = %q", body)
+	}
+	if !strings.Contains(body, "uptime: ") || !strings.Contains(body, "(since 2") {
+		t.Fatalf("version output lacks uptime: %q", body)
 	}
 }
 

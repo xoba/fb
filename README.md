@@ -113,9 +113,10 @@ is found. The serve root defaults to `/`; install with
 
 The server exposes two probes: `/_fb/healthz` answers `ok`, and
 `/_fb/version` reports the release version (stamped at build time; brew
-and `go install` builds carry their tag) plus the git revision, commit
+and `go install` builds carry their tag), the git revision, commit
 time, and dirty flag that `go build` stamps into the binary (`unknown`
-under `go run`). `redeploy` and `install` poll the version endpoint until the
+under `go run`), and the process uptime — a fresh uptime beside a new
+version is how a self-restart after an upgrade shows itself. `redeploy` and `install` poll the version endpoint until the
 served revision matches git HEAD, so a redeploy either confirms the new
 build is actually the one serving or fails loudly.
 
