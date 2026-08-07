@@ -6,9 +6,10 @@ readable HTML instead of making you download them. Point it at a directory
 with Markdown, office documents, notebooks, source code, spreadsheets,
 databases, and archives all displayed in a form meant for reading.
 
-The server listens only on loopback, on port 3030 by default — change it
-with `-port N` or the `FB_PORT` environment variable. Requires `pandoc`
-on the PATH; everything else is compiled in.
+The server listens only on loopback, on port 3030 by default — see
+[Configuration](#configuration) for changing that, and note that a taken
+port moves the server to the next free one. Requires `pandoc` on the
+PATH; everything else is compiled in.
 
 ## Installing
 
@@ -23,7 +24,36 @@ if it's not already present).
 
 Run `fb` with no argument to serve your home directory, or pass a path
 to serve a different root — `fb /` makes the whole filesystem browsable.
-If port 3030 is taken, `fb -port 8080` (or `FB_PORT=8080`) moves it.
+
+### Configuration
+
+An optional config file sets what flags otherwise would — and it's the
+way to configure the brew service, which can't take flags. It lives at
+`~/.config/fb/config` (`$XDG_CONFIG_HOME/fb/config` if that's set):
+
+```
+# ~/.config/fb/config
+port = 8080
+root = ~/notes
+```
+
+Precedence, most powerful first: the `-port` flag, then `$FB_PORT`, then
+the file's `port`, then 3030; a path argument, then the file's `root`,
+then your home directory. After editing the file:
+
+```
+brew services restart fb
+```
+
+### Port fallback
+
+If the chosen port is already taken — by another fb, or anything else —
+fb serves on the next free port instead of failing: 3031, then 3032, and
+so on. So if `localhost:3030` shows something unexpected (or nothing),
+try the next few ports, or check the log, where fb names the port it
+bound: `brew services info fb` shows the log location for the brew
+service (`$(brew --prefix)/var/log/fb.log`), and the from-source service
+logs to `~/Library/Logs/fb.log`.
 
 ## Developing
 

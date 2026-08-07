@@ -2339,7 +2339,7 @@ func TestServesEmbeddedMathJax(t *testing.T) {
 }
 
 func TestParseRootArg(t *testing.T) {
-	root, err := parseRootArg([]string{"/"})
+	root, err := parseRootArg([]string{"/"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2349,7 +2349,7 @@ func TestParseRootArg(t *testing.T) {
 
 	// No argument serves the home directory.
 	for _, args := range [][]string{nil, {}} {
-		root, err := parseRootArg(args)
+		root, err := parseRootArg(args, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2364,9 +2364,75 @@ func TestParseRootArg(t *testing.T) {
 		{"-h"},
 		{"--help"},
 	} {
-		if _, err := parseRootArg(args); err == nil {
+		if _, err := parseRootArg(args, ""); err == nil {
 			t.Fatalf("parseRootArg(%q) succeeded, want error", args)
 		}
+	}
+}
+
+func TestConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "fb"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fb", "config"), []byte(`
+# comment
+port = 8080
+root = /somewhere
+bogus = ignored
+malformed line
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := readConfig()
+	if cfg.port != 8080 || cfg.root != "/somewhere" {
+		t.Fatalf("readConfig = %+v, want port 8080 root /somewhere", cfg)
+	}
+
+	// The config root applies only when no path argument is given.
+	if root, err := parseRootArg(nil, cfg.root); err != nil || root != "/somewhere" {
+		t.Fatalf("parseRootArg(nil, cfg) = %q, %v", root, err)
+	}
+	if root, err := parseRootArg([]string{"/tmp"}, cfg.root); err != nil || root != "/tmp" {
+		t.Fatalf("parseRootArg(arg, cfg) = %q, %v; argument must win", root, err)
+	}
+
+	// FB_PORT beats the file; the file beats the built-in default.
+	t.Setenv("FB_PORT", "9090")
+	if got := defaultPort(cfg.port); got != 9090 {
+		t.Fatalf("defaultPort with FB_PORT = %d, want 9090", got)
+	}
+	t.Setenv("FB_PORT", "")
+	if got := defaultPort(cfg.port); got != 8080 {
+		t.Fatalf("defaultPort from config = %d, want 8080", got)
+	}
+	if got := defaultPort(0); got != 3030 {
+		t.Fatalf("defaultPort fallback = %d, want 3030", got)
+	}
+}
+
+func TestListenFreeSkipsTakenPort(t *testing.T) {
+	port, listeners, err := listenFree(0x7fb0) // an arbitrary quiet port
+	if err != nil {
+		t.Skipf("cannot bind test port: %v", err)
+	}
+	defer func() {
+		for _, ln := range listeners {
+			ln.Close()
+		}
+	}()
+
+	next, more, err := listenFree(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ln := range more {
+		ln.Close()
+	}
+	if next != port+1 {
+		t.Fatalf("listenFree(%d) with %d taken = %d, want %d", port, port, next, port+1)
 	}
 }
 

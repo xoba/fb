@@ -74,13 +74,14 @@ var embeddedAssets embed.FS
 
 func main() {
 	usage := func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [-port N] [SERVE_PATH]\n\nServes SERVE_PATH (default: your home directory) on localhost.\nThe port defaults to $FB_PORT, or 3030.\n", filepath.Base(os.Args[0]))
+		fmt.Fprintf(os.Stderr, "Usage: %s [-port N] [SERVE_PATH]\n\nServes SERVE_PATH (default: your home directory) on localhost.\nThe port defaults to $FB_PORT, then the config file, then 3030;\nif taken, the next free port is used (the startup log names it).\nAn optional config file at ~/.config/fb/config ($XDG_CONFIG_HOME\nrespected) holds \"port = N\" and \"root = PATH\" lines — the way to\nconfigure the brew service, which takes no flags.\n", filepath.Base(os.Args[0]))
 	}
 	flag.Usage = usage
-	port := flag.Int("port", defaultPort(), "localhost port to listen on")
+	cfg := readConfig()
+	port := flag.Int("port", defaultPort(cfg.port), "localhost port to listen on")
 	flag.Parse()
 
-	rootArg, err := parseRootArg(flag.Args())
+	rootArg, err := parseRootArg(flag.Args(), cfg.root)
 	if err != nil {
 		usage()
 		os.Exit(2)
@@ -101,40 +102,133 @@ func main() {
 	fsys := os.DirFS(root)
 	handler := fileServer{fsys: fsys, pandoc: "pandoc", dir: root}
 
-	log.Printf("serving %s at http://localhost:%d/", root, *port)
-	if err := serveLoopback(handler, *port); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	bound, listeners, err := listenFree(*port)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if bound != *port {
+		log.Printf("port %d is taken; using the next free port", *port)
+	}
+	log.Printf("serving %s at http://localhost:%d/", root, bound)
+	if err := serve(handler, listeners); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }
 
-// defaultPort is 3030 unless FB_PORT overrides it — the escape hatch for
-// contexts like brew services, where passing flags means editing a plist.
-func defaultPort() int {
+// defaultPort resolves the port used when the -port flag is absent:
+// FB_PORT wins, then the config file, then 3030.
+func defaultPort(configured int) int {
 	if n, err := strconv.Atoi(os.Getenv("FB_PORT")); err == nil && n >= 1 && n <= 65535 {
 		return n
+	}
+	if configured != 0 {
+		return configured
 	}
 	return 3030
 }
 
-func serveLoopback(handler http.Handler, port int) error {
-	listeners := make([]net.Listener, 0, 2)
-	for _, spec := range []struct {
-		network string
-		addr    string
-	}{
-		{network: "tcp4", addr: fmt.Sprintf("127.0.0.1:%d", port)},
-		{network: "tcp6", addr: fmt.Sprintf("[::1]:%d", port)},
-	} {
-		ln, err := net.Listen(spec.network, spec.addr)
-		if err != nil {
-			for _, open := range listeners {
-				_ = open.Close()
-			}
-			return fmt.Errorf("listen %s: %w", spec.addr, err)
-		}
-		listeners = append(listeners, ln)
-	}
+// fileConfig is what ~/.config/fb/config can set. Zero values mean unset.
+type fileConfig struct {
+	port int
+	root string
+}
 
+// configPath honors $XDG_CONFIG_HOME, falling back to ~/.config.
+func configPath() string {
+	base := os.Getenv("XDG_CONFIG_HOME")
+	if base == "" {
+		home := userHome()
+		if home == "" {
+			return ""
+		}
+		base = filepath.Join(home, ".config")
+	}
+	return filepath.Join(base, "fb", "config")
+}
+
+// readConfig parses the optional config file: "key = value" lines with #
+// comments, keys port and root. It exists for contexts that cannot pass
+// flags — a brew services plist above all — so command-line flags and
+// FB_PORT always beat it. Bad lines are warned about and skipped rather
+// than fatal: a keep-alive service that dies on a typo just crash-loops.
+func readConfig() fileConfig {
+	var cfg fileConfig
+	path := configPath()
+	if path == "" {
+		return cfg
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cfg // absent config is the normal case
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			log.Printf("config %s: ignoring line %q (want key = value)", path, line)
+			continue
+		}
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		switch key {
+		case "port":
+			n, err := strconv.Atoi(value)
+			if err != nil || n < 1 || n > 65535 {
+				log.Printf("config %s: ignoring invalid port %q", path, value)
+				continue
+			}
+			cfg.port = n
+		case "root":
+			if value == "~" || strings.HasPrefix(value, "~/") {
+				value = filepath.Join(userHome(), strings.TrimPrefix(value, "~"))
+			}
+			cfg.root = value
+		default:
+			log.Printf("config %s: ignoring unknown key %q", path, key)
+		}
+	}
+	return cfg
+}
+
+// listenFree binds both loopback stacks (IPv4 and IPv6) on the first free
+// port at or above want, scanning sequentially — 3031, 3032, … — so a
+// taken port moves the server up instead of killing it. The chosen port
+// is announced in the startup log so a user finding something else on
+// 3030 can locate their server.
+func listenFree(want int) (int, []net.Listener, error) {
+	var firstErr error
+	for port := want; port < want+100 && port <= 65535; port++ {
+		listeners := make([]net.Listener, 0, 2)
+		for _, spec := range []struct {
+			network string
+			addr    string
+		}{
+			{network: "tcp4", addr: fmt.Sprintf("127.0.0.1:%d", port)},
+			{network: "tcp6", addr: fmt.Sprintf("[::1]:%d", port)},
+		} {
+			ln, err := net.Listen(spec.network, spec.addr)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				for _, open := range listeners {
+					_ = open.Close()
+				}
+				listeners = nil
+				break
+			}
+			listeners = append(listeners, ln)
+		}
+		if listeners != nil {
+			return port, listeners, nil
+		}
+	}
+	return 0, nil, fmt.Errorf("no free port within 100 of %d: %w", want, firstErr)
+}
+
+func serve(handler http.Handler, listeners []net.Listener) error {
 	errc := make(chan error, len(listeners))
 	for _, ln := range listeners {
 		srv := &http.Server{Handler: handler}
@@ -147,10 +241,13 @@ func serveLoopback(handler http.Handler, port int) error {
 }
 
 // parseRootArg accepts an optional serve path; with none the server offers
-// the user's home directory.
-func parseRootArg(args []string) (string, error) {
+// the config file's root, or failing that the user's home directory.
+func parseRootArg(args []string, configured string) (string, error) {
 	switch {
 	case len(args) == 0:
+		if configured != "" {
+			return configured, nil
+		}
 		if home := userHome(); home != "" {
 			return home, nil
 		}
