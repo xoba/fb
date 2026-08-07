@@ -1004,6 +1004,10 @@ func dropsDir() (string, error) {
 // largest viewer cap (sqlite/tar at 100 MB) could be usefully viewed anyway.
 const maxDropBytes = 100 << 20
 
+// maxDropsBytes bounds the total retained drops; past it the oldest drop
+// directories are evicted (see evictDrops).
+const maxDropsBytes = 1 << 30
+
 // handleDrop stores an uploaded file under a fresh sequence directory (so
 // original basenames are kept without collisions) and replies with the URL
 // where the copy is served through the ordinary pipeline.
@@ -1024,13 +1028,15 @@ func (s fileServer) handleDrop(w http.ResponseWriter, r *http.Request) {
 	// that managed to post a drop still cannot address it blindly —
 	// /_fb/drops/ URLs must not be guessable.
 	seq := fmt.Sprintf("%06d-%s", dropSeq.Add(1), dropSuffix())
-	if err := os.MkdirAll(filepath.Join(dir, seq), 0o755); err != nil {
+	seqDir := filepath.Join(dir, seq)
+	if err := os.MkdirAll(seqDir, 0o755); err != nil {
 		http.Error(w, "cannot store drop", http.StatusInternalServerError)
 		return
 	}
 
-	f, err := os.Create(filepath.Join(dir, seq, base))
+	f, err := os.Create(filepath.Join(seqDir, base))
 	if err != nil {
+		os.Remove(seqDir)
 		http.Error(w, "cannot store drop", http.StatusInternalServerError)
 		return
 	}
@@ -1039,12 +1045,53 @@ func (s fileServer) handleDrop(w http.ResponseWriter, r *http.Request) {
 		err = closeErr
 	}
 	if err != nil {
+		// A truncated upload is not kept.
+		os.Remove(f.Name())
+		os.Remove(seqDir)
 		http.Error(w, "upload failed: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
+	evictDrops(dir, maxDropsBytes)
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprint(w, (&url.URL{Path: "/" + assetPrefix + "/drops/" + seq + "/" + base}).String())
+}
+
+// evictDrops removes the oldest drop directories while their total size
+// exceeds limit. The sequence-numbered names sort chronologically, so
+// os.ReadDir's name order is oldest first.
+func evictDrops(dir string, limit int64) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	sizes := make([]int64, len(entries))
+	var total int64
+	for i, e := range entries {
+		sizes[i] = dirSize(filepath.Join(dir, e.Name()))
+		total += sizes[i]
+	}
+	for i, e := range entries {
+		if total <= limit {
+			return
+		}
+		os.RemoveAll(filepath.Join(dir, e.Name()))
+		total -= sizes[i]
+	}
+}
+
+func dirSize(dir string) int64 {
+	var total int64
+	filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err == nil && d.Type().IsRegular() {
+			if info, err := d.Info(); err == nil {
+				total += info.Size()
+			}
+		}
+		return nil
+	})
+	return total
 }
 
 // dropSuffix returns 16 hex characters of randomness for a drop directory

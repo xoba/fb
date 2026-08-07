@@ -321,7 +321,8 @@ ordinary pipeline — a dropped notebook renders, a dropped zip browses, a
 dropped database gets the query box. A floating monitor shows upload
 progress; files over 100 MB (the largest viewer cap) are rejected with a
 notice before any upload starts. Past drops remain browsable at
-`/_fb/drops/` until the OS cleans the temp directory.
+`/_fb/drops/` until they age out — the oldest are evicted once drops
+total over 1 GB — or the OS cleans the temp directory.
 
 Drop a *folder* and nothing is uploaded — the folder already lives on the
 machine this server browses, so the page simply navigates to its listing:
