@@ -229,6 +229,20 @@ progress; files over 100 MB (the largest viewer cap) are rejected with a
 notice before any upload starts. Past drops remain browsable at
 `/_localmd/drops/` until the OS cleans the temp directory.
 
+Drop a *folder* and nothing is uploaded — the folder already lives on the
+machine this server browses, so the page simply navigates to its listing:
+drag-and-drop as `cd`. Safari hands over the folder's `file://` URL
+directly; Chrome and Firefox reveal only the folder's name and contents,
+so the server searches for it in order of where drags actually come from:
+the Desktop first (walked directly, so the common case resolves without
+waiting on Spotlight), then Spotlight over the whole serve root, then a
+breadth-first walk that probes the home directory and the serve root in
+lockstep. Every candidate is verified against the child names seen in the
+browser, with the folder's modification time and then the same
+Desktop-then-home prior breaking ties. If nothing matches, or several
+folders match equally, the drop fails with a notice instead of guessing.
+Folders outside the serve root are rejected by name.
+
 ## Directory listings
 
 - **Summary** — a muted headline above the listing totals what it shows:

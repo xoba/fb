@@ -29,6 +29,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/user"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -585,8 +586,8 @@ func serveVersion(w http.ResponseWriter) {
 }
 
 // serveInternal handles the reserved /_localmd/ namespace: embedded assets,
-// the drag-and-drop upload endpoint, browsing of dropped files, and the
-// health and version probes.
+// the drag-and-drop upload and directory-cd endpoints, browsing of dropped
+// files, and the health and version probes.
 func (s fileServer) serveInternal(w http.ResponseWriter, r *http.Request, name string) {
 	if name == assetPrefix+"/healthz" {
 		preventCaching(w.Header(), r.Header)
@@ -608,6 +609,16 @@ func (s fileServer) serveInternal(w http.ResponseWriter, r *http.Request, name s
 			return
 		}
 		s.handleDrop(w, r)
+		return
+	}
+
+	if name == assetPrefix+"/cd" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleCd(w, r)
 		return
 	}
 
@@ -691,6 +702,365 @@ func (s fileServer) handleDrop(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprint(w, (&url.URL{Path: "/" + assetPrefix + "/drops/" + seq + "/" + base}).String())
+}
+
+// maxCdChildren caps how many immediate child names the browser reports for
+// a dropped directory; a report that hits the cap is treated as truncated
+// rather than complete when candidates are verified.
+const maxCdChildren = 1000
+
+// cdRequest is whatever the browser could learn about a dragged-in
+// directory. Safari includes the folder's file:// URI outright; Chrome and
+// Firefox expose only its name, its immediate child names, and sometimes a
+// modification time.
+type cdRequest struct {
+	Name     string   `json:"name"`
+	URIs     []string `json:"uris"`
+	Children []string `json:"children"`
+	Modified int64    `json:"modified"` // mtime in milliseconds, 0 when unknown
+}
+
+// handleCd resolves a directory dragged onto a page to its listing URL.
+// Nothing is uploaded — the directory already lives on the machine this
+// server browses, so the drop is just a change of directory.
+func (s fileServer) handleCd(w http.ResponseWriter, r *http.Request) {
+	if s.dir == "" {
+		http.Error(w, "cd unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	var req cdRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	target, err := s.resolveCd(r.Context(), req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	rel, ok := relToRoot(s.dir, target)
+	if !ok {
+		http.Error(w, fmt.Sprintf("%s is outside the served root %s", target, s.dir), http.StatusNotFound)
+		return
+	}
+	p := "/"
+	if rel != "." {
+		p = "/" + filepath.ToSlash(rel) + "/"
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprint(w, (&url.URL{Path: p}).String())
+}
+
+// relToRoot maps an absolute directory to its serve path relative to root.
+// When the raw comparison places it outside, both sides are retried with
+// symlinks resolved: Spotlight reports canonical paths (/private/var/…)
+// that must still land inside a root spelled through a symlink (/var/…).
+func relToRoot(root, target string) (string, bool) {
+	if rel := insideRel(root, target); rel != "" {
+		return rel, true
+	}
+	r, err1 := filepath.EvalSymlinks(root)
+	t, err2 := filepath.EvalSymlinks(target)
+	if err1 == nil && err2 == nil {
+		if rel := insideRel(r, t); rel != "" {
+			return rel, true
+		}
+	}
+	return "", false
+}
+
+// insideRel returns target relative to root when target sits at or below
+// root, and "" otherwise.
+func insideRel(root, target string) string {
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+		return ""
+	}
+	return rel
+}
+
+// resolveCd turns what the browser knew about a dropped directory into an
+// absolute path on disk. A file:// URI names it outright; without one the
+// name is searched for in order of where drags actually come from: the
+// Desktop first (walked directly — it is small and most drags start
+// there), then the home directory (walked breadth-first, so shallow
+// folders surface within its budget), then Spotlight over the whole serve
+// root, and finally a breadth-first walk that seeds the home directory
+// alongside the root so depth N of both is probed together. Each early
+// stage settles the drop only on an unambiguous verified match; anything
+// else falls through to the wider search. Candidates must contain every
+// child name the browser saw. macOS file-reference URIs (/.file/id=…)
+// are skipped rather than resolved, since their paths would leak into
+// served URLs; such drops fall through to the search.
+func (s fileServer) resolveCd(ctx context.Context, req cdRequest) (string, error) {
+	for _, raw := range req.URIs {
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || u.Scheme != "file" || u.Path == "" || strings.HasPrefix(u.Path, "/.file/") {
+			continue
+		}
+		if p := filepath.Clean(u.Path); isDir(p) {
+			return p, nil
+		}
+	}
+
+	if req.Name == "" || req.Name != filepath.Base(req.Name) {
+		return "", errors.New("drop carried no usable folder name")
+	}
+
+	home := userHome()
+	desktop := filepath.Join(home, "Desktop")
+	inRoot := func(p string) bool {
+		if p == "" || home == "" || !isDir(p) {
+			return false
+		}
+		rel, ok := relToRoot(s.dir, p)
+		return ok && rel != "."
+	}
+
+	for _, stage := range []struct {
+		seed   string
+		budget time.Duration
+	}{
+		{desktop, 1500 * time.Millisecond},
+		{home, 2500 * time.Millisecond},
+	} {
+		if !inRoot(stage.seed) {
+			continue
+		}
+		if m := matchingDirs(walkDirs(ctx, []string{stage.seed}, req.Name, stage.budget), req, nil); len(m) == 1 {
+			return m[0], nil
+		}
+	}
+
+	var prior []string
+	for _, p := range []string{desktop, home} {
+		if inRoot(p) {
+			prior = append(prior, p)
+		}
+	}
+
+	candidates := spotlightDirs(ctx, s.dir, req.Name)
+	if len(candidates) == 0 {
+		seeds := []string{s.dir}
+		if inRoot(home) {
+			seeds = []string{home, s.dir}
+		}
+		candidates = walkDirs(ctx, seeds, req.Name, 3*time.Second)
+	}
+
+	matches := matchingDirs(candidates, req, prior)
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("cannot find a folder named %q under %s", req.Name, s.dir)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("%d folders named %q match equally (e.g. %s and %s)",
+			len(matches), req.Name, matches[0], matches[1])
+	}
+}
+
+func isDir(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.IsDir()
+}
+
+// userHome finds the user's home directory even without $HOME in the
+// environment — launchd agents don't get one — by falling back to the
+// passwd database.
+func userHome() string {
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		return h
+	}
+	if u, err := user.Current(); err == nil {
+		return u.HomeDir
+	}
+	return ""
+}
+
+// matchingDirs filters candidate paths against the browser's view of the
+// dropped directory: every child name seen in the browser must exist on
+// disk, and when the browser's listing was complete (below the cap) the
+// entry counts must agree exactly. Survivor ties are broken first by
+// modification time — evidence from this very drag, but only when it
+// singles one candidate out, since browsers fall back to "now" for a
+// folder whose mtime they cannot read — and then by the location prior:
+// a match inside an earlier prior directory beats one elsewhere.
+func matchingDirs(candidates []string, req cdRequest, prior []string) []string {
+	var matches []string
+	seen := map[string]bool{}
+	for _, c := range candidates {
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
+		entries, err := os.ReadDir(c)
+		if err != nil {
+			continue
+		}
+		if len(req.Children) < maxCdChildren && len(entries) != len(req.Children) {
+			continue
+		}
+		onDisk := make(map[string]bool, len(entries))
+		for _, e := range entries {
+			onDisk[e.Name()] = true
+		}
+		ok := true
+		for _, name := range req.Children {
+			if !onDisk[name] {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			matches = append(matches, c)
+		}
+	}
+
+	if len(matches) > 1 && req.Modified > 0 {
+		var near []string
+		when := time.UnixMilli(req.Modified)
+		for _, m := range matches {
+			if info, err := os.Stat(m); err == nil {
+				if d := info.ModTime().Sub(when); d > -2*time.Second && d < 2*time.Second {
+					near = append(near, m)
+				}
+			}
+		}
+		if len(near) == 1 {
+			matches = near
+		}
+	}
+	if len(matches) > 1 {
+		for _, top := range prior {
+			var inside []string
+			for _, m := range matches {
+				if _, ok := relToRoot(top, m); ok {
+					inside = append(inside, m)
+				}
+			}
+			if len(inside) > 0 {
+				matches = inside
+				break
+			}
+		}
+	}
+	return matches
+}
+
+// spotlightDirs asks Spotlight for directories named name under root. An
+// unavailable or unindexed Spotlight (mdfind missing, indexing off, or a
+// root like a temp dir that macOS never indexes) just yields nothing and
+// the caller falls back to walking.
+func spotlightDirs(ctx context.Context, root, name string) []string {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(name)
+	out, err := exec.CommandContext(ctx, "mdfind", "-onlyin", root,
+		fmt.Sprintf(`kMDItemFSName == "%s"`, escaped)).Output()
+	if err != nil {
+		return nil
+	}
+	var dirs []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" || filepath.Base(line) != name {
+			continue
+		}
+		if isDir(line) {
+			dirs = append(dirs, line)
+		}
+	}
+	return dirs
+}
+
+// walkDirs breadth-first searches the seed directories for directories
+// named name, giving up at the deadline so an unindexed search of a huge
+// root stays bounded. All seeds advance through the queue together, so
+// depth N of a later seed is probed alongside depth N of an earlier one
+// rather than waiting for the earlier subtree to be exhausted; a visited
+// set keeps overlapping seeds (the home directory inside the serve root)
+// from being walked twice. A seed whose own basename matches counts as a
+// find — the dragged folder may be the seed itself. Symlinks are not
+// followed, and firmlink mirrors, mounted volumes, automounts, and the
+// device tree are skipped so a root of / is neither traversed twice nor
+// snagged on the network. The walk runs in its own goroutine because a
+// single ReadDir can block indefinitely on a hostile mount; the timer,
+// not the walker's own deadline check, bounds the caller.
+func walkDirs(ctx context.Context, seeds []string, name string, budget time.Duration) []string {
+	deadline := time.Now().Add(budget)
+	skip := map[string]bool{
+		"/System/Volumes": true,
+		"/Volumes":        true,
+		"/Network":        true,
+		"/dev":            true,
+		"/home":           true,
+		"/net":            true,
+	}
+	finds := make(chan string, 64)
+	go func() {
+		defer close(finds)
+		visited := map[string]bool{}
+		report := func(p string) {
+			select {
+			case finds <- p:
+			default: // collector gone or full; never block the walker
+			}
+		}
+		var queue []string
+		for _, seed := range seeds {
+			if visited[seed] {
+				continue
+			}
+			visited[seed] = true
+			if filepath.Base(seed) == name {
+				report(seed)
+			}
+			queue = append(queue, seed)
+		}
+		for len(queue) > 0 {
+			if time.Now().After(deadline) || ctx.Err() != nil {
+				return
+			}
+			dir := queue[0]
+			queue = queue[1:]
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				continue
+			}
+			for _, e := range entries {
+				if !e.IsDir() {
+					continue
+				}
+				child := filepath.Join(dir, e.Name())
+				if skip[child] || visited[child] {
+					continue
+				}
+				visited[child] = true
+				if e.Name() == name {
+					report(child)
+				}
+				queue = append(queue, child)
+			}
+		}
+	}()
+
+	timer := time.NewTimer(budget + time.Second)
+	defer timer.Stop()
+	var found []string
+	for {
+		select {
+		case p, ok := <-finds:
+			if !ok {
+				return found
+			}
+			found = append(found, p)
+		case <-timer.C:
+			return found
+		}
+	}
 }
 
 func preventCaching(response, request http.Header) {
@@ -3991,10 +4361,12 @@ type dirEntryView struct {
 	Ghost   bool // git knows the name but the file is gone from disk (deleted)
 }
 
-// dropJS lets any rendered page accept a drag-and-dropped file: the file is
-// uploaded to the drop endpoint (with a floating progress monitor, since
-// large files take a while) and the browser navigates to the stored copy,
-// which renders through the ordinary pipeline like any other file.
+// dropJS lets any rendered page accept a drag-and-dropped file or folder: a
+// file is uploaded to the drop endpoint (with a floating progress monitor,
+// since large files take a while) and the browser navigates to the stored
+// copy, which renders through the ordinary pipeline like any other file; a
+// folder is never uploaded — the cd endpoint locates it on disk and the
+// browser navigates to its listing.
 // pageFooter links the health and version probes from the bottom of every
 // rendered page except markdown documents, which stay clean. Inline styles
 // keep it self-contained, so templates and pandoc output can append it
@@ -4005,6 +4377,7 @@ const pageFooter = `<footer style="margin-top:3rem;padding-top:0.5rem;border-top
 var dropJS = `<script>
 (function () {
   var maxDrop = ` + strconv.Itoa(maxDropBytes) + `;
+  var maxChildren = ` + strconv.Itoa(maxCdChildren) + `;
   var box, msg, bar;
 
   function human(n) {
@@ -4046,10 +4419,65 @@ var dropJS = `<script>
 
   function hide() { if (box) box.style.display = "none"; }
 
+  // A dropped folder is not uploaded: it already lives on the machine this
+  // server browses. Whatever the browser reveals about it — a file:// URI
+  // (Safari), or just its name and child names (Chrome, Firefox) — goes to
+  // the cd endpoint, which finds the folder on disk and replies with its
+  // listing URL. The URIs and File must be captured synchronously here;
+  // the dataTransfer goes inert once the drop handler returns.
+  function cd(dt, entry) {
+    var uris = [];
+    try {
+      (dt.getData("text/uri-list") || "").split(/\r?\n/).forEach(function (line) {
+        if (line && line[0] !== "#") uris.push(line);
+      });
+    } catch (err) {}
+    try {
+      var pub = dt.getData("public.file-url");
+      if (pub && uris.indexOf(pub) < 0) uris.push(pub);
+    } catch (err) {}
+    var modified = dt.files && dt.files[0] ? dt.files[0].lastModified || 0 : 0;
+
+    show("locating " + entry.name + " …", null);
+    var children = [], reader = entry.createReader();
+    (function readMore() {
+      reader.readEntries(function (batch) {
+        for (var i = 0; i < batch.length; i++) children.push(batch[i].name);
+        if (batch.length && children.length < maxChildren) { readMore(); return; }
+        locate();
+      }, locate);
+    })();
+
+    function locate() {
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", "/` + assetPrefix + `/cd");
+      xhr.onload = function () {
+        if (xhr.status === 200) {
+          show("opening " + entry.name + " …", 1);
+          location.href = xhr.responseText;
+        } else {
+          fail((xhr.responseText || xhr.status + " " + xhr.statusText).trim());
+        }
+      };
+      xhr.onerror = function () { fail(entry.name + ": lookup failed"); };
+      xhr.send(JSON.stringify({
+        name: entry.name,
+        uris: uris,
+        children: children.slice(0, maxChildren),
+        modified: modified
+      }));
+    }
+  }
+
   addEventListener("dragover", function (e) { e.preventDefault(); });
   addEventListener("drop", function (e) {
     e.preventDefault();
-    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    var dt = e.dataTransfer;
+    if (!dt) return;
+    var item = dt.items && dt.items[0];
+    var entry = item && item.webkitGetAsEntry && item.webkitGetAsEntry();
+    if (entry && entry.isDirectory) { cd(dt, entry); return; }
+    var f = dt.files && dt.files[0];
     if (!f) return;
     if (f.size > maxDrop) {
       fail(f.name + " is too large: " + human(f.size) + " (limit " + human(maxDrop) + ")");

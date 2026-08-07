@@ -5,7 +5,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/png"
@@ -1970,6 +1972,171 @@ func TestDragAndDropUpload(t *testing.T) {
 	server.ServeHTTP(rec, big)
 	if rec.Code == http.StatusOK {
 		t.Fatalf("oversized drop accepted, want rejection")
+	}
+}
+
+// postCd sends a cd request for a dragged-in directory and returns the
+// response recorder.
+func postCd(t *testing.T, server fileServer, req cdRequest) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := httptest.NewRequest(http.MethodPost, "/_localmd/cd", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, post)
+	return rec
+}
+
+func TestDirectoryDropResolvesURI(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "my photos", "trip"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+
+	uri := (&url.URL{Scheme: "file", Path: filepath.Join(root, "my photos", "trip")}).String()
+	rec := postCd(t, server, cdRequest{Name: "trip", URIs: []string{uri}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cd status = %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "/my%20photos/trip/" {
+		t.Fatalf("cd href = %q, want /my%%20photos/trip/", got)
+	}
+}
+
+func TestDirectoryDropRejectsURIOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+
+	uri := (&url.URL{Scheme: "file", Path: outside}).String()
+	rec := postCd(t, server, cdRequest{Name: filepath.Base(outside), URIs: []string{uri}})
+	if rec.Code == http.StatusOK {
+		t.Fatalf("cd resolved %q outside the root, want rejection; body: %s", outside, rec.Body.String())
+	}
+}
+
+func TestDirectoryDropInferredFromChildren(t *testing.T) {
+	// No URI, as Chrome and Firefox provide: the folder must be found by
+	// name under the root (a temp dir, unindexed by Spotlight, so this
+	// exercises the walk fallback) and verified by its child names.
+	root := t.TempDir()
+	target := filepath.Join(root, "deep", "nested", "notes")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.md", "b.md"} {
+		if err := os.WriteFile(filepath.Join(target, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A decoy with the same name but different contents must not match.
+	decoy := filepath.Join(root, "other", "notes")
+	if err := os.MkdirAll(decoy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(decoy, "a.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+
+	rec := postCd(t, server, cdRequest{Name: "notes", Children: []string{"a.md", "b.md"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cd status = %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "/deep/nested/notes/" {
+		t.Fatalf("cd href = %q, want /deep/nested/notes/", got)
+	}
+}
+
+func TestDirectoryDropAmbiguityBrokenByModTime(t *testing.T) {
+	root := t.TempDir()
+	old := filepath.Join(root, "one", "notes")
+	fresh := filepath.Join(root, "two", "notes")
+	for _, dir := range []string{old, fresh} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "a.md"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	when := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(old, when, when); err != nil {
+		t.Fatal(err)
+	}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+
+	// Identical fingerprints and no usable mtime: the drop must fail
+	// loudly rather than guess between the two.
+	rec := postCd(t, server, cdRequest{Name: "notes", Children: []string{"a.md"}})
+	if rec.Code == http.StatusOK {
+		t.Fatalf("ambiguous cd resolved to %q, want failure", rec.Body.String())
+	}
+
+	// An mtime matching exactly one candidate settles it.
+	rec = postCd(t, server, cdRequest{Name: "notes", Children: []string{"a.md"}, Modified: when.UnixMilli()})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cd status = %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != "/one/notes/" {
+		t.Fatalf("cd href = %q, want /one/notes/", got)
+	}
+}
+
+func TestMatchingDirsPrefersPriorLocation(t *testing.T) {
+	root := t.TempDir()
+	desktop := filepath.Join(root, "Desktop")
+	preferred := filepath.Join(desktop, "notes")
+	elsewhere := filepath.Join(root, "tmp", "notes")
+	for _, dir := range []string{preferred, elsewhere} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "a.md"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	req := cdRequest{Name: "notes", Children: []string{"a.md"}}
+	got := matchingDirs([]string{elsewhere, preferred}, req, []string{desktop})
+	if len(got) != 1 || got[0] != preferred {
+		t.Fatalf("matchingDirs = %v, want just %q via the prior", got, preferred)
+	}
+
+	// A complete browser listing must match entry counts exactly: a folder
+	// with extra entries is not the one that was dragged.
+	if err := os.WriteFile(filepath.Join(preferred, "extra.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got = matchingDirs([]string{elsewhere, preferred}, req, []string{desktop})
+	if len(got) != 1 || got[0] != elsewhere {
+		t.Fatalf("matchingDirs = %v, want just %q after count mismatch", got, elsewhere)
+	}
+}
+
+func TestWalkDirsSeedsProbedTogether(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "Users", "me")
+	target := filepath.Join(home, "projects", "notes")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The home seed overlaps the root seed; the visited set must keep the
+	// match from being reported twice.
+	got := walkDirs(context.Background(), []string{home, root}, "notes", 3*time.Second)
+	if len(got) != 1 || got[0] != target {
+		t.Fatalf("walkDirs = %v, want just %q", got, target)
+	}
+
+	// A seed whose own basename matches is itself a find: the dragged
+	// folder may be the Desktop (or the root) itself.
+	got = walkDirs(context.Background(), []string{target}, "notes", 3*time.Second)
+	if len(got) != 1 || got[0] != target {
+		t.Fatalf("walkDirs seed self-match = %v, want just %q", got, target)
 	}
 }
 
