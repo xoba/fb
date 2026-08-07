@@ -259,13 +259,51 @@ func listenFree(want int) (int, []net.Listener, error) {
 func serve(handler http.Handler, listeners []net.Listener) error {
 	errc := make(chan error, len(listeners))
 	for _, ln := range listeners {
-		srv := &http.Server{Handler: handler}
+		srv := &http.Server{
+			Handler:           hostGuard(handler),
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       60 * time.Second,
+			IdleTimeout:       120 * time.Second,
+			// No WriteTimeout: slow renders (pandoc, sips) and large CSV
+			// exports legitimately take a while before and during the
+			// response.
+		}
 		go func() {
 			errc <- srv.Serve(ln)
 		}()
 	}
 
 	return <-errc
+}
+
+// hostGuard rejects requests whose Host header is not a loopback name. fb
+// authenticates nothing, so without this check a DNS-rebinding attack — a
+// website whose name re-resolves to 127.0.0.1 — would read every served file
+// with the victim's browser. Browsers always send Host; the allowlist is
+// what they legitimately use to reach fb.
+func hostGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isLoopbackHost(r.Host) {
+			http.Error(w, "forbidden host", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isLoopbackHost reports whether a Host header value names loopback, with or
+// without a port.
+func isLoopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(strings.ToLower(host), "[]")
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
 }
 
 // parseRootArg accepts an optional serve path; with none the server offers
