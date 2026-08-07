@@ -2896,24 +2896,24 @@ func TestSanitizeRenderedStandaloneKeepsHead(t *testing.T) {
 
 func TestReadOnlySQL(t *testing.T) {
 	for query, want := range map[string]bool{
-		"select 1":                          true,
-		"  SELECT name FROM t  ":            true,
-		"select 1;":                         true, // lone trailing semicolon
-		"select 1; -- done":                 true,
+		"select 1":                             true,
+		"  SELECT name FROM t  ":               true,
+		"select 1;":                            true, // lone trailing semicolon
+		"select 1; -- done":                    true,
 		"with x as (select 1) select * from x": true,
-		"EXPLAIN select 1":                  true,
-		"-- a comment\nselect 1":            true,
-		"/* c */ select 1":                  true,
-		"select ';'":                        true, // semicolon inside a string
-		`select ";" from t`:                 true,
-		"select 1; drop table t":            false,
-		"delete from users":                 false,
-		"vacuum into '/tmp/x.db'":           false,
-		"attach database '/tmp/x.db' as a":  false,
+		"EXPLAIN select 1":                     true,
+		"-- a comment\nselect 1":               true,
+		"/* c */ select 1":                     true,
+		"select ';'":                           true, // semicolon inside a string
+		`select ";" from t`:                    true,
+		"select 1; drop table t":               false,
+		"delete from users":                    false,
+		"vacuum into '/tmp/x.db'":              false,
+		"attach database '/tmp/x.db' as a":     false,
 		"select 1; attach database '/tmp/x' as a; create table a.t(b)": false,
-		"pragma query_only=off":             false,
-		"":                                  false,
-		"-- only a comment":                 false,
+		"pragma query_only=off": false,
+		"":                      false,
+		"-- only a comment":     false,
 	} {
 		if got := readOnlySQL(query); got != want {
 			t.Errorf("readOnlySQL(%q) = %v, want %v", query, got, want)
@@ -2923,17 +2923,17 @@ func TestReadOnlySQL(t *testing.T) {
 
 func TestHostGuard(t *testing.T) {
 	for host, want := range map[string]bool{
-		"localhost":       true,
-		"localhost:3030":  true,
-		"LOCALHOST:3031":  true,
-		"127.0.0.1":       true,
-		"127.0.0.1:3030":  true,
-		"[::1]:3030":      true,
-		"::1":             true,
-		"evil.com":        false,
-		"evil.com:3030":   false,
+		"localhost":          true,
+		"localhost:3030":     true,
+		"LOCALHOST:3031":     true,
+		"127.0.0.1":          true,
+		"127.0.0.1:3030":     true,
+		"[::1]:3030":         true,
+		"::1":                true,
+		"evil.com":           false,
+		"evil.com:3030":      false,
 		"127.0.0.1.evil.com": false,
-		"":                false,
+		"":                   false,
 	} {
 		if got := isLoopbackHost(host); got != want {
 			t.Errorf("isLoopbackHost(%q) = %v, want %v", host, got, want)
