@@ -1376,8 +1376,10 @@ func spotlightDirs(ctx context.Context, root, name string) []string {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(name)
-	out, err := exec.CommandContext(ctx, "mdfind", "-onlyin", root,
-		fmt.Sprintf(`kMDItemFSName == "%s"`, escaped)).Output()
+	cmd := exec.CommandContext(ctx, "mdfind", "-onlyin", root,
+		fmt.Sprintf(`kMDItemFSName == "%s"`, escaped))
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.Output()
 	if err != nil {
 		return nil
 	}
@@ -1680,6 +1682,7 @@ func docToHTML(ctx context.Context, doc []byte) ([]byte, error) {
 	}
 
 	cmd := exec.CommandContext(ctx, textutil, "-stdin", "-stdout", "-format", "doc", "-convert", "html")
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Stdin = bytes.NewReader(doc)
 
 	var stderr bytes.Buffer
@@ -1698,6 +1701,7 @@ func docToHTML(ctx context.Context, doc []byte) ([]byte, error) {
 
 func runPandoc(ctx context.Context, pandoc string, args []string, input []byte) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, pandoc, args...)
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Stdin = bytes.NewReader(input)
 
 	var stderr bytes.Buffer
@@ -2054,6 +2058,7 @@ func (s fileServer) heicJPEG(ctx context.Context, name string, info fs.FileInfo)
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, sips, "-s", "format", "jpeg", in, "--out", out)
+	cmd.WaitDelay = 5 * time.Second
 	if outBytes, err := cmd.CombinedOutput(); err != nil {
 		os.Remove(out)
 		return "", fmt.Errorf("sips: %s: %w", strings.TrimSpace(string(outBytes)), err)
@@ -2558,7 +2563,10 @@ func typstyleFormat(ctx context.Context, data []byte) ([]byte, error) {
 		return nil, err
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, typstyle)
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Stdin = bytes.NewReader(data)
 
 	var stderr bytes.Buffer
@@ -2608,7 +2616,10 @@ func plistToXML(ctx context.Context, data []byte) ([]byte, error) {
 		return nil, err
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, plutil, "-convert", "xml1", "-o", "-", "-")
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Stdin = bytes.NewReader(data)
 
 	var stderr bytes.Buffer
@@ -4906,6 +4917,7 @@ func gitCommand(ctx context.Context, args ...string) *exec.Cmd {
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"LC_ALL=C",
 	}
+	cmd.WaitDelay = 5 * time.Second
 	return cmd
 }
 
