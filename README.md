@@ -141,7 +141,15 @@ Editor backup files get the same treatment as their base file: a trailing
 
 Non-markdown formats pass `--embed-resources`, so images stored inside the
 document arrive as data URIs in a single self-contained page. If pandoc
-cannot parse a file, it falls back to a plain download.
+cannot parse a file, it falls back to a plain download. Files over 32 MB
+are served plainly rather than rendered.
+
+Rendered output is sanitized before serving: pandoc passes raw HTML from a
+document straight through, and these pages run on fb's origin, so scripts,
+styles, event handlers, and non-web link schemes are stripped while
+formatting, images, anchors, and tables survive. Markdown YAML front
+matter is not interpreted (metadata could inject into the page head); it
+shows as ordinary text.
 
 ### Source code (highlighted by chroma)
 
@@ -173,7 +181,8 @@ can't parse) the file shows as written. Note the displayed line numbers are
 the formatter's, not the file's.
 
 Deliberately *not* highlighted: `.html` and `.svg` (the browser renders
-those better), `.txt` (prose reads better plain), `.md` (pandoc's job), and
+those better — inline, but sandboxed, so any scripts they carry don't
+run), `.txt` (prose reads better plain), `.md` (pandoc's job), and
 `go.mod` (chroma mis-identifies it). Files over 2 MB are served plain.
 
 ### Tabular data
@@ -200,7 +209,7 @@ URL cell links its visible prefix to the full URL.
 |------|-------|
 | `.csv`, `.tsv` | First row treated as the header. Tolerant parsing (ragged rows, lazy quotes); files over 2 MB or that fail to parse are served plain. Display capped at 2000 rows. |
 | `.xlsx` | Browses like a directory: navigating to the file lists its sheets (with row counts), and each sheet renders as its own CSV-style table page. Blank rows above a sheet's data are skipped, so the first populated row becomes the header. 10 MB cap. |
-| `.sqlite`, `.sqlite3`, `.db` | Browses like a directory of tables and views, each listed with its row × column counts and on-disk size including indexes (via the `dbstat` virtual table). The listing page has a SQL query box — results render as a table right beneath it. Each table's page shows the total row count, the first 2000 rows, and its highlighted schema. `NULL` shown literally, binary blobs as `(N-byte blob)`. On-disk databases are opened in place, read-only, with no size limit — sqlite pages in only what a query touches. Databases inside archives are copied to a temp file first (the driver needs a real path) and capped at 100 MB. Write statements are rejected; non-SQLite `.db` files fall back to download. |
+| `.sqlite`, `.sqlite3`, `.db` | Browses like a directory of tables and views, each listed with its row × column counts and on-disk size including indexes (via the `dbstat` virtual table). The listing page has a SQL query box — results render as a table right beneath it. Each table's page shows the total row count, the first 2000 rows, and its highlighted schema. `NULL` shown literally, binary blobs as `(N-byte blob)`. On-disk databases are opened in place, read-only, with no size limit — sqlite pages in only what a query touches. Databases inside archives are copied to a temp file first (the driver needs a real path) and capped at 100 MB. The query box accepts only a single read-only statement (`SELECT`, `WITH`, or `EXPLAIN`) — enforced before the query reaches sqlite, on top of `mode=ro` and `PRAGMA query_only` — and non-SQLite `.db` files fall back to download. |
 
 The SQLite driver is pure Go ([modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite)),
 with dbstat (powering the per-table sizes) and FTS5 (so queries against
@@ -257,7 +266,9 @@ decoder once the metadata loads.
 Served verbatim with sensible content types — PDFs, video, and
 audio display natively in the browser. `index.html` files are viewable
 in place (the Go standard library's redirect-back-to-directory behavior is
-bypassed).
+bypassed). HTML and SVG are served under a sandboxing Content Security
+Policy, so they render but their scripts never run on fb's origin, and
+extensionless files that sniff as markup display as plain text.
 
 ## All specially handled types at a glance
 
@@ -374,12 +385,13 @@ without `git` on the PATH, listings render plainly and nothing breaks.
 ## How it works, generally
 
 One Go binary (`main.go`) built around a single abstraction: a `fileServer`
-that serves any `fs.FS`. The real filesystem is just `os.DirFS(root)`;
-opening an archive produces another `fs.FS` (zip natively, tar via an
-in-memory map), which gets wrapped in a nested `fileServer` mounted at the
-archive's URL path — that is the entire archive-browsing feature. Markdown
-is piped to pandoc over stdin, so rendering works identically no matter
-which filesystem a file lives in.
+that serves any `fs.FS`. The real filesystem is `os.OpenRoot(root).FS()` —
+a root-confined filesystem, so a symlink inside the tree cannot point
+browsing at files outside it; opening an archive produces another `fs.FS`
+(zip natively, tar via an in-memory map), which gets wrapped in a nested
+`fileServer` mounted at the archive's URL path — that is the entire
+archive-browsing feature. Markdown is piped to pandoc over stdin, so
+rendering works identically no matter which filesystem a file lives in.
 
 Request dispatch lives in one `route` function: stat the path; directories
 get listings; then, by extension, pandoc documents, table views, syntax
@@ -399,6 +411,15 @@ is linked into rendered markdown beneath it, nearest file winning.
 Everything is served with aggressive no-cache headers (the point is seeing
 your *current* files), except the embedded MathJax assets, which only change
 with the binary.
+
+Security posture, since the server is unauthenticated by design: it binds
+loopback only and rejects requests whose `Host` isn't localhost or a
+loopback IP (DNS-rebinding defense); POST endpoints require a same-origin
+fetch marker (CSRF defense); pandoc output is sanitized; raw HTML/SVG is
+sandboxed; databases open read-only with the query box restricted to
+single read-only statements; and git probing runs with a scrubbed
+environment and hostile repo config (`core.fsmonitor`) pinned off. See
+`security_review.md` for the full assessment.
 
 ## original readme before work began
 
