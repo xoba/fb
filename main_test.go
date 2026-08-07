@@ -731,7 +731,7 @@ func TestPandocDocumentFormats(t *testing.T) {
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
 			}
-			if !strings.Contains(rec.Body.String(), "<!--fmt:"+wantFormat+"-->") {
+			if !strings.Contains(rec.Body.String(), `id="fmt-`+wantFormat+`"`) {
 				t.Fatalf("body = %q, want pandoc invoked with -f %s", rec.Body.String(), wantFormat)
 			}
 
@@ -776,7 +776,7 @@ func TestLegacyDocRendered(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "<!--fmt:html-->") {
+	if !strings.Contains(rec.Body.String(), `id="fmt-html"`) {
 		t.Fatalf("body = %q, want textutil conversion fed to pandoc as html", rec.Body.String())
 	}
 
@@ -2517,12 +2517,6 @@ case "$format" in
       exit 6
     fi
     ;;
-  *)
-    if [ -z "$footer" ]; then
-      echo "missing --include-after-body" >&2
-      exit 6
-    fi
-    ;;
 esac
 
 if ! grep -q "color-scheme: light" "$header"; then
@@ -2536,7 +2530,7 @@ printf '</head><body>'
 if [ "$toc" -eq 1 ]; then
   printf '<nav id="TOC"></nav>'
 fi
-printf '<p>rendered markdown</p><!--fmt:%s-->' "$format"
+printf '<p>rendered markdown</p><div id="fmt-%s"></div>' "$format"
 if [ -n "$footer" ]; then
   cat "$footer"
 fi

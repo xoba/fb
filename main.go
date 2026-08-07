@@ -35,6 +35,7 @@ import (
 	"os/user"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"sort"
@@ -51,6 +52,7 @@ import (
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
+	"github.com/microcosm-cc/bluemonday"
 	"github.com/rwcarlsen/goexif/exif"
 	exiftiff "github.com/rwcarlsen/goexif/tiff"
 	"github.com/xuri/excelize/v2"
@@ -1384,9 +1386,12 @@ func requestName(urlPath string) string {
 const docFormat = "textutil-doc"
 
 // pandocFormats maps file extensions to the pandoc input format used to
-// render them as HTML.
+// render them as HTML. Markdown's yaml_metadata_block is disabled because
+// metadata lands raw in the HTML head (header-includes, css), which would
+// bypass the output sanitization below; a front-matter block now shows as
+// ordinary text.
 var pandocFormats = map[string]string{
-	".md":    "markdown+footnotes+lists_without_preceding_blankline+tex_math_single_backslash+gfm_auto_identifiers+autolink_bare_uris+emoji",
+	".md":    "markdown+footnotes+lists_without_preceding_blankline+tex_math_single_backslash+gfm_auto_identifiers+autolink_bare_uris+emoji-yaml_metadata_block",
 	".rst":   "rst",
 	".ipynb": "ipynb",
 	".doc":   docFormat,
@@ -1503,13 +1508,9 @@ func (s fileServer) renderDocument(ctx context.Context, name string, opts render
 				"-V", "monobackgroundcolor=#f6f8fa",
 				"-V", "maxwidth=42em",
 			)
-			// Markdown pages render clean, without the healthz/version
-			// footer that closes every other page.
-			if format != pandocFormats[".md"] {
-				if p, err := pandocFooterFile(); err == nil {
-					args = append(args, "--include-after-body", p)
-				}
-			}
+			// The healthz/version footer is appended after sanitization
+			// (see below), not via pandoc's --include-after-body, so its
+			// markup keeps its inline styles.
 		}
 		return args
 	}
@@ -1525,7 +1526,24 @@ func (s fileServer) renderDocument(ctx context.Context, name string, opts render
 		log.Printf("pandoc --embed-resources failed for %s, retrying without: %v", name, err)
 		out, err = runPandoc(ctx, s.pandoc, buildArgs(false), content)
 	}
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+
+	// Pandoc passes raw HTML from the source document straight through —
+	// and these pages run on fb's origin, where script could read every
+	// served file — so the output is sanitized before serving.
+	out = sanitizeRendered(out, opts.standalone)
+
+	// Markdown pages render clean, without the healthz/version footer that
+	// closes every other page.
+	if opts.standalone && format != pandocFormats[".md"] {
+		if i := bytes.LastIndex(out, []byte("</body>")); i >= 0 {
+			footer := append([]byte(pageFooter), out[i:]...)
+			out = append(out[:i], footer...)
+		}
+	}
+	return out, nil
 }
 
 // docToHTML converts a legacy binary Word document to HTML with macOS's
@@ -1571,30 +1589,59 @@ func runPandoc(ctx context.Context, pandoc string, args []string, input []byte) 
 	return out, nil
 }
 
-var (
-	footerOnce sync.Once
-	footerPath string
-	footerErr  error
-)
+// documentPolicy is the bluemonday policy applied to pandoc's HTML output.
+// It keeps document markup — headings with their anchor ids, footnotes,
+// tables, task lists, MathJax spans, images — and strips anything active:
+// script and style elements, event handlers, style attributes, and links
+// whose scheme is not http/https/mailto.
+var documentPolicy = newDocumentPolicy()
 
-// pandocFooterFile writes the shared page footer to a temp file, once per
-// process, for pandoc --include-after-body (which only accepts files).
-func pandocFooterFile() (string, error) {
-	footerOnce.Do(func() {
-		f, err := os.CreateTemp("", "fb-pandoc-footer-*.html")
-		if err != nil {
-			footerErr = err
-			return
-		}
-		if _, err := f.WriteString(pageFooter); err != nil {
-			f.Close()
-			footerErr = err
-			return
-		}
-		footerErr = f.Close()
-		footerPath = f.Name()
-	})
-	return footerPath, footerErr
+func newDocumentPolicy() *bluemonday.Policy {
+	p := bluemonday.NewPolicy()
+	p.AllowElements(
+		"a", "abbr", "blockquote", "br", "caption", "cite", "code", "col",
+		"colgroup", "dd", "del", "details", "dfn", "div", "dl", "dt", "em",
+		"figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5", "h6",
+		"header", "hr", "img", "input", "ins", "kbd", "li", "mark", "nav",
+		"ol", "p", "pre", "q", "s", "samp", "section", "small", "span",
+		"strong", "sub", "summary", "sup", "table", "tbody", "td", "tfoot",
+		"th", "thead", "tr", "ul", "var",
+	)
+	// ids and classes are how pandoc marks up heading anchors, footnotes,
+	// and MathJax spans; they carry no active content.
+	p.AllowAttrs("id", "class").Globally()
+	p.AllowAttrs("href", "title").OnElements("a")
+	p.RequireParseableURLs(true)
+	p.AllowURLSchemes("http", "https", "mailto")
+	p.AllowRelativeURLs(true) // documents link to sibling files and #anchors
+	p.AllowAttrs("src", "alt", "title").OnElements("img")
+	p.AllowDataURIImages() // --embed-resources inlines document images
+	// Task lists render as disabled checkboxes.
+	p.AllowAttrs("type").Matching(regexp.MustCompile(`^checkbox$`)).OnElements("input")
+	p.AllowAttrs("disabled", "checked").OnElements("input")
+	return p
+}
+
+var bodyTagRE = regexp.MustCompile(`(?i)<body[^>]*>`)
+
+// sanitizeRendered strips active content from pandoc's HTML output. A
+// standalone page is sanitized between its body tags only: the head carries
+// server-generated content (page styles, the MathJax config, the
+// drag-and-drop script) that must survive. Output without a recognizable
+// body is sanitized whole, as a fragment.
+func sanitizeRendered(out []byte, standalone bool) []byte {
+	if !standalone {
+		return documentPolicy.SanitizeBytes(out)
+	}
+	open := bodyTagRE.FindIndex(out)
+	closing := bytes.LastIndex(out, []byte("</body>"))
+	if open == nil || closing < open[1] {
+		return documentPolicy.SanitizeBytes(out)
+	}
+	sanitized := make([]byte, 0, len(out))
+	sanitized = append(sanitized, out[:open[1]]...)
+	sanitized = append(sanitized, documentPolicy.SanitizeBytes(out[open[1]:closing])...)
+	return append(sanitized, out[closing:]...)
 }
 
 var (
