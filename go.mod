@@ -1,4 +1,4 @@
-module xoba.com/localmd
+module xoba.com/fb
 
 go 1.26.5
 
