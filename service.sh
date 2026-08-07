@@ -26,12 +26,11 @@ REPO="$PWD"
 BIN="$REPO/localmd"
 LOG="$HOME/Library/Logs/localmd.log"
 ROOT="${LOCALMD_ROOT:-/}"
-TAGS="sqlite_dbstat sqlite_fts5"
 
 build() {
     # Build to a temp name and rename over, so a running binary is replaced
     # atomically instead of truncated in place.
-    go build -tags "$TAGS" -o "$BIN.new" .
+    go build -o "$BIN.new" .
     mv -f "$BIN.new" "$BIN"
 }
 

@@ -138,10 +138,10 @@ URL cell links its visible prefix to the full URL.
 | `.xlsx` | Browses like a directory: navigating to the file lists its sheets (with row counts), and each sheet renders as its own CSV-style table page. Blank rows above a sheet's data are skipped, so the first populated row becomes the header. 10 MB cap. |
 | `.sqlite`, `.sqlite3`, `.db` | Browses like a directory of tables and views, each listed with its row × column counts and on-disk size including indexes (via the `dbstat` virtual table). The listing page has a SQL query box — results render as a table right beneath it. Each table's page shows the total row count, the first 2000 rows, and its highlighted schema. `NULL` shown literally, binary blobs as `(N-byte blob)`. On-disk databases are opened in place, read-only, with no size limit — sqlite pages in only what a query touches. Databases inside archives are copied to a temp file first (the driver needs a real path) and capped at 100 MB. Write statements are rejected; non-SQLite `.db` files fall back to download. |
 
-`run.sh` builds with the `sqlite_dbstat` and `sqlite_fts5` tags: dbstat
-powers the per-table sizes, and FTS5 lets queries against databases with
-full-text-search tables work. Without the tags everything degrades
-gracefully (sizes are simply omitted).
+The SQLite driver is pure Go ([modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite)),
+with dbstat (powering the per-table sizes) and FTS5 (so queries against
+databases with full-text-search tables work) built in — no cgo, no C
+toolchain, no build tags.
 
 A bonus of the directory model: fetching a sheet or table URL with
 `?raw=1` (or from a non-browser client) exports *that member* as CSV —
@@ -313,8 +313,8 @@ router walks its prefixes to find an archive to descend into.
 Rendering choices: pandoc converts documents (the only external program);
 [chroma](https://github.com/alecthomas/chroma) highlights code in pure Go;
 `encoding/csv`, [excelize](https://github.com/xuri/excelize), and
-[go-sqlite3](https://github.com/mattn/go-sqlite3) feed the shared table
-template. MathJax is embedded in the binary and served under `/_localmd/`,
+[modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) feed the shared
+table template. MathJax is embedded in the binary and served under `/_localmd/`,
 so math works offline. Pages are styled inline — no external assets — with
 a GitHub-ish look; a `.localmd.css` file in any directory (or ancestor)
 is linked into rendered markdown beneath it, nearest file winning.

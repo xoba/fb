@@ -12,7 +12,4 @@ set -euo pipefail
 #   ./run.sh ~/notes
 
 cd "$(dirname "$0")"
-# sqlite_dbstat enables per-table size reporting; sqlite_fts5 lets queries
-# against databases containing FTS5 tables work. The first build after a tag
-# change recompiles the SQLite amalgamation (about a minute); cached after.
-exec go run -tags "sqlite_dbstat sqlite_fts5" . "${1:-/}"
+exec go run . "${1:-/}"

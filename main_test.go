@@ -918,7 +918,7 @@ func TestXLSXRenderedAsTables(t *testing.T) {
 func TestSQLiteRenderedAsTables(t *testing.T) {
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "app.sqlite")
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -956,9 +956,9 @@ func TestSQLiteRenderedAsTables(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		`href="users"`,
-		"2 rows × 3 columns",                // per-table stats in the metadata column
-		`id="listsum">1 table · 2 rows</p>`, // summary with synchronous totals
-		`name="q"`,                          // the query form
+		"2 rows × 3 columns", // per-table stats in the metadata column
+		`id="listsum">1 table · 2 rows · 4.0 KB</p>`, // summary totals; footprint via dbstat
+		`name="q"`, // the query form
 		`href="/app.sqlite?raw=1"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -1135,7 +1135,7 @@ func TestTruncatedCellsLinkToFullView(t *testing.T) {
 
 	t.Run("sqlite", func(t *testing.T) {
 		root := t.TempDir()
-		db, err := sql.Open("sqlite3", filepath.Join(root, "app.sqlite"))
+		db, err := sql.Open("sqlite", filepath.Join(root, "app.sqlite"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1480,7 +1480,7 @@ func TestOversizedContainerDownloadsUnderOwnName(t *testing.T) {
 func TestSQLiteOpenedInPlaceWithDir(t *testing.T) {
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "big.sqlite")
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

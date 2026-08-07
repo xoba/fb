@@ -48,13 +48,13 @@ import (
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/rwcarlsen/goexif/exif"
 	exiftiff "github.com/rwcarlsen/goexif/tiff"
 	"github.com/xuri/excelize/v2"
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"
+	_ "modernc.org/sqlite"
 )
 
 const (
@@ -3065,7 +3065,7 @@ func (s fileServer) openSQLite(name string, info fs.FileInfo) (*sql.DB, func(), 
 			Path:     filepath.ToSlash(filepath.Join(s.dir, filepath.FromSlash(name))),
 			RawQuery: "mode=ro",
 		}
-		db, err := sql.Open("sqlite3", dsn.String())
+		db, err := sql.Open("sqlite", dsn.String())
 		if err == nil {
 			if err = db.Ping(); err == nil {
 				return db, func() { db.Close() }, nil
@@ -3107,7 +3107,7 @@ func (s fileServer) openSQLite(name string, info fs.FileInfo) (*sql.DB, func(), 
 		return nil, nil, err
 	}
 
-	db, err := sql.Open("sqlite3", "file:"+tmp.Name()+"?mode=ro&immutable=1")
+	db, err := sql.Open("sqlite", "file:"+tmp.Name()+"?mode=ro&immutable=1")
 	if err != nil {
 		removeTmp()
 		return nil, nil, err
@@ -3188,7 +3188,7 @@ type sqliteStat struct {
 
 // sqliteTableStat computes one member's listing metadata: "N rows × M
 // columns" (prefixed for views) and its on-disk footprint including indexes
-// via dbstat (empty without the sqlite_dbstat build tag).
+// via dbstat.
 func sqliteTableStat(db *sql.DB, member, kind string) sqliteStat {
 	st := sqliteStat{Detail: kind}
 
