@@ -13,6 +13,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"html/template"
 	"image"
@@ -58,9 +59,6 @@ import (
 )
 
 const (
-	listenAddr4 = "127.0.0.1:3030"
-	listenAddr6 = "[::1]:3030"
-
 	// assetPrefix is a reserved URL namespace for resources embedded in the
 	// binary (MathJax and its fonts). Filesystem paths under it are shadowed.
 	assetPrefix = "_fb"
@@ -75,10 +73,20 @@ const (
 var embeddedAssets embed.FS
 
 func main() {
-	rootArg, err := parseRootArg(os.Args[1:])
+	usage := func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [-port N] [SERVE_PATH]\n\nServes SERVE_PATH (default: your home directory) on localhost.\nThe port defaults to $FB_PORT, or 3030.\n", filepath.Base(os.Args[0]))
+	}
+	flag.Usage = usage
+	port := flag.Int("port", defaultPort(), "localhost port to listen on")
+	flag.Parse()
+
+	rootArg, err := parseRootArg(flag.Args())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Usage: %s [SERVE_PATH]\n\nServes SERVE_PATH (default: your home directory) at http://localhost:3030/\n", filepath.Base(os.Args[0]))
+		usage()
 		os.Exit(2)
+	}
+	if *port < 1 || *port > 65535 {
+		log.Fatalf("port %d out of range", *port)
 	}
 
 	root, err := resolveRoot(rootArg)
@@ -93,20 +101,29 @@ func main() {
 	fsys := os.DirFS(root)
 	handler := fileServer{fsys: fsys, pandoc: "pandoc", dir: root}
 
-	log.Printf("serving %s at http://localhost:3030/ (%s and %s)", root, listenAddr4, listenAddr6)
-	if err := serveLoopback(handler); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	log.Printf("serving %s at http://localhost:%d/", root, *port)
+	if err := serveLoopback(handler, *port); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }
 
-func serveLoopback(handler http.Handler) error {
+// defaultPort is 3030 unless FB_PORT overrides it — the escape hatch for
+// contexts like brew services, where passing flags means editing a plist.
+func defaultPort() int {
+	if n, err := strconv.Atoi(os.Getenv("FB_PORT")); err == nil && n >= 1 && n <= 65535 {
+		return n
+	}
+	return 3030
+}
+
+func serveLoopback(handler http.Handler, port int) error {
 	listeners := make([]net.Listener, 0, 2)
 	for _, spec := range []struct {
 		network string
 		addr    string
 	}{
-		{network: "tcp4", addr: listenAddr4},
-		{network: "tcp6", addr: listenAddr6},
+		{network: "tcp4", addr: fmt.Sprintf("127.0.0.1:%d", port)},
+		{network: "tcp6", addr: fmt.Sprintf("[::1]:%d", port)},
 	} {
 		ln, err := net.Listen(spec.network, spec.addr)
 		if err != nil {

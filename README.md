@@ -6,8 +6,9 @@ readable HTML instead of making you download them. Point it at a directory
 with Markdown, office documents, notebooks, source code, spreadsheets,
 databases, and archives all displayed in a form meant for reading.
 
-The server listens only on loopback (`127.0.0.1:3030` and `[::1]:3030`).
-Requires `pandoc` on the PATH; everything else is compiled in.
+The server listens only on loopback, on port 3030 by default — change it
+with `-port N` or the `FB_PORT` environment variable. Requires `pandoc`
+on the PATH; everything else is compiled in.
 
 ## Installing
 
@@ -22,6 +23,7 @@ if it's not already present).
 
 Run `fb` with no argument to serve your home directory, or pass a path
 to serve a different root — `fb /` makes the whole filesystem browsable.
+If port 3030 is taken, `fb -port 8080` (or `FB_PORT=8080`) moves it.
 
 ## Developing
 
