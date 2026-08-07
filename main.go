@@ -2782,6 +2782,12 @@ const (
 	// anyway, and the cap bounds what a query loads; the summary line says
 	// when it bites.
 	maxParquetRows = 100_000
+
+	// maxParquetCellBytes bounds the decoded cell text held in memory. The
+	// input cap is on compressed bytes, and parquet's encodings can expand
+	// 20 MB of storage into gigabytes of strings; decoding stops (and the
+	// file falls back to a raw download) past this ceiling.
+	maxParquetCellBytes = 256 << 20
 )
 
 func (s fileServer) serveParquet(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
@@ -2845,6 +2851,7 @@ func parquetRows(data []byte) (header []string, rows [][]string, total int64, er
 	}
 
 	buf := make([]map[string]any, 256)
+	var cellBytes int64
 	for len(rows) < maxParquetRows {
 		for i := range buf {
 			buf[i] = make(map[string]any, len(header))
@@ -2855,7 +2862,11 @@ func parquetRows(data []byte) (header []string, rows [][]string, total int64, er
 			for i, col := range header {
 				if v, ok := rec[col]; ok && v != nil {
 					row[i] = parquetCellString(v)
+					cellBytes += int64(len(row[i]))
 				}
+			}
+			if cellBytes > maxParquetCellBytes {
+				return nil, nil, 0, fmt.Errorf("parquet decodes to over %d bytes of text", int64(maxParquetCellBytes))
 			}
 			rows = append(rows, row)
 			if len(rows) == maxParquetRows {
