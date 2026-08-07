@@ -100,8 +100,15 @@ func main() {
 		log.Fatal("pandoc is required but was not found in PATH")
 	}
 
-	fsys := os.DirFS(root)
-	handler := fileServer{fsys: fsys, pandoc: "pandoc", dir: root}
+	// os.Root confines every filesystem operation to the serve root, so a
+	// symlink inside the tree cannot point browsing (or anything built on
+	// top of it) at files outside it — plain os.DirFS follows symlinks
+	// anywhere.
+	osRoot, err := os.OpenRoot(root)
+	if err != nil {
+		log.Fatal(err)
+	}
+	handler := fileServer{fsys: osRoot.FS(), pandoc: "pandoc", dir: root}
 
 	bound, listeners, err := listenFree(*port)
 	if err != nil {
@@ -777,6 +784,8 @@ func (s fileServer) serveInternal(w http.ResponseWriter, r *http.Request, name s
 			return
 		}
 		preventCaching(w.Header(), r.Header)
+		// os.DirFS is fine here: the drops directory holds only regular
+		// files fb itself created, so there are no symlinks to follow out.
 		sub := fileServer{fsys: os.DirFS(dir), pandoc: s.pandoc, base: "/" + assetPrefix + "/drops", dir: dir}
 		inner := strings.TrimPrefix(strings.TrimPrefix(name, assetPrefix+"/drops"), "/")
 		if inner == "" {
