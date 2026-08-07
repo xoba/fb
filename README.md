@@ -100,9 +100,10 @@ is found. The serve root defaults to `/`; install with
 `FB_ROOT=~/notes ./service.sh install` to serve a narrower root.
 
 The server exposes two probes: `/_fb/healthz` answers `ok`, and
-`/_fb/version` reports the git revision, commit time, and dirty
-flag that `go build` stamps into the binary (all `unknown` under
-`go run`). `redeploy` and `install` poll the version endpoint until the
+`/_fb/version` reports the release version (stamped at build time; brew
+and `go install` builds carry their tag) plus the git revision, commit
+time, and dirty flag that `go build` stamps into the binary (`unknown`
+under `go run`). `redeploy` and `install` poll the version endpoint until the
 served revision matches git HEAD, so a redeploy either confirms the new
 build is actually the one serving or fails loudly.
 
@@ -207,9 +208,17 @@ URL cell links its visible prefix to the full URL.
 
 | Type | Notes |
 |------|-------|
-| `.csv`, `.tsv` | First row treated as the header. Tolerant parsing (ragged rows, lazy quotes); files over 2 MB or that fail to parse are served plain. Display capped at 2000 rows. |
-| `.xlsx` | Browses like a directory: navigating to the file lists its sheets (with row counts), and each sheet renders as its own CSV-style table page. Blank rows above a sheet's data are skipped, so the first populated row becomes the header. 10 MB cap. |
+| `.csv`, `.tsv` | First row treated as the header. Tolerant parsing (ragged rows, lazy quotes); files over 2 MB or that fail to parse are served plain. Display capped at 2000 rows. The page has a SQL query box — the file is queryable as a table named `t`. |
+| `.xlsx` | Browses like a directory: navigating to the file lists its sheets (with row counts), and each sheet renders as its own CSV-style table page. Blank rows above a sheet's data are skipped, so the first populated row becomes the header. 10 MB cap. The workbook listing has a SQL query box with one table per sheet — joins across sheets work. |
 | `.sqlite`, `.sqlite3`, `.db` | Browses like a directory of tables and views, each listed with its row × column counts and on-disk size including indexes (via the `dbstat` virtual table). The listing page has a SQL query box — results render as a table right beneath it. Each table's page shows the total row count, the first 2000 rows, and its highlighted schema. `NULL` shown literally, binary blobs as `(N-byte blob)`. On-disk databases are opened in place, read-only, with no size limit — sqlite pages in only what a query touches. Databases inside archives are copied to a temp file first (the driver needs a real path) and capped at 100 MB. The query box accepts only a single read-only statement (`SELECT`, `WITH`, or `EXPLAIN`) — enforced before the query reaches sqlite, on top of `mode=ro` and `PRAGMA query_only` — and non-SQLite `.db` files fall back to download. |
+
+The query boxes on csv/tsv pages and xlsx listings run real SQLite: the
+file is loaded into an in-memory database — a csv/tsv file as a table
+named `t`, a workbook as one table per sheet, with sheet names sanitized
+to identifiers (`Q1 Sales` is queried as `Q1_Sales`). Columns whose
+cells all parse as numbers get numeric typing, so `sum()` and `order by`
+behave numerically. Everywhere the box appears, the same rule applies:
+one read-only statement (SELECT, WITH, EXPLAIN) per query.
 
 The SQLite driver is pure Go ([modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite)),
 with dbstat (powering the per-table sizes) and FTS5 (so queries against

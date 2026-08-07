@@ -810,15 +810,25 @@ func serveAsset(w http.ResponseWriter, r *http.Request, name string) {
 	http.ServeFileFS(w, r, embeddedAssets, path.Join("assets", strings.TrimPrefix(name, assetPrefix+"/")))
 }
 
-// serveVersion reports which build is running: the git revision stamped into
-// the binary by go build (absent under go run and go test), the commit time,
-// and whether the working tree was dirty. service.sh compares the revision
-// against git HEAD to confirm a redeploy took effect.
+// version is the release tag stamped at build time via
+// -ldflags "-X main.version=…": service.sh stamps git describe, the brew
+// formula its own version. Unset under go run and plain go build.
+var version string
+
+// serveVersion reports which build is running: the release version, the git
+// revision stamped into the binary by go build (absent under go run and go
+// test), the commit time, and whether the working tree was dirty.
+// service.sh compares the revision against git HEAD to confirm a redeploy
+// took effect.
 func serveVersion(w http.ResponseWriter) {
 	revision, vcsTime, modified := "unknown", "unknown", "unknown"
 	goVersion := runtime.Version()
+	v := version
 	if bi, ok := debug.ReadBuildInfo(); ok {
 		goVersion = bi.GoVersion
+		if v == "" && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+			v = bi.Main.Version // set for go install xoba.com/fb@vX.Y.Z builds
+		}
 		for _, kv := range bi.Settings {
 			switch kv.Key {
 			case "vcs.revision":
@@ -830,8 +840,11 @@ func serveVersion(w http.ResponseWriter) {
 			}
 		}
 	}
+	if v == "" {
+		v = "unknown"
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	fmt.Fprintf(w, "revision: %s\nvcs.time: %s\nmodified: %s\ngo: %s\n", revision, vcsTime, modified, goVersion)
+	fmt.Fprintf(w, "version: %s\nrevision: %s\nvcs.time: %s\nmodified: %s\ngo: %s\n", v, revision, vcsTime, modified, goVersion)
 }
 
 // serveInternal handles the reserved /_fb/ namespace: embedded assets,
@@ -2671,6 +2684,11 @@ func (s fileServer) serveTable(w http.ResponseWriter, r *http.Request, name stri
 
 	header, rows := records[0], records[1:]
 
+	if query := strings.TrimSpace(r.URL.Query().Get("q")); query != "" {
+		s.serveTableQuery(w, r, name, info, header, rows, query)
+		return
+	}
+
 	if ref := r.URL.Query().Get("cell"); ref != "" {
 		row, col, ok := parseCellCoord(ref)
 		if !ok || row > len(rows) {
@@ -2683,8 +2701,59 @@ func (s fileServer) serveTable(w http.ResponseWriter, r *http.Request, name stri
 	}
 
 	page := s.tablePageFor(name)
+	page.QueryForm = true
 	page.Summary = fmt.Sprintf("%d rows × %d columns", len(rows), len(header))
 	page.Sheets = []sheetView{makeSheet("", header, displayCells(rows), cellSelfHref)}
+	s.renderTablePage(w, r, name, info, page)
+}
+
+// serveTableQuery answers the query box on a csv/tsv page: the parsed file
+// is loaded into an in-memory sqlite database as a table named t, and the
+// query runs through the same screening, rendering, and cell-view
+// machinery as sqlite databases.
+func (s fileServer) serveTableQuery(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo, header []string, rows [][]string, query string) {
+	page := s.tablePageFor(name)
+	page.QueryForm = true
+	page.Query = query
+
+	if !readOnlySQL(query) {
+		page.QueryError = readOnlyQueryMessage
+		s.renderTablePage(w, r, name, info, page)
+		return
+	}
+
+	db, cleanup, err := loadMemoryDB(r.Context(), []memTable{{name: "t", header: header, rows: rows}})
+	if err != nil {
+		page.QueryError = err.Error()
+		s.renderTablePage(w, r, name, info, page)
+		return
+	}
+	defer cleanup()
+
+	if ref := r.URL.Query().Get("cell"); ref != "" {
+		row, col, ok := parseCellCoord(ref)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		hdr, cells, err := sqliteQueryRow(r.Context(), db, query, row)
+		if err != nil || cells == nil {
+			http.NotFound(w, r)
+			return
+		}
+		s.renderCellView(w, r, info, s.breadcrumbs(path.Dir(name)), path.Base(name),
+			hdr, cells, row, col, (&url.URL{Path: path.Base(name), RawQuery: "q=" + url.QueryEscape(query)}).String())
+		return
+	}
+
+	sheet, err := sqliteQuerySheet(r.Context(), db, query, func(row, col int) string {
+		return fmt.Sprintf("?q=%s&cell=%d,%d", url.QueryEscape(query), row, col)
+	})
+	if err != nil {
+		page.QueryError = err.Error()
+	} else {
+		page.Sheets = []sheetView{sheet}
+	}
 	s.renderTablePage(w, r, name, info, page)
 }
 
@@ -2771,12 +2840,15 @@ func parseCellCoord(ref string) (row, col int, ok bool) {
 }
 
 type tablePage struct {
-	Title   string
-	Crumbs  []crumb
-	RawHref string
-	Summary string
-	Sheets  []sheetView
-	Schema  template.HTML
+	Title      string
+	Crumbs     []crumb
+	RawHref    string
+	Summary    string
+	QueryForm  bool
+	Query      string
+	QueryError string
+	Sheets     []sheetView
+	Schema     template.HTML
 }
 
 type sheetView struct {
@@ -2845,6 +2917,32 @@ func (s fileServer) serveContainerListing(w http.ResponseWriter, r *http.Request
 	var err error
 	if isXLSX(name) {
 		members, page.Summary, err = s.xlsxMembers(name, info)
+		if err == nil {
+			page.QueryForm = true
+			page.Query = strings.TrimSpace(r.URL.Query().Get("q"))
+			if page.Query != "" {
+				if !readOnlySQL(page.Query) {
+					page.QueryError = readOnlyQueryMessage
+				} else if db, cleanup, qErr := s.xlsxMemoryDB(r.Context(), name, info); qErr != nil {
+					page.QueryError = qErr.Error()
+				} else {
+					defer cleanup()
+					if ref := r.URL.Query().Get("cell"); ref != "" {
+						s.serveQueryCell(w, r, db, name, info, page.Query, ref)
+						return
+					}
+					query := page.Query
+					sheet, qErr := sqliteQuerySheet(r.Context(), db, query, func(row, col int) string {
+						return fmt.Sprintf("?q=%s&cell=%d,%d", url.QueryEscape(query), row, col)
+					})
+					if qErr != nil {
+						page.QueryError = qErr.Error()
+					} else {
+						page.QuerySheet = &sheet
+					}
+				}
+			}
+		}
 	} else {
 		db, cleanup, dbErr := s.openSQLite(name, info)
 		if dbErr == nil {
@@ -2860,7 +2958,7 @@ func (s fileServer) serveContainerListing(w http.ResponseWriter, r *http.Request
 			page.Query = strings.TrimSpace(r.URL.Query().Get("q"))
 			if page.Query != "" {
 				if !readOnlySQL(page.Query) {
-					page.QueryError = "only single read-only queries (SELECT, WITH, EXPLAIN) are allowed"
+					page.QueryError = readOnlyQueryMessage
 				} else if ref := r.URL.Query().Get("cell"); ref != "" {
 					s.serveQueryCell(w, r, db, name, info, page.Query, ref)
 					return
@@ -3419,6 +3517,230 @@ func dropLeadingEmptyRows(rows [][]string) [][]string {
 	return rows
 }
 
+// memTable is one table bound for the in-memory query database: a csv/tsv
+// file's parsed rows, or one xlsx sheet.
+type memTable struct {
+	name   string
+	header []string
+	rows   [][]string
+}
+
+// loadMemoryDB builds an in-memory sqlite database from tabular data, one
+// table per memTable, so csv/tsv files and xlsx workbooks answer the same
+// query box that sqlite databases do. Header cells become column names
+// (sanitized and deduplicated; blanks become c1, c2, …), and a column whose
+// non-empty cells all parse as integers or reals gets that type, so sums
+// and sorts behave numerically. The database is rebuilt per request:
+// sources are small (the csv and xlsx viewer caps) and may change between
+// requests. Once loaded it is locked with PRAGMA query_only, matching the
+// read-only stance of the on-disk sqlite path.
+func loadMemoryDB(ctx context.Context, tables []memTable) (*sql.DB, func(), error) {
+	db, err := sql.Open("sqlite", "file::memory:")
+	if err != nil {
+		return nil, nil, err
+	}
+	// The pool must stay one connection: every new connection to :memory:
+	// would open its own fresh, empty database.
+	db.SetMaxOpenConns(1)
+	cleanup := func() { db.Close() }
+
+	for _, t := range tables {
+		if err := loadMemTable(ctx, db, t); err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+	}
+	if _, err := db.ExecContext(ctx, "PRAGMA query_only = ON"); err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	return db, cleanup, nil
+}
+
+func loadMemTable(ctx context.Context, db *sql.DB, t memTable) error {
+	width := len(t.header)
+	for _, row := range t.rows {
+		width = max(width, len(row))
+	}
+	if width == 0 {
+		return fmt.Errorf("table %s has no columns", t.name)
+	}
+
+	names := columnNames(t.header, width)
+	types := columnTypes(t.rows, width)
+	defs := make([]string, width)
+	placeholders := make([]string, width)
+	for i := range defs {
+		defs[i] = quoteSQLiteIdent(names[i]) + " " + types[i]
+		placeholders[i] = "?"
+	}
+	table := quoteSQLiteIdent(t.name)
+	if _, err := db.ExecContext(ctx, "CREATE TABLE "+table+" ("+strings.Join(defs, ", ")+")"); err != nil {
+		return err
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, "INSERT INTO "+table+" VALUES ("+strings.Join(placeholders, ", ")+")")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	args := make([]any, width)
+	for _, row := range t.rows {
+		for i := 0; i < width; i++ {
+			cell := ""
+			if i < len(row) {
+				cell = row[i]
+			}
+			args[i] = sqlCellValue(cell, types[i])
+		}
+		if _, err := stmt.ExecContext(ctx, args...); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// columnNames sanitizes header cells into unique, non-empty column names.
+func columnNames(header []string, width int) []string {
+	names := make([]string, width)
+	seen := map[string]bool{}
+	for i := range names {
+		name := ""
+		if i < len(header) {
+			name = strings.TrimSpace(header[i])
+		}
+		if name == "" {
+			name = fmt.Sprintf("c%d", i+1)
+		}
+		base := name
+		for n := 2; seen[strings.ToLower(name)]; n++ {
+			name = fmt.Sprintf("%s_%d", base, n)
+		}
+		seen[strings.ToLower(name)] = true
+		names[i] = name
+	}
+	return names
+}
+
+// columnTypes infers INTEGER, REAL, or TEXT per column: the narrowest type
+// every non-empty cell satisfies, TEXT for mixed or all-empty columns.
+func columnTypes(rows [][]string, width int) []string {
+	types := make([]string, width)
+	for c := range types {
+		isInt, isReal, any := true, true, false
+		for _, row := range rows {
+			if c >= len(row) || row[c] == "" {
+				continue
+			}
+			any = true
+			cell := strings.TrimSpace(row[c])
+			if isInt {
+				if _, err := strconv.ParseInt(cell, 10, 64); err != nil {
+					isInt = false
+				}
+			}
+			if isReal {
+				if _, err := strconv.ParseFloat(cell, 64); err != nil {
+					isReal = false
+				}
+			}
+			if !isInt && !isReal {
+				break
+			}
+		}
+		switch {
+		case any && isInt:
+			types[c] = "INTEGER"
+		case any && isReal:
+			types[c] = "REAL"
+		default:
+			types[c] = "TEXT"
+		}
+	}
+	return types
+}
+
+// sqlCellValue converts one cell for insertion: numeric columns store real
+// numbers with empty cells as NULL, text columns the string as written.
+func sqlCellValue(cell, typ string) any {
+	if typ == "TEXT" {
+		return cell
+	}
+	cell = strings.TrimSpace(cell)
+	if cell == "" {
+		return nil
+	}
+	if typ == "INTEGER" {
+		if n, err := strconv.ParseInt(cell, 10, 64); err == nil {
+			return n
+		}
+	}
+	if f, err := strconv.ParseFloat(cell, 64); err == nil {
+		return f
+	}
+	return cell
+}
+
+// xlsxMemoryDB loads every sheet of a workbook into an in-memory sqlite
+// database, one table per sheet, so a workbook listing's query box can
+// join across sheets. Sheet names sanitize to identifiers (tableIdent), so
+// "Q1 Sales" is queried as Q1_Sales, without quoting.
+func (s fileServer) xlsxMemoryDB(ctx context.Context, name string, info fs.FileInfo) (*sql.DB, func(), error) {
+	wb, err := s.openXLSX(name, info)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer wb.Close()
+
+	var tables []memTable
+	seen := map[string]bool{}
+	for _, sheet := range wb.GetSheetList() {
+		rows, err := wb.GetRows(sheet)
+		if err != nil {
+			return nil, nil, err
+		}
+		rows = dropLeadingEmptyRows(rows)
+		if len(rows) == 0 {
+			continue
+		}
+		tables = append(tables, memTable{name: tableIdent(sheet, seen), header: rows[0], rows: rows[1:]})
+	}
+	if len(tables) == 0 {
+		return nil, nil, errors.New("workbook has no data to query")
+	}
+	return loadMemoryDB(ctx, tables)
+}
+
+// tableIdent turns a sheet name into a SQL-friendly table name — anything
+// outside [A-Za-z0-9_] becomes an underscore, and a leading digit gets an
+// s_ prefix — deduplicating via seen.
+func tableIdent(name string, seen map[string]bool) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	ident := b.String()
+	if ident == "" || (ident[0] >= '0' && ident[0] <= '9') {
+		ident = "s_" + ident
+	}
+	base := ident
+	for n := 2; seen[strings.ToLower(ident)]; n++ {
+		ident = fmt.Sprintf("%s_%d", base, n)
+	}
+	seen[strings.ToLower(ident)] = true
+	return ident
+}
+
 // openSQLite opens a database read-only, with PRAGMA query_only on top:
 // mode=ro makes the main database file unwritable, and query_only blocks
 // changes to anything else a statement might reach (see readOnlySQL for the
@@ -3617,6 +3939,9 @@ func (s fileServer) serveSQLiteStat(w http.ResponseWriter, r *http.Request, name
 func quoteSQLiteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
+
+// readOnlyQueryMessage explains a rejected query-box submission.
+const readOnlyQueryMessage = "only single read-only queries (SELECT, WITH, EXPLAIN) are allowed"
 
 // readOnlySQL reports whether query is a single read-only statement, for the
 // SQL query box: the first keyword must be SELECT, WITH, or EXPLAIN, and no
@@ -3843,8 +4168,12 @@ var tableTemplate = template.Must(template.New("table").Parse(dataTableDefine + 
 ` + dropJS + `</head>
 <body>
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
-<p class="summary">{{.Summary}}</p>
-{{range .Sheets}}{{template "datatable" .}}{{end}}{{if .Schema}}<h2 class="sheet">schema</h2>
+{{if .Summary}}<p class="summary">{{.Summary}}</p>
+{{end}}{{if .QueryForm}}<form class="query" method="get" action="">
+<input type="text" name="q" value="{{.Query}}" placeholder="SQL query against table t, e.g. select * from t limit 10" spellcheck="false" autocomplete="off">
+</form>
+{{with .QueryError}}<p class="queryerror">{{.}}</p>
+{{end}}{{end}}{{range .Sheets}}{{template "datatable" .}}{{end}}{{if .Schema}}<h2 class="sheet">schema</h2>
 <div class="schema">{{.Schema}}</div>
 {{end}}` + cellFocusJS + pageFooter + `</body>
 </html>

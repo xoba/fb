@@ -29,8 +29,9 @@ ROOT="${FB_ROOT:-/}"
 
 build() {
     # Build to a temp name and rename over, so a running binary is replaced
-    # atomically instead of truncated in place.
-    go build -o "$BIN.new" .
+    # atomically instead of truncated in place. The version stamp feeds the
+    # /_fb/version probe.
+    go build -ldflags "-X main.version=$(git describe --tags --always --dirty)" -o "$BIN.new" .
     mv -f "$BIN.new" "$BIN"
 }
 

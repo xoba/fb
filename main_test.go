@@ -789,6 +789,106 @@ func TestLegacyDocRendered(t *testing.T) {
 	}
 }
 
+func TestCSVQueryBox(t *testing.T) {
+	root := t.TempDir()
+	csvData := "city,population\nnew orleans,364136\nportland,652503\n"
+	if err := os.WriteFile(filepath.Join(root, "data.csv"), []byte(csvData), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	nav := func(target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// The plain table page offers the query box.
+	if body := nav("/data.csv").Body.String(); !strings.Contains(body, `name="q"`) {
+		t.Fatalf("table page lacks query box: %.300s", body)
+	}
+
+	// Aggregates work, with numeric typing inferred for the column.
+	body := nav("/data.csv?q=" + url.QueryEscape("select sum(population) as total from t")).Body.String()
+	if !strings.Contains(body, "<th>total</th>") || !strings.Contains(body, "<td>1016639</td>") {
+		t.Fatalf("query result missing from %q", body)
+	}
+
+	// Ordering is numeric, not lexicographic.
+	body = nav("/data.csv?q=" + url.QueryEscape("select city from t order by population desc limit 1")).Body.String()
+	if !strings.Contains(body, "<td>portland</td>") {
+		t.Fatalf("numeric ordering failed: %q", body)
+	}
+
+	// Writes are rejected by the shared screening, and the memory database
+	// is locked read-only besides.
+	body = nav("/data.csv?q=" + url.QueryEscape("drop table t")).Body.String()
+	if !strings.Contains(body, "only single read-only queries") {
+		t.Fatalf("write not rejected: %q", body)
+	}
+}
+
+func TestXLSXQueryJoinsSheets(t *testing.T) {
+	root := t.TempDir()
+	wb := excelize.NewFile()
+	if err := wb.SetSheetName("Sheet1", "cities"); err != nil {
+		t.Fatal(err)
+	}
+	for i, row := range [][]any{
+		{"city", "population"},
+		{"new orleans", 364136},
+		{"portland", 652503},
+	} {
+		if err := wb.SetSheetRow("cities", fmt.Sprintf("A%d", i+1), &row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := wb.NewSheet("Q1 Sales"); err != nil {
+		t.Fatal(err)
+	}
+	for i, row := range [][]any{
+		{"city", "sales"},
+		{"new orleans", 11},
+		{"portland", 22},
+	} {
+		if err := wb.SetSheetRow("Q1 Sales", fmt.Sprintf("A%d", i+1), &row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := wb.SaveAs(filepath.Join(root, "book.xlsx")); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	// The sheet "Q1 Sales" is queryable as Q1_Sales; joins cross sheets.
+	q := url.QueryEscape("select c.city, s.sales from cities c join Q1_Sales s on s.city = c.city order by s.sales desc limit 1")
+	req := httptest.NewRequest(http.MethodGet, "/book.xlsx/?q="+q, nil)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	body := rec.Body.String()
+	for _, want := range []string{"<th>sales</th>", "<td>portland</td>", "<td>22</td>"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("join result lacks %q in %q", want, body)
+		}
+	}
+}
+
+func TestVersionEndpointShowsTag(t *testing.T) {
+	old := version
+	version = "v9.9.9-test"
+	defer func() { version = old }()
+
+	rec := httptest.NewRecorder()
+	serveVersion(rec)
+	if body := rec.Body.String(); !strings.Contains(body, "version: v9.9.9-test\n") {
+		t.Fatalf("version output = %q", body)
+	}
+}
+
 func TestXLSXRenderedAsTables(t *testing.T) {
 	root := t.TempDir()
 	wb := excelize.NewFile()
