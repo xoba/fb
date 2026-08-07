@@ -213,8 +213,8 @@ the archive itself.
 
 ### Images
 
-Navigating to a `.jpg`, `.png`, `.gif`, `.webp`, `.bmp`, `.tif`, or
-`.heic` shows
+Navigating to a `.jpg`/`.jpeg`, `.png`, `.gif`, `.webp`, `.bmp`,
+`.tif`/`.tiff`, or `.heic`/`.heif` shows
 the image scaled to fit the browser window — up or down, aspect ratio
 preserved, regardless of its native dimensions — with a technical readout
 beneath it: file size, dimensions and
@@ -250,7 +250,7 @@ bypassed).
 | Treatment | Types |
 |-----------|-------|
 | Rendered as a document (pandoc) | `.md` `.rst` `.ipynb` `.doc` `.docx` `.odt` `.rtf` `.epub` |
-| Syntax-highlighted source | `.ada` `.adb` `.ads` `.awk` `.bash` `.bat` `.c` `.cc` `.clj` `.coffee` `.cpp` `.cs` `.css` `.dart` `.diff` `.el` `.erb` `.erl` `.ex` `.exs` `.f` `.f90` `.feature` `.fish` `.go` `.gradle` `.graphql` `.groovy` `.h` `.hcl` `.hpp` `.hs` `.ini` `.java` `.jl` `.js` `.json` `.jsx` `.kt` `.lisp` `.lua` `.mjs` `.nix` `.patch` `.php` `.pl` `.properties` `.proto` `.ps1` `.py` `.r` `.rb` `.rs` `.s` `.scala` `.scss` `.sh` `.sql` `.svelte` `.swift` `.tex` `.tf` `.toml` `.ts` `.tsx` `.typ` `.vue` `.xml` `.yaml` `.yml` `.zig` `.zsh` |
+| Syntax-highlighted source | `.ada` `.adb` `.ads` `.awk` `.bash` `.bat` `.c` `.cc` `.clj` `.coffee` `.cpp` `.cs` `.css` `.dart` `.diff` `.el` `.erb` `.erl` `.ex` `.exs` `.f` `.f90` `.feature` `.fish` `.go` `.gradle` `.graphql` `.groovy` `.h` `.hcl` `.hpp` `.hs` `.ini` `.java` `.jl` `.js` `.json` `.jsx` `.kt` `.lisp` `.lua` `.mf` `.mjs` `.nix` `.patch` `.php` `.pl` `.properties` `.proto` `.ps1` `.py` `.r` `.rb` `.rs` `.s` `.scala` `.scss` `.sh` `.sql` `.svelte` `.swift` `.tex` `.tf` `.toml` `.ts` `.tsx` `.typ` `.vue` `.xml` `.yaml` `.yml` `.zig` `.zsh` |
 | Syntax-highlighted by exact filename | `Makefile` `makefile` `GNUmakefile` `Dockerfile` `CMakeLists.txt` `.bashrc` `.zshrc` |
 | Highlighted as XML (binary converted via plutil) | `.plist` |
 | Displayed as tables | `.csv` `.tsv` (and every sheet/table inside the containers below) |
@@ -313,36 +313,49 @@ Folders outside the serve root are rejected by name.
   (via pandoc); `README.txt` is shown preformatted as a fallback.
 - **Dot-files** — entries starting with `.` collapse into a "N dot-files"
   disclosure section at the bottom; one click expands them.
-- **Git worktrees** — inside a git working tree, entries carry small
-  colored badges after their names (amber `M` modified, green letter
-  staged, gray `?` untracked, red `!` merge conflict, muted `i`
-  gitignored); hovering explains the state in words. A
-  subdirectory containing changes gets a dot whose hover text counts them
-  (`2 modified, 1 untracked within`). A file deleted from HEAD but gone
-  from disk keeps a ghost row — struck-through, unlinked — where it used
-  to be, as does a vanished tracked directory. The worktree's top-level
-  listing adds a muted `git:` line under the summary — branch, sync
-  against the upstream as of the last fetch (`ahead 2 of origin/main`),
-  and dirty counts, with anything actionable in amber; `clean · in sync`
-  otherwise. Listings deeper in the worktree get the same line with just
-  the counts, scoped to their own subtree, only when something is dirty
-  there.
-  One `git status` scoped to the listed directory per page view, with
-  `--no-optional-locks` so browsing never touches the repository, and a
-  3-second timeout after which the listing simply renders unannotated.
-- **Git repositories** — a listing that is itself a git repository
-  directory (a `.git` directory, or a bare repository: anything with a
-  `HEAD` file plus `objects` and `refs` directories) gets a section at the
-  bottom showing where HEAD points, commit/branch/tag counts, object
-  store size, remotes, and the eight most recent commits. Gathered by
-  shelling out to `git`, so it applies only to on-disk directories, not
-  archive members.
+- **Git** — listings inside a git worktree annotate entries with their
+  status; see [Git awareness](#git-awareness) below.
 - **Layout** — directory rows have separate name and blurb cells while file
   rows span both, so files reserve no empty blurb space and long filenames
   never widen the directory column. Long names truncate with an ellipsis
   (hover for the full name).
 - Directories show modification times like files do; sizes are shown only
   for files.
+
+## Git awareness
+
+Browsing inside a git working tree, listings annotate what git knows,
+without ever touching the repository.
+
+**Per-entry badges.** Entries carry small colored letters after their
+names: amber `M` modified, green letter staged (`A` new file, `M`
+modified, and so on), gray `?` untracked, red `!` merge conflict, muted
+`i` gitignored. Hovering any badge explains the state in words. A
+subdirectory containing changes gets a dot whose hover text counts them
+(`2 modified, 1 untracked within`). A file deleted from HEAD but gone
+from disk keeps a ghost row — struck-through, unlinked — where it used
+to be, as does a vanished tracked directory, so deletions stay visible
+until committed.
+
+**The `git:` line.** The worktree's top-level listing adds a muted line
+under the summary — branch, sync against the upstream as of the last
+fetch (`ahead 2 of origin/main`), and dirty counts, with anything
+actionable in amber; `clean · in sync` otherwise. Listings deeper in the
+worktree get the same line with just the counts, scoped to their own
+subtree, and only when something is dirty there.
+
+**Repository directories.** A listing that is itself a repository — a
+`.git` directory, or a bare repository (anything with a `HEAD` file plus
+`objects` and `refs` directories) — gets a section at the bottom showing
+where HEAD points, commit/branch/tag counts, object store size, remotes,
+and the eight most recent commits.
+
+**Mechanics.** One `git status` scoped to the listed directory per page
+view, run with `--no-optional-locks` so browsing never mutates the
+repository, and a 3-second timeout after which the listing simply
+renders unannotated. Repository sections shell out to `git` as well, so
+both features apply only to on-disk directories, not archive members;
+without `git` on the PATH, listings render plainly and nothing breaks.
 
 ## How it works, generally
 
