@@ -24,6 +24,8 @@ if it's not already present).
 
 Run `fb` with no argument to serve your home directory, or pass a path
 to serve a different root — `fb /` makes the whole filesystem browsable.
+`fb -open ~/some/project` also opens your browser there, on whatever
+port was actually bound.
 
 ### Configuration
 

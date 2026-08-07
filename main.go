@@ -74,11 +74,12 @@ var embeddedAssets embed.FS
 
 func main() {
 	usage := func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [-port N] [SERVE_PATH]\n\nServes SERVE_PATH (default: your home directory) on localhost.\nThe port defaults to $FB_PORT, then the config file, then 3030;\nif taken, the next free port is used (the startup log names it).\nAn optional config file at ~/.config/fb/config ($XDG_CONFIG_HOME\nrespected) holds \"port = N\" and \"root = PATH\" lines — the way to\nconfigure the brew service, which takes no flags.\n", filepath.Base(os.Args[0]))
+		fmt.Fprintf(os.Stderr, "Usage: %s [-port N] [-open] [SERVE_PATH]\n\nServes SERVE_PATH (default: your home directory) on localhost.\nThe port defaults to $FB_PORT, then the config file, then 3030;\nif taken, the next free port is used (the startup log names it).\n-open points the default browser at the served URL.\nAn optional config file at ~/.config/fb/config ($XDG_CONFIG_HOME\nrespected) holds \"port = N\" and \"root = PATH\" lines — the way to\nconfigure the brew service, which takes no flags.\n", filepath.Base(os.Args[0]))
 	}
 	flag.Usage = usage
 	cfg := readConfig()
 	port := flag.Int("port", defaultPort(cfg.port), "localhost port to listen on")
+	openFlag := flag.Bool("open", false, "open the default browser at the served URL")
 	flag.Parse()
 
 	rootArg, err := parseRootArg(flag.Args(), cfg.root)
@@ -109,10 +110,30 @@ func main() {
 	if bound != *port {
 		log.Printf("port %d is taken; using the next free port", *port)
 	}
-	log.Printf("serving %s at http://localhost:%d/", root, bound)
+	url := fmt.Sprintf("http://localhost:%d/", bound)
+	log.Printf("serving %s at %s", root, url)
+	if *openFlag {
+		openInBrowser(url)
+	}
 	if err := serve(handler, listeners); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+}
+
+// openInBrowser points the default browser at url. Best-effort: -open is
+// a convenience, so failure only logs. The listeners are already bound
+// when this runs, so an eagerly connecting browser just waits in the
+// accept backlog.
+func openInBrowser(url string) {
+	for _, tool := range []string{"open", "xdg-open"} {
+		if p, err := exec.LookPath(tool); err == nil {
+			if err := exec.Command(p, url).Start(); err != nil {
+				log.Printf("open browser: %v", err)
+			}
+			return
+		}
+	}
+	log.Printf("cannot open a browser here; visit %s yourself", url)
 }
 
 // defaultPort resolves the port used when the -port flag is absent:
