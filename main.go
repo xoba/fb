@@ -2801,18 +2801,21 @@ func (s fileServer) serveContainerListing(w http.ResponseWriter, r *http.Request
 			page.QueryForm = true
 			page.Query = strings.TrimSpace(r.URL.Query().Get("q"))
 			if page.Query != "" {
-				if ref := r.URL.Query().Get("cell"); ref != "" {
+				if !readOnlySQL(page.Query) {
+					page.QueryError = "only single read-only queries (SELECT, WITH, EXPLAIN) are allowed"
+				} else if ref := r.URL.Query().Get("cell"); ref != "" {
 					s.serveQueryCell(w, r, db, name, info, page.Query, ref)
 					return
-				}
-				query := page.Query
-				sheet, qErr := sqliteQuerySheet(r.Context(), db, query, func(row, col int) string {
-					return fmt.Sprintf("?q=%s&cell=%d,%d", url.QueryEscape(query), row, col)
-				})
-				if qErr != nil {
-					page.QueryError = qErr.Error()
 				} else {
-					page.QuerySheet = &sheet
+					query := page.Query
+					sheet, qErr := sqliteQuerySheet(r.Context(), db, query, func(row, col int) string {
+						return fmt.Sprintf("?q=%s&cell=%d,%d", url.QueryEscape(query), row, col)
+					})
+					if qErr != nil {
+						page.QueryError = qErr.Error()
+					} else {
+						page.QuerySheet = &sheet
+					}
 				}
 			}
 		} else {
@@ -3349,7 +3352,10 @@ func dropLeadingEmptyRows(rows [][]string) [][]string {
 	return rows
 }
 
-// openSQLite opens a database read-only. On-disk databases are opened in
+// openSQLite opens a database read-only, with PRAGMA query_only on top:
+// mode=ro makes the main database file unwritable, and query_only blocks
+// changes to anything else a statement might reach (see readOnlySQL for the
+// statement-level screening above that). On-disk databases are opened in
 // place, with no size limit — sqlite pages in only what a query touches.
 // Archive-backed databases are copied to a temp file first (the driver
 // needs a real path), capped at maxSQLiteBytes; the returned cleanup closes
@@ -3359,7 +3365,7 @@ func (s fileServer) openSQLite(name string, info fs.FileInfo) (*sql.DB, func(), 
 		dsn := &url.URL{
 			Scheme:   "file",
 			Path:     filepath.ToSlash(filepath.Join(s.dir, filepath.FromSlash(name))),
-			RawQuery: "mode=ro",
+			RawQuery: "mode=ro&_query_only=1",
 		}
 		db, err := sql.Open("sqlite", dsn.String())
 		if err == nil {
@@ -3403,7 +3409,7 @@ func (s fileServer) openSQLite(name string, info fs.FileInfo) (*sql.DB, func(), 
 		return nil, nil, err
 	}
 
-	db, err := sql.Open("sqlite", "file:"+tmp.Name()+"?mode=ro&immutable=1")
+	db, err := sql.Open("sqlite", "file:"+tmp.Name()+"?mode=ro&immutable=1&_query_only=1")
 	if err != nil {
 		removeTmp()
 		return nil, nil, err
@@ -3537,6 +3543,97 @@ func (s fileServer) serveSQLiteStat(w http.ResponseWriter, r *http.Request, name
 
 func quoteSQLiteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// readOnlySQL reports whether query is a single read-only statement, for the
+// SQL query box: the first keyword must be SELECT, WITH, or EXPLAIN, and no
+// second statement may follow (a lone trailing semicolon is fine). The
+// driver executes every statement of a multi-statement script, and the
+// read-only open mode does not stop file-writing statements like
+// VACUUM INTO or ATTACH + CREATE TABLE on the attached database — so this
+// screening runs before the query reaches sqlite at all. openSQLite's
+// mode=ro and _query_only=1 are the enforcement layer beneath it.
+func readOnlySQL(query string) bool {
+	s := skipSQLTrivia(query)
+	i := 0
+	for i < len(s) && (s[i] >= 'a' && s[i] <= 'z' || s[i] >= 'A' && s[i] <= 'Z') {
+		i++
+	}
+	switch strings.ToUpper(s[:i]) {
+	case "SELECT", "WITH", "EXPLAIN":
+	default:
+		return false
+	}
+	semi := firstTopLevelSemicolon(s[i:])
+	return semi < 0 || skipSQLTrivia(s[i:][semi+1:]) == ""
+}
+
+// skipSQLTrivia removes leading whitespace and SQL comments (-- line and
+// block comments).
+func skipSQLTrivia(s string) string {
+	for {
+		s = strings.TrimSpace(s)
+		switch {
+		case strings.HasPrefix(s, "--"):
+			nl := strings.IndexByte(s, '\n')
+			if nl < 0 {
+				return ""
+			}
+			s = s[nl+1:]
+		case strings.HasPrefix(s, "/*"):
+			end := strings.Index(s, "*/")
+			if end < 0 {
+				return ""
+			}
+			s = s[end+2:]
+		default:
+			return s
+		}
+	}
+}
+
+// firstTopLevelSemicolon returns the index of the first semicolon outside
+// string literals, quoted identifiers, and comments, or -1 if there is none.
+func firstTopLevelSemicolon(s string) int {
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\'', '"', '`':
+			q := s[i]
+			i++
+			for i < len(s) {
+				if s[i] == q {
+					if i+1 < len(s) && s[i+1] == q { // doubled quote = escape
+						i += 2
+						continue
+					}
+					break
+				}
+				i++
+			}
+		case '[': // bracket-quoted identifier
+			for i+1 < len(s) && s[i+1] != ']' {
+				i++
+			}
+			i++
+		case '-':
+			if i+1 < len(s) && s[i+1] == '-' {
+				for i < len(s) && s[i] != '\n' {
+					i++
+				}
+			}
+		case '/':
+			if i+1 < len(s) && s[i+1] == '*' {
+				end := strings.Index(s[i+2:], "*/")
+				if end < 0 {
+					return -1
+				}
+				i += 2 + end + 1
+			}
+		case ';':
+			return i
+		}
+	}
+	return -1
 }
 
 func scanSQLiteRows[T any](rows *sql.Rows, cols int, format func(any) T) ([][]T, error) {
