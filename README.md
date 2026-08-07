@@ -11,6 +11,14 @@ The server listens only on loopback, on port 3030 by default — see
 port moves the server to the next free one. Requires `pandoc` on the
 PATH; everything else is compiled in.
 
+- [Installing](#installing) · [Configuration](#configuration) · [Port fallback](#port-fallback)
+- [The one rule: navigations render, everything else is raw](#the-one-rule-navigations-render-everything-else-is-raw)
+- [File types with special formatting](#file-types-with-special-formatting) · [at a glance](#all-specially-handled-types-at-a-glance)
+- [Drag and drop](#drag-and-drop)
+- [Directory listings](#directory-listings)
+- [Git awareness](#git-awareness)
+- [How it works, generally](#how-it-works-generally)
+
 ## Installing
 
 ```
@@ -18,6 +26,12 @@ brew install xoba/tap/fb    # installs pandoc alongside
 brew services start fb      # serve your home directory, starting at login
 open http://localhost:3030/
 ```
+
+The formula lives in the [xoba/homebrew-tap](https://github.com/xoba/homebrew-tap)
+repository — the install command taps it automatically. New releases
+arrive with `brew upgrade fb`, but note that upgrading does **not**
+restart a running service: it keeps executing the old binary until
+`brew services restart fb` (or your next login).
 
 Or with Go: `go install xoba.com/fb@latest` (then `brew install pandoc`
 if it's not already present).
