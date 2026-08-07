@@ -3254,3 +3254,234 @@ func TestSymlinkEscapeIsConfined(t *testing.T) {
 		t.Fatalf("symlink escape served outside file; body: %s", rec.Body.String())
 	}
 }
+
+func TestEvictDrops(t *testing.T) {
+	dir := t.TempDir()
+	write := func(seq, content string) {
+		d := filepath.Join(dir, seq)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "f.txt"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("000001-a", strings.Repeat("x", 100))
+	write("000002-b", strings.Repeat("x", 100))
+	write("000003-c", strings.Repeat("x", 50))
+
+	evictDrops(dir, 200) // 250 total: the oldest goes
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if len(names) != 2 || names[0] != "000002-b" || names[1] != "000003-c" {
+		t.Fatalf("after eviction: %v, want [000002-b 000003-c]", names)
+	}
+
+	evictDrops(dir, 10) // everything goes
+	evictDrops(dir, 10) // idempotent on an empty dir
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("after full eviction: %v, want empty", entries)
+	}
+}
+
+func TestHeavyWorkSlots(t *testing.T) {
+	var releases []func()
+	for i := 0; i < heavyWorkSlots; i++ {
+		release, ok := tryAcquireHeavy()
+		if !ok {
+			t.Fatalf("slot %d not acquirable", i)
+		}
+		releases = append(releases, release)
+	}
+	if _, ok := tryAcquireHeavy(); ok {
+		t.Fatal("slot acquirable while all are held")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, ok := acquireHeavy(ctx); ok {
+		t.Fatal("acquireHeavy succeeded with a canceled context")
+	}
+
+	releases[0]()
+	extra, ok := tryAcquireHeavy()
+	if !ok {
+		t.Fatal("released slot not re-acquirable")
+	}
+	for _, r := range append(releases[1:], extra) {
+		r()
+	}
+}
+
+func TestCachedMemoryDB(t *testing.T) {
+	builds := 0
+	build := func(ctx context.Context) (*sql.DB, error) {
+		builds++
+		db, _, err := loadMemoryDB(ctx, []memTable{{name: "t", header: []string{"a"}, rows: [][]string{{"1"}}}})
+		return db, err
+	}
+
+	db1, rel1, err := cachedMemoryDB(context.Background(), "k1", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db2, rel2, err := cachedMemoryDB(context.Background(), "k1", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builds != 1 || db1 != db2 {
+		t.Fatalf("builds = %d, db1 == db2: %v; want one build, shared handle", builds, db1 == db2)
+	}
+
+	// The staged database answers queries and stays read-only.
+	var n int
+	if err := db1.QueryRow("select count(*) from t").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("query on staged db: n = %d, err = %v", n, err)
+	}
+	if err := db1.QueryRow("create table x (a)").Scan(&n); err == nil {
+		t.Fatal("write succeeded on a staged db")
+	}
+	rel1()
+	rel2()
+
+	// A new key evicts; the evicted handle closes once unreferenced.
+	_, rel3, err := cachedMemoryDB(context.Background(), "k2", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rel3()
+	if builds != 2 {
+		t.Fatalf("builds = %d, want 2", builds)
+	}
+	if err := db1.QueryRow("select 1").Scan(&n); err == nil {
+		t.Fatal("evicted db still usable after its last release")
+	}
+}
+
+func TestParquetCellBytesCap(t *testing.T) {
+	old := maxParquetCellBytes
+	defer func() { maxParquetCellBytes = old }()
+	maxParquetCellBytes = 100
+
+	type textRow struct {
+		Text string `parquet:"text"`
+	}
+	var buf bytes.Buffer
+	pw := parquet.NewGenericWriter[textRow](&buf)
+	if _, err := pw.Write([]textRow{{strings.Repeat("x", 60)}, {strings.Repeat("y", 60)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := pw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, _, err := parquetRows(buf.Bytes())
+	if err == nil || !strings.Contains(err.Error(), "decodes to over") {
+		t.Fatalf("parquetRows err = %v, want the cell-byte cap", err)
+	}
+}
+
+func TestXLSXQueryCellCap(t *testing.T) {
+	old := maxXLSXQueryCells
+	defer func() { maxXLSXQueryCells = old }()
+	maxXLSXQueryCells = 2
+
+	root := t.TempDir()
+	wb := excelize.NewFile()
+	for i, row := range [][]any{{"city"}, {"new orleans"}, {"portland"}} {
+		if err := wb.SetSheetRow("Sheet1", fmt.Sprintf("A%d", i+1), &row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := wb.SaveAs(filepath.Join(root, "data.xlsx")); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+	req := httptest.NewRequest(http.MethodGet, "/data.xlsx/?q="+url.QueryEscape("select * from Sheet1"), nil)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if body := rec.Body.String(); !strings.Contains(body, "too large to query") {
+		t.Fatalf("over-cap workbook query = %q, want the cell cap error", body)
+	}
+}
+
+func TestXLSXQueryHintSkipsDatalessSheets(t *testing.T) {
+	root := t.TempDir()
+	wb := excelize.NewFile()
+	if err := wb.SetSheetName("Sheet1", "empty"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wb.NewSheet("Q1 Sales"); err != nil {
+		t.Fatal(err)
+	}
+	row := []any{"city", "sales"}
+	if err := wb.SetSheetRow("Q1 Sales", "A1", &row); err != nil {
+		t.Fatal(err)
+	}
+	row = []any{"new orleans", 11}
+	if err := wb.SetSheetRow("Q1 Sales", "A2", &row); err != nil {
+		t.Fatal(err)
+	}
+	if err := wb.SaveAs(filepath.Join(root, "book.xlsx")); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+	req := httptest.NewRequest(http.MethodGet, "/book.xlsx/", nil)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if body := rec.Body.String(); !strings.Contains(body, "select * from Q1_Sales limit 10") {
+		t.Fatalf("placeholder = %q, want the first data-bearing sheet's table", body)
+	}
+}
+
+func TestCdDoesNotLeakPaths(t *testing.T) {
+	root := t.TempDir()
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+
+	// A file:// URI pointing outside the serve root answers exactly like a
+	// failed search: no probed path, no root.
+	body := `{"name":"","uris":["file:///etc"]}`
+	req := httptest.NewRequest(http.MethodPost, "/_fb/cd", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	if got := rec.Body.String(); strings.Contains(got, "/etc") || strings.Contains(got, root) {
+		t.Fatalf("cd response leaks paths: %q", got)
+	}
+	if got := rec.Body.String(); !strings.Contains(got, "cannot find") {
+		t.Fatalf("cd response = %q, want the uniform not-found", got)
+	}
+
+	// A fruitless search doesn't name the root either.
+	body = `{"name":"no-such-folder-anywhere"}`
+	req = httptest.NewRequest(http.MethodPost, "/_fb/cd", strings.NewReader(body))
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if got := rec.Body.String(); strings.Contains(got, root) {
+		t.Fatalf("cd search failure leaks the root: %q", got)
+	}
+}
+
+func TestExifRowsToleratesGarbage(t *testing.T) {
+	for _, data := range [][]byte{
+		{},
+		[]byte("not an image at all"),
+		bytes.Repeat([]byte{0xff, 0xd8, 0xff, 0xe1}, 64), // jpeg-ish garbage
+	} {
+		// The assertion is simply not panicking.
+		rows, _, _, _ := exifRows(data)
+		_ = rows
+	}
+}

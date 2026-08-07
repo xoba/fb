@@ -2877,13 +2877,14 @@ const (
 	// anyway, and the cap bounds what a query loads; the summary line says
 	// when it bites.
 	maxParquetRows = 100_000
-
-	// maxParquetCellBytes bounds the decoded cell text held in memory. The
-	// input cap is on compressed bytes, and parquet's encodings can expand
-	// 20 MB of storage into gigabytes of strings; decoding stops (and the
-	// file falls back to a raw download) past this ceiling.
-	maxParquetCellBytes = 256 << 20
 )
+
+// maxParquetCellBytes bounds the decoded cell text held in memory. The
+// input cap is on compressed bytes, and parquet's encodings can expand
+// 20 MB of storage into gigabytes of strings; decoding stops (and the
+// file falls back to a raw download) past this ceiling. A var so tests
+// can shrink it.
+var maxParquetCellBytes = int64(256 << 20)
 
 func (s fileServer) serveParquet(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
 	if info.Size() > maxParquetBytes {
@@ -3197,12 +3198,14 @@ type tableCell struct {
 const (
 	// maxXLSXBytes caps how large a workbook is parsed.
 	maxXLSXBytes = 10 << 20
+)
 
-	// maxXLSXQueryCells bounds how many cells the query box stages across
-	// all of a workbook's sheets: a 10 MB zip can expand far beyond what a
-	// table view would ever display.
-	maxXLSXQueryCells = 1_000_000
+// maxXLSXQueryCells bounds how many cells the query box stages across
+// all of a workbook's sheets: a 10 MB zip can expand far beyond what a
+// table view would ever display. A var so tests can shrink it.
+var maxXLSXQueryCells = 1_000_000
 
+const (
 	// maxSQLiteBytes caps how large a database is copied out for viewing;
 	// the copy is needed because the sqlite driver wants a real file path,
 	// which also lets databases inside archives work.
