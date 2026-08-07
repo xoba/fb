@@ -1396,7 +1396,18 @@ var pandocFormats = map[string]string{
 	".epub":  "epub",
 }
 
+// maxDocumentBytes caps how large a file gets rendered through pandoc:
+// renderDocument reads the whole source into memory, and pandoc's timeout
+// bounds time, not memory — so oversized documents (including a zip-bomb
+// member named .md, whose fs size is its decompressed size) fall back to
+// verbatim serving.
+const maxDocumentBytes = 32 << 20
+
 func (s fileServer) serveDocument(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo, format string) {
+	if info.Size() > maxDocumentBytes {
+		s.serveRaw(w, r, name, info)
+		return
+	}
 	html, err := s.renderDocument(r.Context(), name, renderOptions{
 		format:     format,
 		standalone: true,
@@ -3996,7 +4007,13 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 
 	if readme := findReadme(entries); readme != "" {
 		full := path.Join(name, readme)
-		if strings.EqualFold(path.Ext(readme), ".md") {
+		// The same size gate as serveDocument: an oversized readme just
+		// doesn't preview (as with a pandoc failure).
+		previewable := func() bool {
+			info, err := fs.Stat(s.fsys, full)
+			return err == nil && info.Size() <= maxDocumentBytes
+		}
+		if strings.EqualFold(path.Ext(readme), ".md") && previewable() {
 			html, err := s.renderDocument(r.Context(), full, renderOptions{})
 			if err != nil {
 				log.Printf("pandoc failed for %s: %v", full, err)
@@ -4004,11 +4021,13 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 				page.ReadmeName = readme
 				page.Readme = template.HTML(html)
 			}
-		} else if text, err := fs.ReadFile(s.fsys, full); err == nil {
-			page.ReadmeName = readme
-			page.ReadmeText = string(text)
-		} else {
-			log.Printf("read %s: %v", full, err)
+		} else if !strings.EqualFold(path.Ext(readme), ".md") && previewable() {
+			if text, err := fs.ReadFile(s.fsys, full); err == nil {
+				page.ReadmeName = readme
+				page.ReadmeText = string(text)
+			} else {
+				log.Printf("read %s: %v", full, err)
+			}
 		}
 	}
 
