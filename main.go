@@ -3032,6 +3032,9 @@ func (s fileServer) serveContainerListing(w http.ResponseWriter, r *http.Request
 		members, page.Summary, err = s.xlsxMembers(name, info)
 		if err == nil {
 			page.QueryForm = true
+			if len(members) > 0 {
+				page.QueryHint = tableIdent(members[0].Name, map[string]bool{})
+			}
 			page.Query = strings.TrimSpace(r.URL.Query().Get("q"))
 			if page.Query != "" {
 				if !readOnlySQL(page.Query) {
@@ -3068,6 +3071,9 @@ func (s fileServer) serveContainerListing(w http.ResponseWriter, r *http.Request
 			members, page.Summary, err = sqliteMemberList(r.Context(), db, !page.StatsAsync)
 
 			page.QueryForm = true
+			if len(members) > 0 {
+				page.QueryHint = queryHintName(members[0].Name)
+			}
 			page.Query = strings.TrimSpace(r.URL.Query().Get("q"))
 			if page.Query != "" {
 				if !readOnlySQL(page.Query) {
@@ -3827,6 +3833,23 @@ func (s fileServer) xlsxMemoryDB(ctx context.Context, name string, info fs.FileI
 		return nil, nil, errors.New("workbook has no data to query")
 	}
 	return loadMemoryDB(ctx, tables)
+}
+
+// queryHintName renders a table name the way it would be typed in a
+// query: bare when it is a plain identifier, quoted otherwise.
+func queryHintName(name string) string {
+	if name == "" {
+		return ""
+	}
+	for i, r := range name {
+		switch {
+		case r == '_', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return quoteSQLiteIdent(name)
+		}
+	}
+	return name
 }
 
 // tableIdent turns a sheet name into a SQL-friendly table name — anything
@@ -5268,6 +5291,7 @@ type directoryPage struct {
 	RawHref    string
 	QueryForm  bool
 	Query      string
+	QueryHint  string // example table name for the query box placeholder
 	QueryError string
 	QuerySheet *sheetView
 	StatsAsync bool
@@ -5676,7 +5700,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
 {{end}}{{if .Summary}}<p class="summary" id="listsum">{{.Summary}}</p>
 {{end}}{{with .GitLine}}<p class="gitline">git: {{range $i, $it := .}}{{if $i}}<span class="sep"> &middot; </span>{{end}}<span{{if $it.Bad}} class="bad"{{end}}>{{$it.Text}}</span>{{end}}</p>
 {{end}}{{if .QueryForm}}<form class="query" method="get" action="">
-<input type="text" name="q" value="{{.Query}}" placeholder="SQL query, e.g. select * from some_table limit 10" spellcheck="false" autocomplete="off">
+<input type="text" name="q" value="{{.Query}}" placeholder="SQL query, e.g. select * from {{if .QueryHint}}{{.QueryHint}}{{else}}some_table{{end}} limit 10" spellcheck="false" autocomplete="off">
 </form>
 {{with .QueryError}}<p class="queryerror">{{.}}</p>
 {{end}}{{with .QuerySheet}}{{template "datatable" .}}

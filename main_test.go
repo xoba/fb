@@ -920,6 +920,15 @@ func TestXLSXQueryJoinsSheets(t *testing.T) {
 
 	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
 
+	// The listing placeholder names the first sheet's queryable table.
+	list := httptest.NewRequest(http.MethodGet, "/book.xlsx/", nil)
+	list.Header.Set("Sec-Fetch-Dest", "document")
+	lrec := httptest.NewRecorder()
+	server.ServeHTTP(lrec, list)
+	if !strings.Contains(lrec.Body.String(), "select * from cities limit 10") {
+		t.Fatalf("workbook placeholder lacks first sheet's table name")
+	}
+
 	// The sheet "Q1 Sales" is queryable as Q1_Sales; joins cross sheets.
 	q := url.QueryEscape("select c.city, s.sales from cities c join Q1_Sales s on s.city = c.city order by s.sales desc limit 1")
 	req := httptest.NewRequest(http.MethodGet, "/book.xlsx/?q="+q, nil)
@@ -1116,7 +1125,8 @@ func TestSQLiteRenderedAsTables(t *testing.T) {
 		`href="users"`,
 		"2 rows × 3 columns", // per-table stats in the metadata column
 		`id="listsum">1 table · 2 rows · 4.0 KB</p>`, // summary totals; footprint via dbstat
-		`name="q"`, // the query form
+		`name="q"`,                     // the query form
+		"select * from users limit 10", // placeholder names a real table
 		`href="/app.sqlite?raw=1"`,
 	} {
 		if !strings.Contains(body, want) {
