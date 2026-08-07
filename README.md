@@ -76,7 +76,15 @@ logs to `~/Library/Logs/fb.log`.
 ```
 ./run.sh            # go run, serving / (the whole filesystem)
 ./run.sh ~/notes    # serve a narrower root
+./release.sh        # gate, tag, push, deploy, and publish to the brew tap
 ```
+
+`release.sh` runs the whole release: it refuses on a dirty tree or
+failing tests/scan, tags (bare runs propose the next patch and confirm;
+`patch|minor|major|vX.Y.Z` skip the prompt; a HEAD already tagged is
+republished idempotently), pushes both remotes, redeploys the local
+service, updates the tap formula's url and sha256, and verifies with a
+real `brew upgrade`.
 
 ## Running as a service from source
 
