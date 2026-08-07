@@ -1145,7 +1145,9 @@ func (s fileServer) handleCd(w http.ResponseWriter, r *http.Request) {
 
 	rel, ok := relToRoot(s.dir, target)
 	if !ok {
-		http.Error(w, fmt.Sprintf("%s is outside the served root %s", target, s.dir), http.StatusNotFound)
+		// The same answer as a failed search: whether an absolute path
+		// exists, and where the serve root is, are not disclosed.
+		http.Error(w, cdNotFoundMessage(req.Name), http.StatusNotFound)
 		return
 	}
 	p := "/"
@@ -1182,6 +1184,16 @@ func insideRel(root, target string) string {
 		return ""
 	}
 	return rel
+}
+
+// cdNotFoundMessage is the uniform answer for a folder drop that cannot be
+// resolved, whether the folder doesn't exist or exists outside the serve
+// root.
+func cdNotFoundMessage(name string) string {
+	if name == "" {
+		return "cannot find that folder"
+	}
+	return fmt.Sprintf("cannot find a folder named %q", name)
 }
 
 // resolveCd turns what the browser knew about a dropped directory into an
@@ -1256,12 +1268,15 @@ func (s fileServer) resolveCd(ctx context.Context, req cdRequest) (string, error
 	matches := matchingDirs(candidates, req, prior)
 	switch len(matches) {
 	case 0:
-		return "", fmt.Errorf("cannot find a folder named %q under %s", req.Name, s.dir)
+		return "", errors.New(cdNotFoundMessage(req.Name))
 	case 1:
 		return matches[0], nil
 	default:
-		return "", fmt.Errorf("%d folders named %q match equally (e.g. %s and %s)",
-			len(matches), req.Name, matches[0], matches[1])
+		// Name the containing directories by basename only: full paths
+		// would leak the filesystem layout into an error page.
+		return "", fmt.Errorf("%d folders named %q match equally (e.g. in %s and %s)",
+			len(matches), req.Name,
+			filepath.Base(filepath.Dir(matches[0])), filepath.Base(filepath.Dir(matches[1])))
 	}
 }
 
