@@ -2748,7 +2748,10 @@ func (s fileServer) serveTable(w http.ResponseWriter, r *http.Request, name stri
 // table page, all over already-parsed rows.
 func (s fileServer) serveParsedTable(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo, header []string, rows [][]string, summary string) {
 	if query := strings.TrimSpace(r.URL.Query().Get("q")); query != "" {
-		s.serveTableQuery(w, r, name, info, header, rows, query)
+		s.serveTableQuery(w, r, name, info, query, func(ctx context.Context) (*sql.DB, error) {
+			db, _, err := loadMemoryDB(ctx, []memTable{{name: "t", header: header, rows: rows}})
+			return db, err
+		})
 		return
 	}
 
@@ -2795,6 +2798,12 @@ func (s fileServer) serveParquet(w http.ResponseWriter, r *http.Request, name st
 		s.serveRaw(w, r, name, info)
 		return
 	}
+	// Queries intercept before the display decode: the staging cache means
+	// a run of queries decodes and stages once per file version.
+	if query := strings.TrimSpace(r.URL.Query().Get("q")); query != "" {
+		s.serveTableQuery(w, r, name, info, query, s.parquetQueryDB(name, info))
+		return
+	}
 	release, ok := acquireHeavy(r.Context())
 	if !ok {
 		http.Error(w, "server busy", http.StatusServiceUnavailable)
@@ -2823,6 +2832,30 @@ func (s fileServer) serveParquet(w http.ResponseWriter, r *http.Request, name st
 		summary = fmt.Sprintf("first %d of %d rows × %d columns", len(rows), total, len(header))
 	}
 	s.serveParsedTable(w, r, name, info, header, rows, summary)
+}
+
+// parquetQueryDB returns the staging-database builder for a parquet file's
+// query box: decode, then load as a table named t. It runs on a
+// cachedMemoryDB miss, once per file version.
+func (s fileServer) parquetQueryDB(name string, info fs.FileInfo) func(context.Context) (*sql.DB, error) {
+	return func(ctx context.Context) (*sql.DB, error) {
+		release, ok := acquireHeavy(ctx)
+		if !ok {
+			return nil, fmt.Errorf("server busy: %w", ctx.Err())
+		}
+		src, err := fs.ReadFile(s.fsys, name)
+		var header []string
+		var rows [][]string
+		if err == nil {
+			header, rows, _, err = parquetRows(src)
+		}
+		release()
+		if err != nil {
+			return nil, err
+		}
+		db, _, err := loadMemoryDB(ctx, []memTable{{name: "t", header: header, rows: rows}})
+		return db, err
+	}
 }
 
 // parquetRows decodes a parquet file into a header and string rows,
@@ -2895,11 +2928,11 @@ func parquetCellString(v any) string {
 	return fmt.Sprint(v)
 }
 
-// serveTableQuery answers the query box on a csv/tsv page: the parsed file
-// is loaded into an in-memory sqlite database as a table named t, and the
-// query runs through the same screening, rendering, and cell-view
-// machinery as sqlite databases.
-func (s fileServer) serveTableQuery(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo, header []string, rows [][]string, query string) {
+// serveTableQuery answers the query box on a tabular file: build stages the
+// data into an in-memory sqlite database (cached per file version, so a run
+// of queries doesn't restage every request), and the query runs through the
+// same screening, rendering, and cell-view machinery as sqlite databases.
+func (s fileServer) serveTableQuery(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo, query string, build func(context.Context) (*sql.DB, error)) {
 	page := s.tablePageFor(name)
 	page.QueryForm = true
 	page.Query = query
@@ -2910,7 +2943,7 @@ func (s fileServer) serveTableQuery(w http.ResponseWriter, r *http.Request, name
 		return
 	}
 
-	db, cleanup, err := loadMemoryDB(r.Context(), []memTable{{name: "t", header: header, rows: rows}})
+	db, cleanup, err := cachedMemoryDB(r.Context(), s.memDBKey(name, info), build)
 	if err != nil {
 		page.QueryError = err.Error()
 		s.renderTablePage(w, r, name, info, page)
@@ -3073,6 +3106,11 @@ const (
 	// maxXLSXBytes caps how large a workbook is parsed.
 	maxXLSXBytes = 10 << 20
 
+	// maxXLSXQueryCells bounds how many cells the query box stages across
+	// all of a workbook's sheets: a 10 MB zip can expand far beyond what a
+	// table view would ever display.
+	maxXLSXQueryCells = 1_000_000
+
 	// maxSQLiteBytes caps how large a database is copied out for viewing;
 	// the copy is needed because the sqlite driver wants a real file path,
 	// which also lets databases inside archives work.
@@ -3114,7 +3152,10 @@ func (s fileServer) serveContainerListing(w http.ResponseWriter, r *http.Request
 			if page.Query != "" {
 				if !readOnlySQL(page.Query) {
 					page.QueryError = readOnlyQueryMessage
-				} else if db, cleanup, qErr := s.xlsxMemoryDB(r.Context(), name, info); qErr != nil {
+				} else if db, cleanup, qErr := cachedMemoryDB(r.Context(), s.memDBKey(name, info), func(ctx context.Context) (*sql.DB, error) {
+					db, _, err := s.xlsxMemoryDB(ctx, name, info)
+					return db, err
+				}); qErr != nil {
 					page.QueryError = qErr.Error()
 				} else {
 					defer cleanup()
@@ -3719,6 +3760,83 @@ type memTable struct {
 	rows   [][]string
 }
 
+// stagedDBCache holds the most recently staged in-memory query database,
+// keyed by the source file's identity, so a run of queries against one
+// unchanged file doesn't rebuild the staging database (re-parse, type
+// inference, row-by-row insert) on every keystroke. Single-slot:
+// interactive querying works one file at a time. Entries are refcounted so
+// an eviction never closes a database mid-query.
+var stagedDBCache = struct {
+	sync.Mutex
+	key string
+	ent *stagedDBEntry
+}{}
+
+type stagedDBEntry struct {
+	db      *sql.DB
+	refs    int
+	evicted bool
+}
+
+func (e *stagedDBEntry) release() {
+	stagedDBCache.Lock()
+	e.refs--
+	orphaned := e.evicted && e.refs == 0
+	stagedDBCache.Unlock()
+	if orphaned {
+		e.db.Close()
+	}
+}
+
+// memDBKey identifies a file's content for the staging cache: the same path
+// with a changed size or mtime stages afresh.
+func (s fileServer) memDBKey(name string, info fs.FileInfo) string {
+	return fmt.Sprintf("%s/%s|%d|%d", s.base, name, info.Size(), info.ModTime().UnixNano())
+}
+
+// cachedMemoryDB returns the staged database for key, building it via build
+// on a cache miss. The cache owns the handle; the returned cleanup just
+// releases the caller's reference.
+func cachedMemoryDB(ctx context.Context, key string, build func(context.Context) (*sql.DB, error)) (*sql.DB, func(), error) {
+	stagedDBCache.Lock()
+	if stagedDBCache.ent != nil && stagedDBCache.key == key {
+		ent := stagedDBCache.ent
+		ent.refs++
+		stagedDBCache.Unlock()
+		return ent.db, ent.release, nil
+	}
+	stagedDBCache.Unlock()
+
+	db, err := build(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	ent := &stagedDBEntry{db: db, refs: 1}
+	stagedDBCache.Lock()
+	if stagedDBCache.ent != nil && stagedDBCache.key == key {
+		// A concurrent request staged the same file first; use that one.
+		prev := stagedDBCache.ent
+		prev.refs++
+		stagedDBCache.Unlock()
+		db.Close()
+		return prev.db, prev.release, nil
+	}
+	var orphan *sql.DB
+	if old := stagedDBCache.ent; old != nil {
+		old.evicted = true
+		if old.refs == 0 {
+			orphan = old.db
+		}
+	}
+	stagedDBCache.key, stagedDBCache.ent = key, ent
+	stagedDBCache.Unlock()
+	if orphan != nil {
+		orphan.Close()
+	}
+	return db, ent.release, nil
+}
+
 // loadMemoryDB builds an in-memory sqlite database from tabular data, one
 // table per memTable, so csv/tsv files and xlsx workbooks answer the same
 // query box that sqlite databases do. Header cells become column names
@@ -3907,6 +4025,7 @@ func (s fileServer) xlsxMemoryDB(ctx context.Context, name string, info fs.FileI
 
 	var tables []memTable
 	seen := map[string]bool{}
+	totalCells := 0
 	for _, sheet := range wb.GetSheetList() {
 		rows, err := wb.GetRows(sheet)
 		if err != nil {
@@ -3917,6 +4036,14 @@ func (s fileServer) xlsxMemoryDB(ctx context.Context, name string, info fs.FileI
 		rows = dropLeadingEmptyRows(rows)
 		if len(rows) == 0 {
 			continue
+		}
+		for _, row := range rows {
+			totalCells += len(row)
+		}
+		if totalCells > maxXLSXQueryCells {
+			wb.Close()
+			release()
+			return nil, nil, fmt.Errorf("workbook too large to query (over %d cells)", int64(maxXLSXQueryCells))
 		}
 		tables = append(tables, memTable{name: tableIdent(sheet, seen), header: rows[0], rows: rows[1:]})
 	}
