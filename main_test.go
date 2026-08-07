@@ -943,6 +943,33 @@ func TestXLSXQueryJoinsSheets(t *testing.T) {
 	}
 }
 
+func TestWatchBinaryDetectsReplacement(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "fb")
+	if err := os.WriteFile(exe, []byte("old build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	if err := watchBinary(exe, 5*time.Millisecond, 0, func() { close(done) }); err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace atomically via rename, as brew upgrades and service.sh do.
+	if err := os.WriteFile(exe+".new", []byte("new build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(exe+".new", exe); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("binary replacement never detected")
+	}
+}
+
 func TestVersionEndpointShowsTag(t *testing.T) {
 	old := version
 	version = "v9.9.9-test"

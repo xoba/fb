@@ -133,7 +133,11 @@ func main() {
 	if *openFlag {
 		openInBrowser(url)
 	}
-	if err := serve(handler, listeners); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	// Services restart themselves when their binary is upgraded (see
+	// watchSelf); manual terminal runs never do. selfrestart = off in the
+	// config file opts a service out.
+	selfRestart := cfg.selfRestart != "off" && !stdoutIsTerminal()
+	if err := serve(handler, listeners, selfRestart); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }
@@ -168,8 +172,9 @@ func defaultPort(configured int) int {
 
 // fileConfig is what ~/.config/fb/config can set. Zero values mean unset.
 type fileConfig struct {
-	port int
-	root string
+	port        int
+	root        string
+	selfRestart string // "on", "off", or "" (default: on for services)
 }
 
 // configPath honors $XDG_CONFIG_HOME, falling back to ~/.config.
@@ -224,6 +229,13 @@ func readConfig() fileConfig {
 				value = filepath.Join(userHome(), strings.TrimPrefix(value, "~"))
 			}
 			cfg.root = value
+		case "selfrestart":
+			switch strings.ToLower(value) {
+			case "on", "off":
+				cfg.selfRestart = strings.ToLower(value)
+			default:
+				log.Printf("config %s: ignoring invalid selfrestart %q (want on or off)", path, value)
+			}
 		default:
 			log.Printf("config %s: ignoring unknown key %q", path, key)
 		}
@@ -267,8 +279,9 @@ func listenFree(want int) (int, []net.Listener, error) {
 	return 0, nil, fmt.Errorf("no free port within 100 of %d: %w", want, firstErr)
 }
 
-func serve(handler http.Handler, listeners []net.Listener) error {
+func serve(handler http.Handler, listeners []net.Listener, selfRestart bool) error {
 	errc := make(chan error, len(listeners))
+	servers := make([]*http.Server, 0, len(listeners))
 	for _, ln := range listeners {
 		srv := &http.Server{
 			Handler:           hostGuard(handler),
@@ -279,12 +292,77 @@ func serve(handler http.Handler, listeners []net.Listener) error {
 			// exports legitimately take a while before and during the
 			// response.
 		}
+		servers = append(servers, srv)
 		go func() {
 			errc <- srv.Serve(ln)
 		}()
 	}
 
+	if selfRestart {
+		watchSelf(func() {
+			// Drain in-flight requests, then let Serve return
+			// ErrServerClosed: main exits cleanly and the service's
+			// KeepAlive relaunches through its stable path — which now
+			// names the new binary.
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			for _, srv := range servers {
+				_ = srv.Shutdown(ctx)
+			}
+		})
+	}
+
 	return <-errc
+}
+
+// watchSelf arms watchBinary for the running executable — how a brew
+// upgrade or service.sh redeploy hands the service a new build without
+// restarting it. Without this the old process would keep serving until
+// someone remembered brew services restart.
+func watchSelf(shutdown func()) {
+	exe, err := os.Executable()
+	if err == nil {
+		err = watchBinary(exe, time.Minute, 5*time.Second, shutdown)
+	}
+	if err != nil {
+		log.Printf("self-restart watch unavailable: %v", err)
+	}
+}
+
+// watchBinary invokes shutdown once the file at path is replaced — a
+// different inode whose mtime has settled for at least settle, so a
+// half-written copy is never acted on (brew and service.sh both replace
+// atomically via rename anyway). A failed stat just means the swap is in
+// progress; the next tick sees the new file.
+func watchBinary(path string, interval, settle time.Duration, shutdown func()) error {
+	start, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			now, err := os.Stat(path)
+			if err != nil || os.SameFile(start, now) {
+				continue
+			}
+			if time.Since(now.ModTime()) < settle {
+				continue
+			}
+			log.Printf("binary %s was replaced; restarting to serve the new build", path)
+			shutdown()
+			return
+		}
+	}()
+	return nil
+}
+
+// stdoutIsTerminal distinguishes a manual terminal run from a service
+// writing to a log file; only services self-restart.
+func stdoutIsTerminal() bool {
+	fi, err := os.Stdout.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
 // hostGuard rejects requests whose Host header is not a loopback name. fb

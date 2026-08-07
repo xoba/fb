@@ -29,9 +29,12 @@ open http://localhost:3030/
 
 The formula lives in the [xoba/homebrew-tap](https://github.com/xoba/homebrew-tap)
 repository — the install command taps it automatically. New releases
-arrive with `brew upgrade fb`, but note that upgrading does **not**
-restart a running service: it keeps executing the old binary until
-`brew services restart fb` (or your next login).
+arrive with `brew upgrade fb`, and a running service picks them up on
+its own: fb watches its binary on disk and, within a minute of an
+upgrade replacing it, drains in-flight requests and exits so launchd
+relaunches the new build (brew itself never restarts services). Manual
+terminal runs never self-restart, and `selfrestart = off` in the config
+file opts a service out. `fb -version` prints the installed version.
 
 Or with Go: `go install xoba.com/fb@latest` (then `brew install pandoc`
 if it's not already present).
@@ -51,6 +54,7 @@ way to configure the brew service, which can't take flags. It lives at
 # ~/.config/fb/config
 port = 8080
 root = ~/notes
+selfrestart = off   # optional: services otherwise restart on upgrade
 ```
 
 Precedence, most powerful first: the `-port` flag, then `$FB_PORT`, then
@@ -219,7 +223,7 @@ URL cell links its visible prefix to the full URL.
 | `.csv`, `.tsv` | First row treated as the header. Tolerant parsing (ragged rows, lazy quotes); files over 2 MB or that fail to parse are served plain. Display capped at 2000 rows. The page has a SQL query box — the file is queryable as a table named `t`. |
 | `.parquet` | Renders and queries like csv (table `t`), decoded in pure Go. Column order follows the schema; NULLs show empty. 20 MB cap, first 100k rows decoded (the summary says when that bites). Files that fail to decode fall back to download. |
 | `.xlsx` | Browses like a directory: navigating to the file lists its sheets (with row counts), and each sheet renders as its own CSV-style table page. Blank rows above a sheet's data are skipped, so the first populated row becomes the header. 10 MB cap. The workbook listing has a SQL query box with one table per sheet — joins across sheets work. |
-| `.sqlite`, `.sqlite3`, `.db` | Browses like a directory of tables and views, each listed with its row × column counts and on-disk size including indexes (via the `dbstat` virtual table). The listing page has a SQL query box — results render as a table right beneath it. Each table's page shows the total row count, the first 2000 rows, and its highlighted schema. `NULL` shown literally, binary blobs as `(N-byte blob)`. On-disk databases are opened in place, read-only, with no size limit — sqlite pages in only what a query touches. Databases inside archives are copied to a temp file first (the driver needs a real path) and capped at 100 MB. The query box accepts only a single read-only statement (`SELECT`, `WITH`, or `EXPLAIN`) — enforced before the query reaches sqlite, on top of `mode=ro` and `PRAGMA query_only` — and non-SQLite `.db` files fall back to download. |
+| `.sqlite`, `.sqlite3`, `.db` | Browses like a directory of tables and views, each listed with its row × column counts and on-disk size including indexes (via the `dbstat` virtual table). The listing page has a SQL query box (its placeholder names the first real table) — results render as a table right beneath it. Each table's page shows the total row count, the first 2000 rows, and its highlighted schema. `NULL` shown literally, binary blobs as `(N-byte blob)`. On-disk databases are opened in place, read-only, with no size limit — sqlite pages in only what a query touches. Databases inside archives are copied to a temp file first (the driver needs a real path) and capped at 100 MB. The query box accepts only a single read-only statement (`SELECT`, `WITH`, or `EXPLAIN`) — enforced before the query reaches sqlite, on top of `mode=ro` and `PRAGMA query_only` — and non-SQLite `.db` files fall back to download. |
 
 The query boxes on csv/tsv/parquet pages and xlsx listings run real
 SQLite: the file is loaded into an in-memory database — a csv, tsv, or
