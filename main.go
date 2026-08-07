@@ -3947,10 +3947,30 @@ type gitView struct {
 	Commits []gitCommitView
 }
 
+// gitCommand builds a git invocation for fb's read-only repository probes.
+// Browsing is the trigger for these commands, and the repository itself may
+// be hostile (an extracted archive preserves .git/config and .git/hooks), so
+// anything repo config could turn into command execution is pinned off:
+// core.fsmonitor hooks run arbitrary commands during git status, and the
+// global/system config and attributes files are untrusted input too.
+func gitCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", append([]string{
+		"-c", "core.fsmonitor=false",
+		"-c", "core.attributesFile=/dev/null",
+	}, args...)...)
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"LC_ALL=C",
+	}
+	return cmd
+}
+
 // gitOutput runs one git command against a repository directory and returns
 // its trimmed stdout.
 func gitOutput(ctx context.Context, gitDir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"--git-dir", gitDir}, args...)...)
+	cmd := gitCommand(ctx, append([]string{"--git-dir", gitDir}, args...)...)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
@@ -4158,7 +4178,7 @@ func (s fileServer) worktreeStatusFor(ctx context.Context, name string) *worktre
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", osDir,
+	cmd := gitCommand(ctx, "-C", osDir,
 		"--no-optional-locks", "status", "--porcelain=v2", "-z", "--branch", "--ignored=matching", "--", ".")
 	var out bytes.Buffer
 	cmd.Stdout = &out
