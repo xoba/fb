@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"embed"
+	"encoding/base64"
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
@@ -52,6 +53,7 @@ import (
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
+	"github.com/dhowden/tag"
 	"github.com/microcosm-cc/bluemonday"
 	"github.com/parquet-go/parquet-go"
 	"github.com/rwcarlsen/goexif/exif"
@@ -572,6 +574,9 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 			return
 		case videoExts[ext]:
 			s.serveVideo(w, r, name, info)
+			return
+		case audioExts[ext]:
+			s.serveAudio(w, r, name, info)
 			return
 		case ext == ".plist":
 			s.servePlist(w, r, name, info)
@@ -2055,6 +2060,200 @@ document.querySelector("video").addEventListener("loadedmetadata", function () {
     row("duration", Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2) + " (" + v.duration.toFixed(2) + " s)");
   }
   if (v.videoWidth) row("dimensions", v.videoWidth + " × " + v.videoHeight);
+});
+</script>
+` + pageFooter + `</body>
+</html>
+`))
+
+// audioExts lists audio types shown on a player page with file details and
+// whatever tags the file carries; the audio itself is fetched as a
+// subresource, which gets the raw bytes as usual.
+var audioExts = map[string]bool{
+	".aac":  true,
+	".flac": true,
+	".m4a":  true,
+	".mp3":  true,
+	".ogg":  true,
+	".wav":  true,
+}
+
+// audioMIMEs covers audio types Go's mime package may not know.
+var audioMIMEs = map[string]string{
+	".aac":  "audio/aac",
+	".flac": "audio/flac",
+	".m4a":  "audio/mp4",
+	".mp3":  "audio/mpeg",
+	".ogg":  "audio/ogg",
+	".wav":  "audio/wav",
+}
+
+// maxAudioTagBytes caps how much of an archive-backed audio file is read
+// for tags; on-disk files are opened in place and have no cap.
+const maxAudioTagBytes = 30 << 20
+
+// maxArtBytes caps embedded cover art inlined into the page as a data URI.
+const maxArtBytes = 2 << 20
+
+// audioPage feeds audioTemplate: the player, optional cover art (a data
+// URI), and the key/value readout.
+type audioPage struct {
+	Title   string
+	Crumbs  []crumb
+	RawHref string
+	Src     string
+	Art     template.URL
+	Rows    []kvRow
+}
+
+// serveAudio shows an inline player with file details beneath it, plus the
+// tags (title, artist, album, …) and cover art when the file carries them
+// — read in pure Go by dhowden/tag; duration fills in from the browser's
+// own decoder, so no external tool is needed.
+func (s fileServer) serveAudio(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
+	rawHref := (&url.URL{Path: path.Base(name), RawQuery: "raw=1"}).String()
+	page := audioPage{
+		Title:   path.Base(name),
+		Crumbs:  s.breadcrumbs(path.Dir(name)),
+		RawHref: rawHref,
+		Src:     rawHref,
+	}
+	ext := strings.ToLower(path.Ext(viewName(name)))
+	page.Rows = append(page.Rows,
+		kvRow{K: "file size", V: fmt.Sprintf("%s (%d bytes)", humanSize(info.Size()), info.Size())})
+	if !info.ModTime().IsZero() {
+		page.Rows = append(page.Rows, kvRow{K: "modified", V: info.ModTime().Format("2006-01-02 15:04:05")})
+	}
+	mt := mime.TypeByExtension(ext)
+	if mt == "" {
+		mt = audioMIMEs[ext]
+	}
+	if mt != "" {
+		page.Rows = append(page.Rows, kvRow{K: "format", V: mt})
+	}
+	s.audioTagRows(name, info, &page)
+
+	var buf bytes.Buffer
+	if err := audioTemplate.Execute(&buf, page); err != nil {
+		log.Printf("render audio %s: %v", name, err)
+		http.Error(w, "cannot render audio page", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.ServeContent(w, r, "index.html", info.ModTime(), bytes.NewReader(buf.Bytes()))
+}
+
+// audioTagRows appends the file's tags to the readout and inlines cover
+// art. Tag reading needs a seeker: on-disk files are opened in place;
+// archive-backed ones are read into memory below a cap. Any failure just
+// leaves the page tagless — the player and file details always work.
+func (s fileServer) audioTagRows(name string, info fs.FileInfo, page *audioPage) {
+	var src io.ReadSeeker
+	if s.dir != "" {
+		f, err := os.Open(filepath.Join(s.dir, filepath.FromSlash(name)))
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		src = f
+	} else {
+		if info.Size() > maxAudioTagBytes {
+			return
+		}
+		data, err := fs.ReadFile(s.fsys, name)
+		if err != nil {
+			return
+		}
+		src = bytes.NewReader(data)
+	}
+
+	meta, err := tag.ReadFrom(src)
+	if err != nil {
+		return // untagged or unrecognized: fine
+	}
+	add := func(k, v string) {
+		if v != "" {
+			page.Rows = append(page.Rows, kvRow{K: k, V: v})
+		}
+	}
+	add("title", meta.Title())
+	add("artist", meta.Artist())
+	add("album", meta.Album())
+	if a := meta.AlbumArtist(); a != "" && a != meta.Artist() {
+		add("album artist", a)
+	}
+	if y := meta.Year(); y != 0 {
+		add("year", strconv.Itoa(y))
+	}
+	add("genre", meta.Genre())
+	if n, total := meta.Track(); n != 0 {
+		v := strconv.Itoa(n)
+		if total != 0 {
+			v = fmt.Sprintf("%d of %d", n, total)
+		}
+		add("track", v)
+	}
+	add("composer", meta.Composer())
+
+	if pic := meta.Picture(); pic != nil && len(pic.Data) > 0 && len(pic.Data) <= maxArtBytes &&
+		strings.HasPrefix(pic.MIMEType, "image/") {
+		page.Art = template.URL("data:" + pic.MIMEType + ";base64," + base64.StdEncoding.EncodeToString(pic.Data))
+	}
+}
+
+var audioTemplate = template.Must(template.New("audio").Parse(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/` + assetPrefix + `/favicon.png">
+<title>{{.Title}}</title>
+<style>
+  :root { color-scheme: light; }
+  html { color: #1a1a1a; background-color: #fdfdfd; }
+  body {
+    margin: 0;
+    padding: 50px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  @media (max-width: 600px) { body { padding: 12px; } }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  nav { margin-bottom: 1rem; font-size: 1.1rem; }
+  nav a { font-weight: 600; }
+  nav span.sep { color: #57606a; }
+  nav span.file { font-weight: 600; }
+  nav a.raw { float: right; font-weight: 400; font-size: 0.85rem; }
+  img.art {
+    display: block;
+    max-height: 40vh;
+    max-width: 100%;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+  }
+  audio.subject { display: block; width: 100%; }
+  table.kv { border-collapse: collapse; font-size: 0.85rem; margin-top: 1rem; }
+  table.kv td { padding: 0.25rem 1.25rem 0.25rem 0; vertical-align: top; }
+  table.kv td.k { color: #57606a; white-space: nowrap; }
+</style>
+` + dropJS + `</head>
+<body>
+<nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
+{{if .Art}}<img class="art" src="{{.Art}}" alt="cover art">
+{{end}}<audio class="subject" controls preload="metadata" src="{{.Src}}"></audio>
+<table class="kv" id="ameta">
+{{range .Rows}}<tr><td class="k">{{.K}}</td><td>{{.V}}</td></tr>
+{{end}}</table>
+<script>
+document.querySelector("audio").addEventListener("loadedmetadata", function () {
+  if (!isFinite(this.duration)) return;
+  var t = document.getElementById("ameta");
+  var s = Math.round(this.duration);
+  var tr = t.insertRow();
+  var td = tr.insertCell(); td.className = "k"; td.textContent = "duration";
+  tr.insertCell().textContent = Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2) + " (" + this.duration.toFixed(2) + " s)";
 });
 </script>
 ` + pageFooter + `</body>

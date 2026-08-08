@@ -294,10 +294,19 @@ the movie's native dimensions) with file size, format, and modification
 time beneath it; duration and dimensions fill in from the browser's own
 decoder once the metadata loads.
 
+### Audio
+
+Navigating to a `.mp3`, `.m4a`, `.aac`, `.flac`, `.ogg`, or `.wav`
+shows an inline player with file size, format, and modification time
+beneath it — plus whatever tags the file carries (title, artist, album,
+year, genre, track, composer) and its embedded cover art, all read in
+pure Go. Duration fills in from the browser's own decoder, like video.
+(Safari doesn't play `.ogg`; the raw link always downloads.)
+
 ### Everything else
 
-Served verbatim with sensible content types — PDFs and audio display
-natively in the browser (video gets the player page above instead).
+Served verbatim with sensible content types — PDFs display natively in
+the browser (video and audio get the player pages above instead).
 `index.html` files are viewable
 in place (the Go standard library's redirect-back-to-directory behavior is
 bypassed). HTML and SVG are served under a sandboxing Content Security
@@ -316,6 +325,7 @@ extensionless files that sniff as markup display as plain text.
 | Browsed like directories | `.zip` `.jar` `.tar` `.tar.gz` `.tgz` `.tar.bz2` `.xlsx` `.sqlite` `.sqlite3` `.db` |
 | Image pages with EXIF readout | `.jpg` `.jpeg` `.png` `.gif` `.webp` `.bmp` `.tif` `.tiff` `.heic` `.heif` |
 | Video player pages | `.mov` `.mp4` `.m4v` `.webm` |
+| Audio player pages with tag readout | `.mp3` `.m4a` `.aac` `.flac` `.ogg` `.wav` |
 
 And filenames with special roles inside directory listings:
 

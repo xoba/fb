@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -940,6 +941,61 @@ func TestXLSXQueryJoinsSheets(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("join result lacks %q in %q", want, body)
 		}
+	}
+}
+
+// id3v2 builds a minimal ID3v2.3 tag holding the given text frames — enough
+// for the tag reader, with no audio payload behind it.
+func id3v2(frames [][2]string) []byte {
+	var body bytes.Buffer
+	for _, f := range frames {
+		payload := append([]byte{0}, []byte(f[1])...) // latin-1 marker
+		body.WriteString(f[0])
+		var size [4]byte
+		binary.BigEndian.PutUint32(size[:], uint32(len(payload)))
+		body.Write(size[:])
+		body.Write([]byte{0, 0})
+		body.Write(payload)
+	}
+	b := body.Bytes()
+	head := []byte{'I', 'D', '3', 3, 0, 0,
+		byte(len(b) >> 21 & 0x7f), byte(len(b) >> 14 & 0x7f), byte(len(b) >> 7 & 0x7f), byte(len(b) & 0x7f)}
+	return append(head, b...)
+}
+
+func TestAudioPlayerPageWithTags(t *testing.T) {
+	root := t.TempDir()
+	mp3 := append(id3v2([][2]string{
+		{"TIT2", "Test Song"},
+		{"TPE1", "The Testers"},
+		{"TALB", "Fixtures"},
+	}), make([]byte, 128)...)
+	if err := os.WriteFile(filepath.Join(root, "song.mp3"), mp3, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+
+	nav := httptest.NewRequest(http.MethodGet, "/song.mp3", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"<audio", "Test Song", "The Testers", "Fixtures", "file size", "audio/mpeg"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("audio page lacks %q in %.400s", want, body)
+		}
+	}
+
+	// Non-navigations get the original bytes.
+	plain := httptest.NewRequest(http.MethodGet, "/song.mp3", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, plain)
+	if !bytes.HasPrefix(rec.Body.Bytes(), []byte("ID3")) {
+		t.Fatalf("raw fetch not original bytes: %.10q", rec.Body.String())
 	}
 }
 
