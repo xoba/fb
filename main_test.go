@@ -944,6 +944,37 @@ func TestXLSXQueryJoinsSheets(t *testing.T) {
 	}
 }
 
+func TestBackForwardRestoresReload(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "song.mp3"), id3v2(nil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "clip.mp4"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused"}
+	nav := func(target string) string {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		return rec.Body.String()
+	}
+
+	// Listings reload when restored from the back/forward cache, so Back
+	// never shows stale git annotations or file lists…
+	if !strings.Contains(nav("/"), "e.persisted") {
+		t.Fatal("directory listing lacks the bfcache reload script")
+	}
+	// …while media player pages keep bfcache, preserving playback state.
+	for _, target := range []string{"/song.mp3", "/clip.mp4"} {
+		if strings.Contains(nav(target), "e.persisted") {
+			t.Fatalf("%s should not carry the bfcache reload script", target)
+		}
+	}
+}
+
 // id3v2 builds a minimal ID3v2.3 tag holding the given text frames — enough
 // for the tag reader, with no audio payload behind it.
 func id3v2(frames [][2]string) []byte {

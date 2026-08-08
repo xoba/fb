@@ -2688,7 +2688,7 @@ var imageTemplate = template.Must(template.New("image").Parse(`<!DOCTYPE html>
   }
   p.summary { color: #57606a; font-size: 0.85rem; }
 </style>
-` + dropJS + `</head>
+` + dropJS + freshBackJS + `</head>
 <body>
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
 <img class="subject" src="{{.Src}}" alt="{{.Title}}">
@@ -3081,7 +3081,7 @@ var sourceTemplate = template.Must(template.New("source").Parse(`<!DOCTYPE html>
     line-height: 1.45;
   }
 </style>
-` + dropJS + `</head>
+` + dropJS + freshBackJS + `</head>
 <body>
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
 <div class="source">
@@ -4926,7 +4926,7 @@ var tableTemplate = template.Must(template.New("table").Parse(dataTableDefine + 
   nav span.file { font-weight: 600; }
   nav a.raw { float: right; font-weight: 400; font-size: 0.85rem; }
 ` + dataTableCSS + `</style>
-` + dropJS + `</head>
+` + dropJS + freshBackJS + `</head>
 <body>
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
 {{if .Summary}}<p class="summary">{{.Summary}}</p>
@@ -5026,7 +5026,7 @@ var cellTemplate = template.Must(template.New("cell").Parse(`<!DOCTYPE html>
     overflow-wrap: anywhere;
   }
 </style>
-` + dropJS + `</head>
+` + dropJS + freshBackJS + `</head>
 <body>
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<a href="{{.BackHref}}">{{.Title}}</a><span class="sep">/</span><span class="file">{{.Where}}</span></nav>
 <p class="summary">{{.Detail}} — <a href="{{.BackHref}}">&larr; back to table</a></p>
@@ -5951,6 +5951,20 @@ type dirEntryView struct {
 	Ghost   bool // git knows the name but the file is gone from disk (deleted)
 }
 
+// freshBackJS reloads a page restored from the browser's back/forward
+// cache, which would otherwise resurrect it as frozen at navigation time —
+// stale git annotations and listings included — bypassing the no-store
+// headers (bfcache ignores them). persisted is true only for such
+// restores, so normal loads never double-fetch and there is no loop. The
+// media player pages skip this: bfcache is what preserves their playback
+// state across Back.
+const freshBackJS = `<script>
+addEventListener("pageshow", function (e) {
+  if (e.persisted) location.reload();
+});
+</script>
+`
+
 // dropJS lets any rendered page accept a drag-and-dropped file or folder: a
 // file is uploaded to the drop endpoint (with a floating progress monitor,
 // since large files take a while) and the browser navigates to the stored
@@ -6324,7 +6338,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
     font-variant-numeric: tabular-nums;
   }
 ` + dataTableCSS + `</style>
-` + dropJS + `</head>
+` + dropJS + freshBackJS + `</head>
 <body>
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if .RawHref}}<a class="raw" href="{{.RawHref}}">raw</a>{{end}}</nav>
 {{if .Blurb}}<p class="blurb">{{.Blurb}}</p>
@@ -6447,4 +6461,4 @@ var pandocHeader = `<link rel="icon" href="/` + assetPrefix + `/favicon.png">
     }
   }
 </style>
-` + dropJS
+` + dropJS + freshBackJS

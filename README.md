@@ -145,6 +145,18 @@ preferring `text/html`). All other requests get the original bytes untouched:
 The exception is Markdown, which renders for every client — serving `.md`
 files as HTML is the program's original purpose.
 
+Freshness also applies going backwards: a page restored from the
+browser's back/forward cache reloads itself, since that cache resurrects
+the page as frozen at navigation time — stale git annotations and all —
+ignoring the server's no-store headers. Media player pages are exempt,
+so Back onto a video or audio page keeps its playback position.
+
+And it's all strictly read-only: fb never modifies or deletes anything
+it serves. Its only writes are its own scratch copies — drag-and-drop
+uploads, format-conversion caches, temporary database copies — made in
+the system temp directory, never in your tree; even git is invoked with
+`--no-optional-locks` so browsing leaves repositories untouched.
+
 Editor backup files get the same treatment as their base file: a trailing
 `~` is ignored for type detection, so `README.md~` renders like
 `README.md` and `main.go~` gets Go highlighting.
