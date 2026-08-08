@@ -3250,7 +3250,8 @@ func TestGlobalHardeningHeaders(t *testing.T) {
 	for header, want := range map[string]string{
 		"X-Content-Type-Options":       "nosniff",
 		"Cross-Origin-Resource-Policy": "same-origin",
-		"Content-Security-Policy":      "frame-ancestors 'none'",
+		"Content-Security-Policy":      "base-uri 'none'; object-src 'none'; form-action 'self'; frame-ancestors 'none'",
+		"Referrer-Policy":              "no-referrer",
 	} {
 		if got := rec.Header().Get(header); got != want {
 			t.Errorf("%s = %q, want %q", header, got, want)

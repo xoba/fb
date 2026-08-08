@@ -484,11 +484,15 @@ func (s fileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Baseline hardening on every response: no MIME sniffing (a file's
 	// bytes stay their declared type), no embedding as a cross-origin
 	// subresource, no framing of fb pages (which keeps planted content —
-	// see handleDrop — from being driven from another site in iframes).
+	// see handleDrop — from being driven from another site in iframes),
+	// no <base>-tag or plugin tricks, forms aimed only at fb itself, and
+	// no served paths leaking into Referers of outbound links.
 	h := w.Header()
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Cross-Origin-Resource-Policy", "same-origin")
-	h.Set("Content-Security-Policy", "frame-ancestors 'none'")
+	h.Set("Content-Security-Policy",
+		"base-uri 'none'; object-src 'none'; form-action 'self'; frame-ancestors 'none'")
+	h.Set("Referrer-Policy", "no-referrer")
 
 	name := requestName(r.URL.Path)
 
