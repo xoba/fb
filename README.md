@@ -296,8 +296,9 @@ decoder once the metadata loads.
 
 ### Everything else
 
-Served verbatim with sensible content types — PDFs, video, and
-audio display natively in the browser. `index.html` files are viewable
+Served verbatim with sensible content types — PDFs and audio display
+natively in the browser (video gets the player page above instead).
+`index.html` files are viewable
 in place (the Go standard library's redirect-back-to-directory behavior is
 bypassed). HTML and SVG are served under a sandboxing Content Security
 Policy, so they render but their scripts never run on fb's origin, and
