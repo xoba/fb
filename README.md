@@ -11,6 +11,15 @@ The server listens only on loopback, on port 3030 by default — see
 port moves the server to the next free one. Requires `pandoc` on the
 PATH; everything else is compiled in.
 
+**Loopback is the only access control: fb has no accounts, no tokens, no
+passwords.** Anything that can open a connection to the port can read
+everything being served. On a single-user machine that's you and your
+browser (other machines on the network can't reach it, and websites you
+visit are blocked by the hardening described under
+[How it works](#how-it-works-generally)). On a **shared machine every
+other local user can read your files through it** — don't run fb there,
+or serve a narrow root you don't mind sharing.
+
 - [Installing](#installing) · [Configuration](#configuration) · [Port fallback](#port-fallback)
 - [The one rule: navigations render, everything else is raw](#the-one-rule-navigations-render-everything-else-is-raw)
 - [File types with special formatting](#file-types-with-special-formatting) · [at a glance](#all-specially-handled-types-at-a-glance)
@@ -440,14 +449,18 @@ Everything is served with aggressive no-cache headers (the point is seeing
 your *current* files), except the embedded MathJax assets, which only change
 with the binary.
 
-Security posture, since the server is unauthenticated by design: it binds
-loopback only and rejects requests whose `Host` isn't localhost or a
-loopback IP (DNS-rebinding defense); POST endpoints require a same-origin
-fetch marker (CSRF defense); pandoc output is sanitized; raw HTML/SVG is
-sandboxed; databases open read-only with the query box restricted to
-single read-only statements; and git probing runs with a scrubbed
-environment and hostile repo config (`core.fsmonitor`) pinned off. See
-`security_review.md` for the full assessment.
+Security posture: the server is unauthenticated by design, so loopback is
+the whole boundary — on a shared machine, every local user can read what
+you serve (see the warning at the top of this README). Against *web*
+attackers it binds loopback only and rejects requests whose `Host` isn't
+localhost or a loopback IP (DNS-rebinding defense); POST endpoints
+require a same-origin fetch marker (CSRF defense); every response carries
+`nosniff`, a resource policy, framing and referrer restrictions; pandoc
+output is sanitized; raw HTML/SVG is sandboxed; databases open read-only
+with the query box restricted to single read-only statements; and git
+probing runs with a scrubbed environment and hostile repo config
+(`core.fsmonitor`) pinned off. See `security_review.md` for the full
+assessment.
 
 ## original readme before work began
 
