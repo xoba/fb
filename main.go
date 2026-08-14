@@ -1688,6 +1688,9 @@ func (s fileServer) renderDocument(ctx context.Context, name string, opts render
 	if format == "" {
 		format = pandocFormats[".md"]
 	}
+	if format == pandocFormats[".md"] {
+		content = repairPastedMath(content)
+	}
 
 	if format == docFormat {
 		converted, err := docToHTML(ctx, content)
@@ -1775,6 +1778,222 @@ func (s fileServer) renderDocument(ctx context.Context, name string, opts render
 		}
 	}
 	return out, nil
+}
+
+// repairPastedMath restores TeX math mangled by chat UIs' copy-as-markdown
+// (notably ChatGPT's copy button): display delimiters \[ and \] lose their
+// backslashes and arrive as bare [ and ] lines, inline \(a_0\) becomes plain
+// (a_0), paired subscript underscores are re-serialized as emphasis
+// asterisks (p_{a} … s_{b} → p*{a} … s*{b}), and the \\ row breaks inside
+// aligned environments collapse to a single trailing \. Ordinary markdown
+// passes through untouched: the repair engages only when the document holds
+// at least one bracket-delimited display block whose content looks like TeX,
+// and only then are inline candidates converted as well.
+func repairPastedMath(content []byte) []byte {
+	lines := strings.Split(string(content), "\n")
+	isMath := make([]bool, len(lines))
+	inFence := false
+	found := false
+	for i := 0; i < len(lines); i++ {
+		if isFenceLine(lines[i]) {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		prefix, rest := quotePrefix(lines[i])
+		trimmed := strings.TrimSpace(rest)
+		if indentOf(rest) >= 4 { // indented code block, not math
+			continue
+		}
+		// Single-line form: [ a = b ]
+		if inner, ok := strings.CutPrefix(trimmed, "[ "); ok {
+			if inner, ok := strings.CutSuffix(inner, " ]"); ok && texish(inner) {
+				lines[i] = prefix + `\[ ` + repairTeX(inner) + ` \]`
+				isMath[i] = true
+				found = true
+				continue
+			}
+		}
+		if trimmed != "[" {
+			continue
+		}
+		// Multi-line form: a lone [ line, TeX-looking content without blank
+		// lines, then a lone ] line.
+		end, texy := 0, false
+		for j := i + 1; j < len(lines); j++ {
+			_, r := quotePrefix(lines[j])
+			r = strings.TrimSpace(r)
+			if r == "" {
+				break
+			}
+			if r == "]" {
+				end = j
+				break
+			}
+			texy = texy || texish(r)
+		}
+		if end == 0 || !texy {
+			continue
+		}
+		lines[i] = prefix + `\[`
+		for j := i + 1; j < end; j++ {
+			p, r := quotePrefix(lines[j])
+			lines[j] = p + repairTeX(r)
+			isMath[j] = true
+		}
+		p, _ := quotePrefix(lines[end])
+		lines[end] = p + `\]`
+		isMath[i], isMath[end] = true, true
+		found = true
+		i = end
+	}
+	if !found {
+		return content
+	}
+	inFence = false
+	for i, line := range lines {
+		if isFenceLine(line) {
+			inFence = !inFence
+			continue
+		}
+		if inFence || isMath[i] {
+			continue
+		}
+		lines[i] = repairInlineMath(line)
+	}
+	return []byte(strings.Join(lines, "\n"))
+}
+
+func isFenceLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")
+}
+
+// quotePrefix splits a line into its leading blockquote markers and the rest,
+// so math inside blockquotes can be repaired in place.
+func quotePrefix(line string) (prefix, rest string) {
+	i := 0
+	for i < len(line) {
+		j := i
+		for j < len(line) && (line[j] == ' ' || line[j] == '\t') {
+			j++
+		}
+		if j < len(line) && line[j] == '>' {
+			i = j + 1
+			continue
+		}
+		break
+	}
+	return line[:i], line[i:]
+}
+
+func indentOf(s string) int {
+	return len(s) - len(strings.TrimLeft(s, " \t"))
+}
+
+func texish(s string) bool {
+	return strings.ContainsAny(s, `\_^`)
+}
+
+// repairTeX undoes the copy mangling inside a display-math line: emphasis
+// asterisks back to subscript underscores, and a collapsed trailing \ back
+// to the \\ row break that aligned environments need.
+func repairTeX(s string) string {
+	s = strings.ReplaceAll(s, "*{", "_{")
+	if strings.HasSuffix(s, `\`) && !strings.HasSuffix(s, `\\`) {
+		s += `\`
+	}
+	return s
+}
+
+// repairInlineMath converts parenthesized spans that look like TeX —
+// (a_0), (s_A), (a_{n+1}=F(s_A,a_n)) — into \(…\) inline math. Only
+// space-free spans qualify, so prose parentheticals survive; an opener
+// directly preceded by a letter, digit, ] or \ is left alone (function
+// calls like F(s_A), link targets, already-valid math), as are code spans.
+func repairInlineMath(line string) string {
+	var b strings.Builder
+	for i := 0; i < len(line); {
+		c := line[i]
+		if c == '`' {
+			end := strings.IndexByte(line[i+1:], '`')
+			if end < 0 {
+				b.WriteString(line[i:])
+				break
+			}
+			b.WriteString(line[i : i+end+2])
+			i += end + 2
+			continue
+		}
+		if c == '(' && !inlineOpenBlocked(line, i) {
+			if inner, close, ok := balancedParens(line, i); ok && inlineTeXish(inner) {
+				b.WriteString(`\(` + strings.ReplaceAll(inner, "*{", "_{") + `\)`)
+				i = close + 1
+				continue
+			}
+		}
+		b.WriteByte(c)
+		i++
+	}
+	return b.String()
+}
+
+func inlineOpenBlocked(line string, i int) bool {
+	if i == 0 {
+		return false
+	}
+	switch c := line[i-1]; {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	case c == ']', c == '\\':
+		return true
+	}
+	return false
+}
+
+func balancedParens(s string, open int) (inner string, close int, ok bool) {
+	depth := 0
+	for i := open; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return s[open+1 : i], i, true
+			}
+		}
+	}
+	return "", 0, false
+}
+
+// inlineTeXish reports whether a parenthesized span reads as inline math: a
+// lone variable letter, or a space-free run of TeX-safe characters that uses
+// at least one of \ _ ^. Dots are excluded so file names like (main_test.go)
+// stay prose.
+func inlineTeXish(s string) bool {
+	if s == "" || strings.ContainsAny(s, " \t") {
+		return false
+	}
+	if len(s) == 1 {
+		c := s[0]
+		return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+	}
+	if !strings.ContainsAny(s, `\_^`) {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case strings.IndexByte(`\_^{}()+-=,*`, c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // docToHTML converts a legacy binary Word document to HTML with macOS's

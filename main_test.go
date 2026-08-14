@@ -54,6 +54,67 @@ func TestServesMarkdownThroughPandoc(t *testing.T) {
 	}
 }
 
+func TestRepairPastedMath(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "display block with aligned mangles",
+			in: "intro\n\n[\n\\begin{aligned}\na_{n+1} &= F(s_A,a_n)\\\np^{(n)}*{\\mathrm{calc}} &= F(s*{\\mathrm{calc}},a_n).\n\\end{aligned}\n]\n",
+			want: "intro\n\n\\[\n\\begin{aligned}\na_{n+1} &= F(s_A,a_n)\\\\\np^{(n)}_{\\mathrm{calc}} &= F(s_{\\mathrm{calc}},a_n).\n\\end{aligned}\n\\]\n",
+		},
+		{
+			name: "inline math converts once a display block is present",
+			in:   "[\na_1\\models s_A\n]\n\nwith (a_0) and (a_{n+1}=F(s_A,a_n)) and description (s).\n",
+			want: "\\[\na_1\\models s_A\n\\]\n\nwith \\(a_0\\) and \\(a_{n+1}=F(s_A,a_n)\\) and description \\(s\\).\n",
+		},
+		{
+			name: "inline prose parentheticals survive",
+			in:   "[\nx_1 = y\n]\n\nfile (main_test.go), call F(s_A), plural word(s), (see the notes).\n",
+			want: "\\[\nx_1 = y\n\\]\n\nfile (main_test.go), call F(s_A), plural word(s), (see the notes).\n",
+		},
+		{
+			name: "no display block leaves everything alone",
+			in:   "just prose with (a_0) and [\nbrackets\n] but no TeX.\n",
+			want: "just prose with (a_0) and [\nbrackets\n] but no TeX.\n",
+		},
+		{
+			name: "code fences are untouched",
+			in:   "[\nx_1 = y\n]\n\n```\n[\na_b = c\n]\nand (x_i) here\n```\n",
+			want: "\\[\nx_1 = y\n\\]\n\n```\n[\na_b = c\n]\nand (x_i) here\n```\n",
+		},
+		{
+			name: "code spans are untouched",
+			in:   "[\nx_1 = y\n]\n\nsee `(a_0)` in code.\n",
+			want: "\\[\nx_1 = y\n\\]\n\nsee `(a_0)` in code.\n",
+		},
+		{
+			name: "blockquoted math keeps its prefix",
+			in:   "[\nx_1 = y\n]\n\n> If (a_{n+1}=F(s_A,a_n)), the bootstrap holds.\n",
+			want: "\\[\nx_1 = y\n\\]\n\n> If \\(a_{n+1}=F(s_A,a_n)\\), the bootstrap holds.\n",
+		},
+		{
+			name: "single-line display form",
+			in:   "[ s = s_A. ]\n\nthen (T_i) applies.\n",
+			want: "\\[ s = s_A. \\]\n\nthen \\(T_i\\) applies.\n",
+		},
+		{
+			name: "link reference definitions survive",
+			in:   "[\nx_1 = y\n]\n\n[1]: https://arxiv.org/abs/1309.5128 \"title\"\n",
+			want: "\\[\nx_1 = y\n\\]\n\n[1]: https://arxiv.org/abs/1309.5128 \"title\"\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := string(repairPastedMath([]byte(tt.in))); got != tt.want {
+				t.Errorf("repairPastedMath:\n got:  %q\n want: %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestServesNonMarkdownFilesDirectly(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "plain.txt"), []byte("plain text\n"), 0o644); err != nil {
