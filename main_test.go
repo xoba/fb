@@ -62,7 +62,7 @@ func TestRepairPastedMath(t *testing.T) {
 	}{
 		{
 			name: "display block with aligned mangles",
-			in: "intro\n\n[\n\\begin{aligned}\na_{n+1} &= F(s_A,a_n)\\\np^{(n)}*{\\mathrm{calc}} &= F(s*{\\mathrm{calc}},a_n).\n\\end{aligned}\n]\n",
+			in:   "intro\n\n[\n\\begin{aligned}\na_{n+1} &= F(s_A,a_n)\\\np^{(n)}*{\\mathrm{calc}} &= F(s*{\\mathrm{calc}},a_n).\n\\end{aligned}\n]\n",
 			want: "intro\n\n\\[\n\\begin{aligned}\na_{n+1} &= F(s_A,a_n)\\\\\np^{(n)}_{\\mathrm{calc}} &= F(s_{\\mathrm{calc}},a_n).\n\\end{aligned}\n\\]\n",
 		},
 		{
