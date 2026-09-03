@@ -54,6 +54,38 @@ func TestServesMarkdownThroughPandoc(t *testing.T) {
 	}
 }
 
+// TestMarkdownWikiLinksRendered goes through the real pandoc: [[name.md]]
+// must link the same way [name.md](name.md) does, and the pipe form
+// [[name.md|Title]] must keep its title as the link text.
+func TestMarkdownWikiLinksRendered(t *testing.T) {
+	if _, err := exec.LookPath("pandoc"); err != nil {
+		t.Skip("pandoc not available")
+	}
+	root := t.TempDir()
+	src := "See [[other.md]] and [[other.md|the other note]].\n"
+	if err := os.WriteFile(filepath.Join(root, "note.md"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "pandoc"}
+
+	req := httptest.NewRequest(http.MethodGet, "/note.md", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	// pandoc wraps long lines, so attributes can straddle a newline.
+	body := strings.Join(strings.Fields(rec.Body.String()), " ")
+	for _, want := range []string{
+		`<a href="other.md" class="wikilink">other.md</a>`,
+		`<a href="other.md" class="wikilink">the other note</a>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body = %q, want %q", body, want)
+		}
+	}
+}
+
 func TestRepairPastedMath(t *testing.T) {
 	tests := []struct {
 		name string

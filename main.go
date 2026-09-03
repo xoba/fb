@@ -1611,12 +1611,14 @@ func requestName(urlPath string) string {
 const docFormat = "textutil-doc"
 
 // pandocFormats maps file extensions to the pandoc input format used to
-// render them as HTML. Markdown's yaml_metadata_block is disabled because
-// metadata lands raw in the HTML head (header-includes, css), which would
-// bypass the output sanitization below; a front-matter block now shows as
+// render them as HTML. Markdown's wikilinks_title_after_pipe makes
+// [[name.md]] link like [name.md](name.md), with [[name.md|Title]] for
+// custom link text. Its yaml_metadata_block is disabled because metadata
+// lands raw in the HTML head (header-includes, css), which would bypass
+// the output sanitization below; a front-matter block now shows as
 // ordinary text.
 var pandocFormats = map[string]string{
-	".md":    "markdown+footnotes+lists_without_preceding_blankline+tex_math_single_backslash+gfm_auto_identifiers+autolink_bare_uris+emoji-yaml_metadata_block",
+	".md":    "markdown+footnotes+lists_without_preceding_blankline+tex_math_single_backslash+gfm_auto_identifiers+autolink_bare_uris+emoji+wikilinks_title_after_pipe-yaml_metadata_block",
 	".rst":   "rst",
 	".ipynb": "ipynb",
 	".doc":   docFormat,

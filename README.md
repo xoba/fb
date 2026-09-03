@@ -167,7 +167,7 @@ Editor backup files get the same treatment as their base file: a trailing
 
 | Type | Notes |
 |------|-------|
-| `.md` | Full pipeline: footnotes, GitHub-style heading anchors, autolinked URLs, emoji, and TeX math via embedded MathJax (no network needed). Math mangled by chat UIs' copy-as-markdown (ChatGPT's copy button strips the backslashes from `\[…\]` and `\(…\)` delimiters, turns subscript underscores into `*`, and collapses `\\` row breaks) is detected and repaired before rendering; ordinary markdown is untouched. Add `?toc=1` for a table of contents. Renders for all clients, not just navigations. |
+| `.md` | Full pipeline: footnotes, GitHub-style heading anchors, autolinked URLs, wiki links (`[[name.md]]` links like `[name.md](name.md)`, `[[name.md\|Title]]` sets the link text), emoji, and TeX math via embedded MathJax (no network needed). Math mangled by chat UIs' copy-as-markdown (ChatGPT's copy button strips the backslashes from `\[…\]` and `\(…\)` delimiters, turns subscript underscores into `*`, and collapses `\\` row breaks) is detected and repaired before rendering; ordinary markdown is untouched. Add `?toc=1` for a table of contents. Renders for all clients, not just navigations. |
 | `.ipynb` | Jupyter notebooks — markdown cells, syntax-highlighted code cells, and cell outputs. |
 | `.rst` | reStructuredText documents. |
 | `.docx`, `.odt`, `.rtf` | Word processor documents as clean HTML. |
