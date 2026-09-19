@@ -62,6 +62,8 @@ import (
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"
+	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 	_ "modernc.org/sqlite"
 )
 
@@ -586,6 +588,9 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 			return
 		case ext == ".typ":
 			s.serveTypst(w, r, name, info)
+			return
+		case isGoModFile(name):
+			s.serveGoMod(w, r, name, info)
 			return
 		case highlightable(name):
 			s.serveSource(w, r, name, info)
@@ -3011,8 +3016,8 @@ var highlightExts = map[string]bool{
 }
 
 // highlightNames lists exact basenames without a useful extension that also
-// get the highlighted treatment. (go.mod is deliberately absent: chroma
-// mis-matches *.mod to its AMPL lexer.)
+// get the highlighted treatment. (go.mod is absent: it and the other module
+// files have their own viewer, serveGoMod, dispatched ahead of this one.)
 var highlightNames = map[string]bool{
 	".bashrc":        true,
 	".zshrc":         true,
@@ -3309,6 +3314,377 @@ var sourceTemplate = template.Must(template.New("source").Parse(`<!DOCTYPE html>
 {{.Code}}
 </div>
 ` + pageFooter + `</body>
+</html>
+`))
+
+// Go module files — go.mod, go.work, go.sum — render as structured pages
+// parsed by golang.org/x/mod/modfile, the go command's own parser, with
+// every module path linked to its pkg.go.dev page at that exact version.
+// go.mod and go.work then show their canonically formatted source (the
+// layout go mod edit -fmt writes), since comments live only there.
+
+// isGoModFile reports whether name is one of the go command's module files.
+func isGoModFile(name string) bool {
+	switch path.Base(viewName(name)) {
+	case "go.mod", "go.work", "go.sum", "go.work.sum":
+		return true
+	}
+	return false
+}
+
+type modPage struct {
+	Title    string
+	Crumbs   []crumb
+	RawHref  string
+	Heading  string // the module path, or the file's name when it has none
+	Facts    []modFact
+	Sections []modSection
+	Source   template.HTML
+}
+
+type modFact struct{ Key, Value string }
+
+type modSection struct {
+	Title string
+	Count int
+	Rows  [][]modCell
+}
+
+type modCell struct {
+	Text  string
+	Href  string // linked when set
+	Class string
+}
+
+func (p *modPage) addSection(title string, rows [][]modCell) {
+	if len(rows) > 0 {
+		p.Sections = append(p.Sections, modSection{Title: title, Count: len(rows), Rows: rows})
+	}
+}
+
+func (s fileServer) serveGoMod(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
+	if info.Size() > maxHighlightBytes {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		s.serveRaw(w, r, name, info)
+		return
+	}
+
+	data, err := fs.ReadFile(s.fsys, name)
+	if err != nil {
+		http.Error(w, "cannot read file", http.StatusInternalServerError)
+		return
+	}
+
+	base := path.Base(viewName(name))
+	var page modPage
+	switch base {
+	case "go.mod":
+		page, err = s.goModPage(name, data)
+	case "go.work":
+		page, err = s.goWorkPage(name, data)
+	default:
+		page = goSumPage(data)
+	}
+	if err != nil {
+		// Unparseable: show it as written, with line numbers to find the
+		// problem by.
+		log.Printf("parse %s: %v", name, err)
+		s.renderSourcePage(w, r, name, info, "go.mod.txt", string(data))
+		return
+	}
+
+	page.Title = path.Base(name)
+	page.Crumbs = s.breadcrumbs(path.Dir(name))
+	page.RawHref = (&url.URL{Path: path.Base(name), RawQuery: "raw=1"}).String()
+	if page.Heading == "" {
+		page.Heading = base
+	}
+
+	var buf bytes.Buffer
+	if err := modTemplate.Execute(&buf, page); err != nil {
+		log.Printf("render %s: %v", name, err)
+		http.Error(w, "cannot render module file", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.ServeContent(w, r, base+".html", info.ModTime(), bytes.NewReader(buf.Bytes()))
+}
+
+// goModPage lays out a go.mod: identity facts, then requirements split
+// direct from indirect, then the rarer directives.
+func (s fileServer) goModPage(name string, data []byte) (modPage, error) {
+	// Strict parsing: the lax variant is for dependencies and drops the
+	// main-module directives (toolchain, replace, exclude, tool) this page
+	// exists to show. A directive newer than this build of x/mod is a parse
+	// error, and the file then shows as plain source instead.
+	f, err := modfile.Parse(name, data, nil)
+	if err != nil {
+		return modPage{}, err
+	}
+
+	var page modPage
+	if f.Module != nil {
+		page.Heading = f.Module.Mod.Path
+		if f.Module.Deprecated != "" {
+			page.Facts = append(page.Facts, modFact{"deprecated", f.Module.Deprecated})
+		}
+	}
+	page.Facts = append(page.Facts, versionFacts(f.Go, f.Toolchain, f.Godebug)...)
+
+	var direct, indirect [][]modCell
+	for _, req := range f.Require {
+		if req.Indirect {
+			indirect = append(indirect, moduleCells(req.Mod))
+		} else {
+			direct = append(direct, moduleCells(req.Mod))
+		}
+	}
+	page.addSection("Direct dependencies", direct)
+	page.addSection("Indirect dependencies", indirect)
+	page.addSection("Replacements", s.replaceRows(f.Replace))
+
+	var rows [][]modCell
+	for _, ex := range f.Exclude {
+		rows = append(rows, moduleCells(ex.Mod))
+	}
+	page.addSection("Exclusions", rows)
+
+	rows = nil
+	for _, ret := range f.Retract {
+		versions := ret.Low
+		if ret.High != ret.Low {
+			versions = "[" + ret.Low + ", " + ret.High + "]"
+		}
+		rows = append(rows, []modCell{{Text: versions, Class: "ver"}, {Text: ret.Rationale, Class: "dim"}})
+	}
+	page.addSection("Retractions", rows)
+
+	rows = nil
+	for _, tool := range f.Tool {
+		rows = append(rows, []modCell{{Text: tool.Path, Href: pkgGoDevHref(tool.Path, "")}})
+	}
+	page.addSection("Tools", rows)
+
+	rows = nil
+	for _, ig := range f.Ignore {
+		rows = append(rows, []modCell{{Text: ig.Path}})
+	}
+	page.addSection("Ignored", rows)
+
+	page.Source = formattedModSource(f.Syntax)
+	return page, nil
+}
+
+// goWorkPage lays out a go.work: its use directives link to the workspace
+// modules' directories within the browser.
+func (s fileServer) goWorkPage(name string, data []byte) (modPage, error) {
+	wf, err := modfile.ParseWork(name, data, nil)
+	if err != nil {
+		return modPage{}, err
+	}
+
+	page := modPage{Facts: versionFacts(wf.Go, wf.Toolchain, wf.Godebug)}
+	var rows [][]modCell
+	for _, use := range wf.Use {
+		rows = append(rows, []modCell{
+			{Text: use.Path, Href: s.localDirHref(use.Path)},
+			{Text: use.ModulePath, Class: "dim"},
+		})
+	}
+	page.addSection("Modules", rows)
+	page.addSection("Replacements", s.replaceRows(wf.Replace))
+	page.Source = formattedModSource(wf.Syntax)
+	return page, nil
+}
+
+// goSumPage tabulates go.sum's "module version hash" lines, one row each,
+// the module linked at that version. The /go.mod suffix that marks a
+// go.mod-only hash stays visible in the version column. Lines of any other
+// shape (there should be none) show verbatim.
+func goSumPage(data []byte) modPage {
+	var rows [][]modCell
+	for line := range strings.Lines(string(data)) {
+		fields := strings.Fields(line)
+		switch len(fields) {
+		case 0:
+		case 3:
+			rows = append(rows, []modCell{
+				{Text: fields[0], Href: pkgGoDevHref(fields[0], strings.TrimSuffix(fields[1], "/go.mod"))},
+				{Text: fields[1], Class: "ver"},
+				{Text: fields[2], Class: "hash"},
+			})
+		default:
+			rows = append(rows, []modCell{{Text: strings.TrimSpace(line), Class: "dim"}})
+		}
+	}
+
+	var page modPage
+	page.addSection("Checksums", rows)
+	return page
+}
+
+func versionFacts(g *modfile.Go, tc *modfile.Toolchain, debug []*modfile.Godebug) []modFact {
+	var facts []modFact
+	if g != nil {
+		facts = append(facts, modFact{"go", g.Version})
+	}
+	if tc != nil {
+		facts = append(facts, modFact{"toolchain", tc.Name})
+	}
+	for _, d := range debug {
+		facts = append(facts, modFact{"godebug", d.Key + "=" + d.Value})
+	}
+	return facts
+}
+
+// moduleCells is a module's row: its path linked to pkg.go.dev at that
+// version, then the version.
+func moduleCells(m module.Version) []modCell {
+	return []modCell{
+		{Text: m.Path, Href: pkgGoDevHref(m.Path, m.Version)},
+		{Text: m.Version, Class: "ver"},
+	}
+}
+
+// pkgGoDevHref links a module (or package) path on pkg.go.dev, pinned to
+// version when given.
+func pkgGoDevHref(modPath, version string) string {
+	p := "/" + modPath
+	if version != "" {
+		p += "@" + version
+	}
+	return (&url.URL{Scheme: "https", Host: "pkg.go.dev", Path: p}).String()
+}
+
+// replaceRows renders replace directives as old ⇒ new. A replacement by
+// directory (no version) links into the browser itself.
+func (s fileServer) replaceRows(replaces []*modfile.Replace) [][]modCell {
+	var rows [][]modCell
+	for _, rep := range replaces {
+		row := []modCell{
+			{Text: rep.Old.Path, Href: pkgGoDevHref(rep.Old.Path, rep.Old.Version)},
+			{Text: rep.Old.Version, Class: "ver"},
+			{Text: "⇒", Class: "arrow"},
+		}
+		if rep.New.Version == "" {
+			row = append(row, modCell{Text: rep.New.Path, Href: s.localDirHref(rep.New.Path)}, modCell{})
+		} else {
+			row = append(row, moduleCells(rep.New)...)
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// localDirHref links a directory named in a module file. Relative paths
+// resolve against the file's own URL (its directory); absolute ones link
+// only when they fall under the served root, and never from inside an
+// archive, where there is no root to compare against.
+func (s fileServer) localDirHref(dir string) string {
+	if !strings.HasPrefix(dir, "/") {
+		return (&url.URL{Path: path.Clean(dir) + "/"}).String()
+	}
+	if s.dir == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(s.dir, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+		return ""
+	}
+	if rel == "." {
+		return "/"
+	}
+	return "/" + (&url.URL{Path: filepath.ToSlash(rel) + "/"}).String()
+}
+
+// formattedModSource shows the file in the go command's canonical layout,
+// with line numbers but no coloring (the .txt name picks chroma's
+// plaintext lexer): a go.mod's structure is already in the tables above,
+// and the source is there for its comments.
+func formattedModSource(syntax *modfile.FileSyntax) template.HTML {
+	code, err := highlightSource("go.mod.txt", string(modfile.Format(syntax)))
+	if err != nil {
+		return ""
+	}
+	return code
+}
+
+var modTemplate = template.Must(template.New("mod").Parse(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/` + assetPrefix + `/favicon.png">
+<title>{{.Title}}</title>
+<style>
+  :root { color-scheme: light; }
+  html { color: #1a1a1a; background-color: #fdfdfd; }
+  body {
+    margin: 0 auto;
+    max-width: 70em;
+    padding: 50px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  @media (max-width: 600px) { body { padding: 12px; } }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  nav { margin-bottom: 1rem; font-size: 1.1rem; }
+  nav a { font-weight: 600; }
+  nav span.sep { color: #57606a; }
+  nav span.file { font-weight: 600; }
+  nav a.raw { float: right; font-weight: 400; font-size: 0.85rem; }
+  h1 {
+    margin: 0 0 0.5rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 1.3rem;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+  table.kv { border-collapse: collapse; font-size: 0.85rem; }
+  table.kv td { padding: 0.25rem 1.25rem 0.25rem 0; vertical-align: top; }
+  table.kv td.k { color: #57606a; white-space: nowrap; }
+  h2 { margin: 1.75rem 0 0.5rem; font-size: 1rem; font-weight: 600; }
+  h2 span.count { margin-left: 0.4rem; color: #57606a; font-weight: 400; }
+  div.mods { overflow-x: auto; }
+  table.mods {
+    border-collapse: collapse;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    line-height: 1.45;
+  }
+  table.mods td { padding: 0.15rem 1.25rem 0.15rem 0; vertical-align: baseline; white-space: nowrap; }
+  table.mods td.ver, table.mods td.hash, table.mods td.arrow { color: #57606a; }
+  table.mods td.dim { color: #8c959f; }
+  div.source {
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    overflow-x: auto;
+    background-color: #fff;
+  }
+  div.source pre {
+    margin: 0;
+    padding: 0.75rem 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    line-height: 1.45;
+  }
+</style>
+` + dropJS + freshBackJS + `</head>
+<body>
+<nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
+<h1>{{.Heading}}</h1>
+{{if .Facts}}<table class="kv">
+{{range .Facts}}<tr><td class="k">{{.Key}}</td><td>{{.Value}}</td></tr>
+{{end}}</table>
+{{end}}{{range .Sections}}<h2>{{.Title}}<span class="count">{{.Count}}</span></h2>
+<div class="mods"><table class="mods">
+{{range .Rows}}<tr>{{range .}}<td{{with .Class}} class="{{.}}"{{end}}>{{if .Href}}<a href="{{.Href}}">{{.Text}}</a>{{else}}{{.Text}}{{end}}</td>{{end}}</tr>
+{{end}}</table></div>
+{{end}}{{if .Source}}<h2>Source</h2>
+<div class="source">
+{{.Source}}
+</div>
+{{end}}` + pageFooter + `</body>
 </html>
 `))
 

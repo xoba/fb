@@ -10,6 +10,7 @@ require (
 	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
 	github.com/xuri/excelize/v2 v2.11.0
 	golang.org/x/image v0.46.0
+	golang.org/x/mod v0.41.0
 	modernc.org/sqlite v1.59.0
 )
 

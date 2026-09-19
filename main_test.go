@@ -3697,3 +3697,195 @@ func TestExifRowsToleratesGarbage(t *testing.T) {
 		_ = rows
 	}
 }
+
+func TestGoModRendered(t *testing.T) {
+	root := t.TempDir()
+	src := `module example.com/app
+
+go 1.27.1
+
+toolchain go1.27.1
+
+require (
+	github.com/alecthomas/chroma/v2 v2.27.0
+	golang.org/x/text v0.42.0 // indirect
+)
+
+replace example.com/lib => ../lib
+
+replace example.com/abs => ` + filepath.Join(root, "other") + `
+
+replace example.com/outside => /nowhere/else
+
+replace golang.org/x/text => golang.org/x/text v0.41.0
+
+exclude github.com/bad/mod v1.0.0
+
+retract v0.1.0 // published by mistake
+
+tool golang.org/x/tools/cmd/stringer
+`
+	if err := os.MkdirAll(filepath.Join(root, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "app", "go.mod"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+
+	nav := httptest.NewRequest(http.MethodGet, "/app/go.mod", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html", got)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"<h1>example.com/app</h1>",
+		`<td class="k">go</td><td>1.27.1</td>`,
+		`<td class="k">toolchain</td><td>go1.27.1</td>`,
+		`Direct dependencies<span class="count">1</span>`,
+		`Indirect dependencies<span class="count">1</span>`,
+		`<a href="https://pkg.go.dev/github.com/alecthomas/chroma/v2@v2.27.0">github.com/alecthomas/chroma/v2</a>`,
+		`<a href="https://pkg.go.dev/golang.org/x/text@v0.42.0">golang.org/x/text</a>`,
+		`Replacements<span class="count">4</span>`,
+		`<a href="../lib/">../lib</a>`,             // relative directory: relative link
+		`<a href="/other/">` + root + `/other</a>`, // absolute, under the root: rooted link
+		`<td>/nowhere/else</td>`,                   // absolute, outside the root: no link
+		`<a href="https://pkg.go.dev/golang.org/x/text@v0.41.0">golang.org/x/text</a>`,
+		`Exclusions<span class="count">1</span>`,
+		`<a href="https://pkg.go.dev/github.com/bad/mod@v1.0.0">github.com/bad/mod</a>`,
+		`<td class="ver">v0.1.0</td><td class="dim">published by mistake</td>`,
+		`<a href="https://pkg.go.dev/golang.org/x/tools/cmd/stringer">golang.org/x/tools/cmd/stringer</a>`,
+		"<h2>Source</h2>",
+		`id="L1"`,
+		`href="go.mod?raw=1"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %q", want)
+		}
+	}
+	if strings.Index(body, "Direct dependencies") > strings.Index(body, "Indirect dependencies") {
+		t.Errorf("direct dependencies should precede indirect ones")
+	}
+	if t.Failed() {
+		t.Logf("body:\n%s", body)
+	}
+
+	raw := httptest.NewRequest(http.MethodGet, "/app/go.mod", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, raw)
+	if got := rec.Body.String(); got != src {
+		t.Fatalf("non-browser body = %q, want verbatim go.mod", got)
+	}
+}
+
+func TestGoWorkRendered(t *testing.T) {
+	root := t.TempDir()
+	src := "go 1.27\n\nuse (\n\t.\n\t./tools\n)\n"
+	if err := os.WriteFile(filepath.Join(root, "go.work"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+
+	nav := httptest.NewRequest(http.MethodGet, "/go.work", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"<h1>go.work</h1>",
+		`<td class="k">go</td><td>1.27</td>`,
+		`Modules<span class="count">2</span>`,
+		`<a href="./">.</a>`,
+		`<a href="tools/">./tools</a>`,
+		"<h2>Source</h2>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %q", want)
+		}
+	}
+	if t.Failed() {
+		t.Logf("body:\n%s", body)
+	}
+}
+
+func TestGoSumRendered(t *testing.T) {
+	root := t.TempDir()
+	src := "github.com/x/y v1.2.3 h1:abc=\ngithub.com/x/y v1.2.3/go.mod h1:def=\n"
+	if err := os.WriteFile(filepath.Join(root, "go.sum"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+
+	nav := httptest.NewRequest(http.MethodGet, "/go.sum", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"<h1>go.sum</h1>",
+		`Checksums<span class="count">2</span>`,
+		`<a href="https://pkg.go.dev/github.com/x/y@v1.2.3">github.com/x/y</a></td><td class="ver">v1.2.3</td><td class="hash">h1:abc=</td>`,
+		`<a href="https://pkg.go.dev/github.com/x/y@v1.2.3">github.com/x/y</a></td><td class="ver">v1.2.3/go.mod</td><td class="hash">h1:def=</td>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "<h2>Source</h2>") {
+		t.Errorf("go.sum should not repeat itself as source")
+	}
+	if t.Failed() {
+		t.Logf("body:\n%s", body)
+	}
+
+	raw := httptest.NewRequest(http.MethodGet, "/go.sum", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, raw)
+	if got := rec.Body.String(); got != src {
+		t.Fatalf("non-browser body = %q, want verbatim go.sum", got)
+	}
+}
+
+func TestMalformedGoModShownAsSource(t *testing.T) {
+	root := t.TempDir()
+	src := "module example.com/broken\n\nrequire github.com/x/y\n"
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+
+	nav := httptest.NewRequest(http.MethodGet, "/go.mod", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="L3"`) || !strings.Contains(body, "example.com/broken") {
+		t.Fatalf("body = %q, want the file as numbered source", body)
+	}
+	if strings.Contains(body, "<h1>") {
+		t.Fatalf("body = %q, want no structured heading for an unparseable file", body)
+	}
+}

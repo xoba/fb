@@ -217,8 +217,24 @@ the formatter's, not the file's.
 
 Deliberately *not* highlighted: `.html` and `.svg` (the browser renders
 those better — inline, but sandboxed, so any scripts they carry don't
-run), `.txt` (prose reads better plain), `.md` (pandoc's job), and
-`go.mod` (chroma mis-identifies it). Files over 2 MB are served plain.
+run), `.txt` (prose reads better plain), and `.md` (pandoc's job). Files
+over 2 MB are served plain.
+
+### Go module files
+
+`go.mod` and `go.work` render as structured pages, parsed by
+[golang.org/x/mod/modfile](https://pkg.go.dev/golang.org/x/mod/modfile)
+(the go command's own parser): the module path, go version and toolchain
+up top, then direct and indirect dependencies in separate tables with
+every module linked to its pkg.go.dev page at that exact version, then
+replacements, exclusions, retractions and tools. Directory replacements
+and `use` entries link into the browser itself. The canonically formatted
+source (the `go mod edit -fmt` layout, where the comments live) follows,
+with line numbers.
+
+`go.sum` and `go.work.sum` tabulate one checksum line per row, modules
+linked the same way. A module file that doesn't parse shows as plain
+numbered text.
 
 ### Tabular data
 
