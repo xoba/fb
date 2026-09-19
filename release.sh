@@ -16,8 +16,10 @@ cd "$(dirname "$0")"
 # tagged HEAD plus a request for a new version is refused — nothing new to
 # release.
 #
-# Gates before anything happens: clean tree on main, a clean tap checkout,
-# gofmt, go vet, go test, and scan.sh (secrets and personal-info hygiene).
+# Gates before anything happens: clean tree on main, a clean and current tap
+# checkout (fast-forwarded to its remote, since its push comes last, after
+# the tag is already public), gofmt, go vet, go test, and scan.sh (secrets
+# and personal-info hygiene).
 
 TAP="$HOME/homebrew-tap"
 FORMULA="$TAP/Formula/fb.rb"
@@ -38,6 +40,15 @@ run() {
 [[ -z "$(git status --porcelain)" ]] || { echo "working tree not clean" >&2; exit 1; }
 [[ -f "$FORMULA" ]] || { echo "tap formula not found at $FORMULA" >&2; exit 1; }
 [[ -z "$(git -C "$TAP" status --porcelain)" ]] || { echo "tap checkout not clean" >&2; exit 1; }
+
+# A stale tap checkout is rejected at the final push, after the tag is
+# public — a half-done release. Fast-forward it now, before anything happens.
+git -C "$TAP" fetch -q
+behind=$(git -C "$TAP" rev-list --count 'HEAD..@{u}')
+if (( behind > 0 )); then
+    echo "tap is $behind commit(s) behind its remote; fast-forwarding"
+    run git -C "$TAP" merge --ff-only '@{u}'
+fi
 
 echo "== gates: gofmt, vet, test, scan"
 unformatted=$(gofmt -l .)
