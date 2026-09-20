@@ -236,6 +236,29 @@ with line numbers.
 linked the same way. A module file that doesn't parse shows as plain
 numbered text.
 
+### Calendar files
+
+`.ics` files — meeting invitations, cancellations and replies, exported
+calendars, subscribed feeds — render as event cards rather than
+downloading (the browser otherwise hands `text/calendar` straight to
+Calendar). Each card shows when, in your local time with the event's own
+zone alongside when it differs (a Windows-style zone name the system
+doesn't know, like `Eastern Standard Time`, shows the time as written);
+the recurrence rule in words ("every 2 weeks on Tuesday and Thursday, 10
+times", exceptions listed); where, with URLs linked; the organizer and
+every attendee with their response; the description; links and
+reminders. Status shows as a badge (tentative, cancelled, private), as
+does what the file is (invitation, cancellation, reply). Every property
+of the component follows in a collapsed table, and the whole source
+after the cards, so nothing in the file is out of reach.
+
+Files with more than ten events start collapsed, in date order, as an
+agenda. To-dos, journal entries and free/busy blocks get cards of their
+own kind. The parser is a small tolerant reading of RFC 5545 written for
+this: folding, quoted and multi-valued parameters, escapes, `BEGIN`/`END`
+nesting — and whatever it can't read, it skips rather than fails on. A
+file with no calendar in it at all shows as plain numbered text.
+
 ### Tabular data
 
 All three viewers share one look: bordered cells, a frozen header, a frozen
@@ -349,6 +372,8 @@ extensionless files that sniff as markup display as plain text.
 | Syntax-highlighted source | `.ada` `.adb` `.ads` `.awk` `.bash` `.bat` `.c` `.cc` `.clj` `.coffee` `.cpp` `.cs` `.css` `.dart` `.diff` `.el` `.erb` `.erl` `.ex` `.exs` `.f` `.f90` `.feature` `.fish` `.go` `.gradle` `.graphql` `.groovy` `.h` `.hcl` `.hpp` `.hs` `.ini` `.java` `.jl` `.js` `.json` `.jsx` `.kt` `.lisp` `.lua` `.mf` `.mjs` `.nix` `.patch` `.php` `.pl` `.properties` `.proto` `.ps1` `.py` `.r` `.rb` `.rs` `.s` `.scala` `.scss` `.sh` `.sql` `.svelte` `.swift` `.tex` `.tf` `.toml` `.ts` `.tsx` `.typ` `.vue` `.xml` `.yaml` `.yml` `.zig` `.zsh` |
 | Syntax-highlighted by exact filename | `Makefile` `makefile` `GNUmakefile` `Dockerfile` `CMakeLists.txt` `.bashrc` `.zshrc` |
 | Highlighted as XML (binary converted via plutil) | `.plist` |
+| Structured module pages | `go.mod` `go.work` `go.sum` `go.work.sum` |
+| Calendar event cards | `.ics` |
 | Displayed as tables | `.csv` `.tsv` `.parquet` (and every sheet/table inside the containers below) |
 | Browsed like directories | `.zip` `.jar` `.tar` `.tar.gz` `.tgz` `.tar.bz2` `.xlsx` `.sqlite` `.sqlite3` `.db` |
 | Image pages with EXIF readout | `.jpg` `.jpeg` `.png` `.gif` `.webp` `.bmp` `.tif` `.tiff` `.heic` `.heif` |

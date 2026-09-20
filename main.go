@@ -39,6 +39,7 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -591,6 +592,9 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 			return
 		case isGoModFile(name):
 			s.serveGoMod(w, r, name, info)
+			return
+		case isICalendar(name):
+			s.serveICalendar(w, r, name, info)
 			return
 		case highlightable(name):
 			s.serveSource(w, r, name, info)
@@ -3684,6 +3688,1561 @@ var modTemplate = template.Must(template.New("mod").Parse(`<!DOCTYPE html>
 <div class="source">
 {{.Source}}
 </div>
+{{end}}` + pageFooter + `</body>
+</html>
+`))
+
+// iCalendar files (.ics) — invitations, cancellations, replies, exported
+// calendars and subscribed feeds — render as event cards: when, in the
+// reader's local time with the event's own zone alongside where it
+// differs; where; who, with each attendee's response; the description;
+// reminders; and the recurrence rule in words. The parser is a small
+// tolerant reading of RFC 5545: lines unfold, split into name, parameters
+// and value, and nest by BEGIN/END; anything else is skipped rather than
+// fatal, since files in the wild come from every calendar program ever
+// written. Nothing is hidden: each card ends with every property of its
+// component, and the whole source follows the cards.
+
+func isICalendar(name string) bool {
+	return strings.EqualFold(path.Ext(viewName(name)), ".ics")
+}
+
+type icalProp struct {
+	Name   string              // upper-cased
+	Params map[string][]string // upper-cased names; values in written order
+	Value  string              // as written, escapes intact
+}
+
+// param returns a parameter's first value, or "".
+func (p icalProp) param(name string) string {
+	if v := p.Params[name]; len(v) > 0 {
+		return v[0]
+	}
+	return ""
+}
+
+// text is the value with RFC 5545 TEXT escapes undone.
+func (p icalProp) text() string { return icalUnescape(p.Value) }
+
+func (p *icalProp) addParam(name, value string) {
+	if p.Params == nil {
+		p.Params = map[string][]string{}
+	}
+	p.Params[name] = append(p.Params[name], value)
+}
+
+type icalComponent struct {
+	Name     string
+	Props    []icalProp
+	Children []*icalComponent
+}
+
+func (c *icalComponent) prop(name string) *icalProp {
+	for i := range c.Props {
+		if c.Props[i].Name == name {
+			return &c.Props[i]
+		}
+	}
+	return nil
+}
+
+func (c *icalComponent) props(name string) []icalProp {
+	var out []icalProp
+	for _, p := range c.Props {
+		if p.Name == name {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// text is the unescaped, trimmed value of the first property of that
+// name, or "".
+func (c *icalComponent) text(name string) string {
+	if p := c.prop(name); p != nil {
+		return strings.TrimSpace(p.text())
+	}
+	return ""
+}
+
+// parseICalendar reads content lines into a component tree. The returned
+// root holds the top-level components (normally one VCALENDAR) plus any
+// stray properties outside them. An END that matches nothing is ignored;
+// a component left unclosed simply ends with the file.
+func parseICalendar(src string) *icalComponent {
+	root := &icalComponent{}
+	stack := []*icalComponent{root}
+	for _, line := range unfoldICalendar(src) {
+		p, ok := parseICalendarLine(line)
+		if !ok {
+			continue
+		}
+		cur := stack[len(stack)-1]
+		switch p.Name {
+		case "BEGIN":
+			child := &icalComponent{Name: strings.ToUpper(strings.TrimSpace(p.Value))}
+			cur.Children = append(cur.Children, child)
+			stack = append(stack, child)
+		case "END":
+			name := strings.ToUpper(strings.TrimSpace(p.Value))
+			for i := len(stack) - 1; i > 0; i-- {
+				if stack[i].Name == name {
+					stack = stack[:i]
+					break
+				}
+			}
+		default:
+			cur.Props = append(cur.Props, p)
+		}
+	}
+	return root
+}
+
+// unfoldICalendar splits src into logical lines: a physical line starting
+// with a space or tab continues the previous one. Line endings may be
+// CRLF (the standard) or bare LF; a leading BOM is dropped.
+func unfoldICalendar(src string) []string {
+	src = strings.TrimPrefix(src, "\uFEFF")
+	var lines []string
+	for line := range strings.Lines(src) {
+		line = strings.TrimRight(line, "\r\n")
+		if len(lines) > 0 && len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
+			lines[len(lines)-1] += line[1:]
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// parseICalendarLine splits a content line — NAME;PARAM=a,"b;c":value —
+// into its parts. Names are upper-cased and quoted parameter values lose
+// their quotes. A line with no colon (blank lines, junk) is not a content
+// line.
+func parseICalendarLine(line string) (icalProp, bool) {
+	i := strings.IndexAny(line, ";:")
+	if i <= 0 {
+		return icalProp{}, false
+	}
+	p := icalProp{Name: strings.ToUpper(strings.TrimSpace(line[:i]))}
+	for line[i] == ';' {
+		// A parameter runs to the next ; or :, its values separated by
+		// commas, each optionally double-quoted (quotes may enclose ; : ,).
+		i++
+		eq := strings.IndexAny(line[i:], "=;:")
+		if eq < 0 {
+			return icalProp{}, false
+		}
+		name := strings.ToUpper(strings.TrimSpace(line[i : i+eq]))
+		i += eq
+		if line[i] != '=' {
+			// A bare parameter (vCalendar 1.0 wrote ;QUOTED-PRINTABLE):
+			// keep it, valueless.
+			p.addParam(name, "")
+			continue
+		}
+		i++
+		for {
+			var val string
+			if i < len(line) && line[i] == '"' {
+				end := strings.IndexByte(line[i+1:], '"')
+				if end < 0 {
+					val, i = line[i+1:], len(line)
+				} else {
+					val, i = line[i+1:i+1+end], i+2+end
+				}
+			} else {
+				end := strings.IndexAny(line[i:], ",;:")
+				if end < 0 {
+					val, i = line[i:], len(line)
+				} else {
+					val, i = line[i:i+end], i+end
+				}
+			}
+			p.addParam(name, icalUnescapeParam(val))
+			if i < len(line) && line[i] == ',' {
+				i++
+				continue
+			}
+			break
+		}
+		if i >= len(line) {
+			return icalProp{}, false
+		}
+		if line[i] != ';' && line[i] != ':' {
+			// Stray characters after a closing quote: skip to the next
+			// delimiter rather than give up on the line.
+			k := strings.IndexAny(line[i:], ";:")
+			if k < 0 {
+				return icalProp{}, false
+			}
+			i += k
+		}
+	}
+	p.Value = line[i+1:]
+	return p, true
+}
+
+// icalUnescape undoes TEXT escaping: \n and \N are newlines; \\ \, and \;
+// are the literal characters. Other backslashes stay as written.
+func icalUnescape(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\\' && i+1 < len(s) {
+			i++
+			switch s[i] {
+			case 'n', 'N':
+				b.WriteByte('\n')
+			case '\\', ',', ';':
+				b.WriteByte(s[i])
+			default:
+				b.WriteByte('\\')
+				b.WriteByte(s[i])
+			}
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// icalTextList splits a comma-separated TEXT value (CATEGORIES, RESOURCES)
+// at its unescaped commas, unescaping each item.
+func icalTextList(s string) []string {
+	var out []string
+	var cur strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			cur.WriteByte(s[i])
+			if i+1 < len(s) {
+				i++
+				cur.WriteByte(s[i])
+			}
+		case ',':
+			out = append(out, strings.TrimSpace(icalUnescape(cur.String())))
+			cur.Reset()
+		default:
+			cur.WriteByte(s[i])
+		}
+	}
+	out = append(out, strings.TrimSpace(icalUnescape(cur.String())))
+	return slices.DeleteFunc(out, func(s string) bool { return s == "" })
+}
+
+var icalParamUnescaper = strings.NewReplacer("^^", "^", "^n", "\n", "^'", `"`)
+
+// icalUnescapeParam undoes the RFC 6868 caret escapes a parameter value
+// may carry.
+func icalUnescapeParam(s string) string {
+	if !strings.Contains(s, "^") {
+		return s
+	}
+	return icalParamUnescaper.Replace(s)
+}
+
+// icalTime is a DATE or DATE-TIME value together with what is known about
+// its zone.
+type icalTime struct {
+	Time     time.Time
+	DateOnly bool   // a DATE: Time holds its midnight, zone irrelevant
+	Exact    bool   // a known instant: UTC, a resolved TZID, or floating read as local
+	Floating bool   // written with no zone at all, so shown without one
+	Label    string // an unresolved TZID: Time holds the wall clock as written
+}
+
+// display is the moment to print and the zone label to print after it.
+func (t icalTime) display(local *time.Location) (time.Time, string) {
+	switch {
+	case t.DateOnly:
+		return t.Time, ""
+	case !t.Exact:
+		return t.Time, t.Label
+	case t.Floating:
+		return t.Time.In(local), ""
+	}
+	d := t.Time.In(local)
+	return d, d.Format("MST")
+}
+
+// sortKey orders times chronologically, reading wall-clock values as local.
+func (t icalTime) sortKey(local *time.Location) int64 {
+	if t.Exact {
+		return t.Time.Unix()
+	}
+	w := t.Time
+	return time.Date(w.Year(), w.Month(), w.Day(), w.Hour(), w.Minute(), w.Second(), 0, local).Unix()
+}
+
+// icalZones resolves TZID parameters, remembering each answer, and holds
+// the calendar-wide zone context: the reader's local zone, and the zone
+// floating times are read in when the calendar names one (X-WR-TIMEZONE).
+type icalZones struct {
+	local    *time.Location
+	floating *time.Location
+	byID     map[string]*time.Location
+	alias    map[string]string // TZID → IANA name, from VTIMEZONE X-LIC-LOCATION
+}
+
+func newICalZones(local *time.Location) *icalZones {
+	return &icalZones{local: local, byID: map[string]*time.Location{}, alias: map[string]string{}}
+}
+
+func (z *icalZones) lookup(tzid string) *time.Location {
+	if loc, ok := z.byID[tzid]; ok {
+		return loc
+	}
+	loc := loadICalZone(tzid)
+	if loc == nil {
+		if alias := z.alias[tzid]; alias != "" {
+			loc = loadICalZone(alias)
+		}
+	}
+	z.byID[tzid] = loc
+	return loc
+}
+
+// loadICalZone maps a TZID to a location: an IANA name directly, or the
+// Area/City tail of a prefixed one like /mozilla.org/20050126_1/America/New_York.
+// Names the zone database doesn't know (Windows names such as "Eastern
+// Standard Time") yield nil, and their times show as written.
+func loadICalZone(name string) *time.Location {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	if loc, err := time.LoadLocation(name); err == nil {
+		return loc
+	}
+	if i := strings.LastIndex(name, "/"); i > 0 {
+		if j := strings.LastIndex(name[:i], "/"); j >= 0 {
+			if loc, err := time.LoadLocation(name[j+1:]); err == nil {
+				return loc
+			}
+		}
+	}
+	return nil
+}
+
+func (z *icalZones) parseTime(p *icalProp) (icalTime, bool) {
+	if p == nil {
+		return icalTime{}, false
+	}
+	return z.parseTimeValue(strings.TrimSpace(p.Value), p.param("TZID"))
+}
+
+// parseTimeValue reads one DATE (20260922) or DATE-TIME (20260922T140000,
+// with Z for UTC) value. tzid is the property's TZID parameter, if any.
+func (z *icalZones) parseTimeValue(v, tzid string) (icalTime, bool) {
+	if len(v) == 8 {
+		t, err := time.ParseInLocation("20060102", v, time.UTC)
+		if err != nil {
+			return icalTime{}, false
+		}
+		return icalTime{Time: t, DateOnly: true}, true
+	}
+	if strings.HasSuffix(v, "Z") {
+		t, err := time.ParseInLocation("20060102T150405Z", v, time.UTC)
+		if err != nil {
+			return icalTime{}, false
+		}
+		return icalTime{Time: t, Exact: true}, true
+	}
+	t, err := time.ParseInLocation("20060102T150405", v, time.UTC)
+	if err != nil {
+		if t, err = time.ParseInLocation("20060102T1504", v, time.UTC); err != nil {
+			return icalTime{}, false
+		}
+	}
+	wall := func(loc *time.Location) time.Time {
+		return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), 0, loc)
+	}
+	if tzid != "" {
+		if loc := z.lookup(tzid); loc != nil {
+			return icalTime{Time: wall(loc), Exact: true}, true
+		}
+		return icalTime{Time: t, Label: tzid}, true
+	}
+	if z.floating != nil {
+		return icalTime{Time: wall(z.floating), Exact: true}, true
+	}
+	return icalTime{Time: wall(z.local), Exact: true, Floating: true}, true
+}
+
+// times reads a property whose value may list several dates (EXDATE,
+// RDATE), in order, skipping any that don't parse.
+func (z *icalZones) times(p icalProp) []icalTime {
+	var out []icalTime
+	for _, v := range strings.Split(p.Value, ",") {
+		if t, ok := z.parseTimeValue(strings.TrimSpace(v), p.param("TZID")); ok {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+const (
+	icalDateFmt  = "Mon, Jan 2, 2006"
+	icalClockFmt = "3:04 PM"
+)
+
+// icalStamp prints one moment in full: "Tue, Sep 22, 2026, 2:00 PM EDT".
+func icalStamp(t icalTime, local *time.Location) string {
+	d, zone := t.display(local)
+	if t.DateOnly {
+		return d.Format(icalDateFmt)
+	}
+	s := d.Format(icalDateFmt) + ", " + d.Format(icalClockFmt)
+	if zone != "" {
+		s += " " + zone
+	}
+	return s
+}
+
+// icalWhen prints an event's span, and separately the same span in the
+// event's own zone when that differs from the reader's.
+func icalWhen(start, end *icalTime, local *time.Location) (when, note string) {
+	switch {
+	case start == nil && end == nil:
+		return "", ""
+	case start == nil:
+		return "ends " + icalStamp(*end, local), ""
+	case start.DateOnly:
+		s := start.Time
+		if end != nil && end.DateOnly {
+			// DTEND on an all-day event is exclusive: the morning after.
+			if e := end.Time.AddDate(0, 0, -1); e.After(s) {
+				return icalDateRange(s, e) + " · all day", ""
+			}
+		}
+		return s.Format(icalDateFmt) + " · all day", ""
+	}
+
+	s, zone := start.display(local)
+	if zone != "" {
+		zone = " " + zone
+	}
+	switch {
+	case end == nil || end.DateOnly:
+		when = s.Format(icalDateFmt) + ", " + s.Format(icalClockFmt) + zone
+	default:
+		e, _ := end.display(local)
+		if s.Year() == e.Year() && s.YearDay() == e.YearDay() {
+			when = s.Format(icalDateFmt) + ", " + s.Format(icalClockFmt) + " – " + e.Format(icalClockFmt) + zone
+		} else {
+			when = s.Format(icalDateFmt) + ", " + s.Format(icalClockFmt) + " – " + e.Format(icalDateFmt) + ", " + e.Format(icalClockFmt) + zone
+		}
+	}
+
+	if loc := start.Time.Location(); start.Exact && !start.Floating && loc != time.UTC {
+		_, here := s.Zone()
+		_, there := start.Time.Zone()
+		if here != there {
+			note = "In " + loc.String() + ": " + start.Time.Format(icalClockFmt)
+			if end != nil && end.Exact && !end.DateOnly {
+				note += " – " + end.Time.In(loc).Format(icalClockFmt)
+			}
+			note += " " + start.Time.Format("MST")
+		}
+	}
+	return when, note
+}
+
+// icalDateRange prints an inclusive span of days, the year once when
+// both ends share it.
+func icalDateRange(s, e time.Time) string {
+	if s.Year() == e.Year() {
+		return s.Format("Mon, Jan 2") + " – " + e.Format(icalDateFmt)
+	}
+	return s.Format(icalDateFmt) + " – " + e.Format(icalDateFmt)
+}
+
+// parseICalDuration reads an RFC 5545 duration: [+-]P[nW][nD][T[nH][nM][nS]].
+func parseICalDuration(s string) (time.Duration, bool) {
+	s = strings.ToUpper(strings.TrimSpace(s))
+	neg := false
+	switch {
+	case strings.HasPrefix(s, "-"):
+		neg, s = true, s[1:]
+	case strings.HasPrefix(s, "+"):
+		s = s[1:]
+	}
+	if !strings.HasPrefix(s, "P") || len(s) == 1 {
+		return 0, false
+	}
+	var d time.Duration
+	var n int64
+	digits, inTime, seen := false, false, false
+	for _, c := range s[1:] {
+		switch {
+		case c >= '0' && c <= '9':
+			n = n*10 + int64(c-'0')
+			digits = true
+			if n > 1e9 {
+				return 0, false
+			}
+		case c == 'T':
+			if digits {
+				return 0, false
+			}
+			inTime = true
+		default:
+			if !digits {
+				return 0, false
+			}
+			var unit time.Duration
+			switch c {
+			case 'W':
+				unit = 7 * 24 * time.Hour
+			case 'D':
+				unit = 24 * time.Hour
+			case 'H':
+				unit = time.Hour
+			case 'M':
+				unit = time.Minute
+			case 'S':
+				unit = time.Second
+			default:
+				return 0, false
+			}
+			if (unit < 24*time.Hour) != inTime {
+				return 0, false
+			}
+			d += time.Duration(n) * unit
+			n, digits, seen = 0, false, true
+		}
+	}
+	if digits || !seen {
+		return 0, false
+	}
+	if neg {
+		d = -d
+	}
+	return d, true
+}
+
+// humanICalDuration writes a (non-negative) duration in words: "1 hour
+// 30 minutes", "2 weeks", "0 minutes".
+func humanICalDuration(d time.Duration) string {
+	if d < 0 {
+		d = -d
+	}
+	secs := int64(d / time.Second)
+	var parts []string
+	add := func(n int64, unit string) {
+		if n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s%s", n, unit, plural(int(n))))
+		}
+	}
+	days, rest := secs/86400, secs%86400
+	if days >= 7 && days%7 == 0 {
+		add(days/7, "week")
+	} else {
+		add(days, "day")
+	}
+	add(rest/3600, "hour")
+	add(rest%3600/60, "minute")
+	add(rest%60, "second")
+	if len(parts) == 0 {
+		return "0 minutes"
+	}
+	return strings.Join(parts, " ")
+}
+
+var icalWeekdays = map[string]string{
+	"SU": "Sunday", "MO": "Monday", "TU": "Tuesday", "WE": "Wednesday",
+	"TH": "Thursday", "FR": "Friday", "SA": "Saturday",
+}
+
+// describeRRule writes a recurrence rule in words — "every 2 weeks on
+// Tuesday and Thursday, 10 times" — given the event's start, which
+// supplies the day a monthly or yearly rule leaves implicit. Rules using
+// parts this doesn't cover (BYHOUR, BYWEEKNO, BYYEARDAY, …) report false,
+// and are shown as written instead.
+func describeRRule(rule string, start *icalTime, local *time.Location) (string, bool) {
+	parts := map[string]string{}
+	for _, kv := range strings.Split(rule, ";") {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			return "", false
+		}
+		parts[strings.ToUpper(strings.TrimSpace(k))] = strings.TrimSpace(v)
+	}
+	for k := range parts {
+		switch k {
+		case "FREQ", "INTERVAL", "COUNT", "UNTIL", "WKST", "BYDAY", "BYMONTHDAY", "BYMONTH", "BYSETPOS":
+		default:
+			return "", false
+		}
+	}
+
+	freq := strings.ToUpper(parts["FREQ"])
+	unit := map[string]string{
+		"SECONDLY": "second", "MINUTELY": "minute", "HOURLY": "hour",
+		"DAILY": "day", "WEEKLY": "week", "MONTHLY": "month", "YEARLY": "year",
+	}[freq]
+	if unit == "" {
+		return "", false
+	}
+	interval := 1
+	if s := parts["INTERVAL"]; s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 {
+			return "", false
+		}
+		interval = n
+	}
+
+	var b strings.Builder
+	if interval == 1 {
+		b.WriteString("every " + unit)
+	} else {
+		fmt.Fprintf(&b, "every %d %ss", interval, unit)
+	}
+
+	if byDay := parts["BYDAY"]; byDay != "" {
+		days, ok := describeICalByDay(byDay, parts["BYSETPOS"])
+		if !ok {
+			return "", false
+		}
+		switch {
+		case freq == "WEEKLY" && interval == 1 && days == "weekdays":
+			b.Reset()
+			b.WriteString("every weekday")
+		case freq == "WEEKLY" && interval == 1 && days == "every day":
+			b.Reset()
+			b.WriteString("every day")
+		default:
+			b.WriteString(" on " + days)
+		}
+	} else if parts["BYSETPOS"] != "" {
+		return "", false
+	}
+	if byMonthDay := parts["BYMONTHDAY"]; byMonthDay != "" {
+		var ords []string
+		for _, s := range strings.Split(byMonthDay, ",") {
+			n, err := strconv.Atoi(strings.TrimSpace(s))
+			if err != nil || n == 0 || n > 31 || n < -31 {
+				return "", false
+			}
+			ords = append(ords, icalOrdinalWord(n, "day"))
+		}
+		b.WriteString(" on the " + icalJoinAnd(ords))
+	}
+	if byMonth := parts["BYMONTH"]; byMonth != "" {
+		var months []string
+		for _, s := range strings.Split(byMonth, ",") {
+			n, err := strconv.Atoi(strings.TrimSpace(s))
+			if err != nil || n < 1 || n > 12 {
+				return "", false
+			}
+			months = append(months, time.Month(n).String())
+		}
+		b.WriteString(" in " + icalJoinAnd(months))
+	}
+	if start != nil && parts["BYDAY"] == "" && parts["BYMONTHDAY"] == "" {
+		// The start supplies what the rule leaves implicit.
+		switch freq {
+		case "WEEKLY":
+			b.WriteString(" on " + start.Time.Weekday().String())
+		case "MONTHLY":
+			b.WriteString(" on the " + icalOrdinal(start.Time.Day()))
+		case "YEARLY":
+			if parts["BYMONTH"] == "" {
+				b.WriteString(" on " + start.Time.Format("January 2"))
+			} else {
+				b.WriteString(" on the " + icalOrdinal(start.Time.Day()))
+			}
+		}
+	}
+
+	if s := parts["COUNT"]; s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 {
+			return "", false
+		}
+		if n == 1 {
+			b.WriteString(", once")
+		} else {
+			fmt.Fprintf(&b, ", %d times", n)
+		}
+	}
+	if s := parts["UNTIL"]; s != "" {
+		z := newICalZones(local)
+		t, ok := z.parseTimeValue(s, "")
+		if !ok {
+			return "", false
+		}
+		d, _ := t.display(local)
+		b.WriteString(", until " + d.Format("Jan 2, 2006"))
+	}
+	return b.String(), true
+}
+
+// describeICalByDay words a BYDAY list — "MO,WE,FR", "2TU", "-1FR" — with
+// an optional BYSETPOS that picks one of the listed days' occurrences.
+func describeICalByDay(list, setPos string) (string, bool) {
+	var days []string
+	ordinal := false
+	seen := map[string]bool{}
+	for _, item := range strings.Split(list, ",") {
+		item = strings.ToUpper(strings.TrimSpace(item))
+		if len(item) < 2 {
+			return "", false
+		}
+		code := item[len(item)-2:]
+		name, ok := icalWeekdays[code]
+		if !ok {
+			return "", false
+		}
+		seen[code] = true
+		if n := item[:len(item)-2]; n != "" {
+			k, err := strconv.Atoi(n)
+			if err != nil || k == 0 {
+				return "", false
+			}
+			name = icalOrdinalWord(k, name)
+			ordinal = true
+		}
+		days = append(days, name)
+	}
+	weekdays := len(seen) == 5 && !seen["SA"] && !seen["SU"]
+	if setPos != "" {
+		k, err := strconv.Atoi(setPos)
+		if err != nil || k == 0 || ordinal {
+			return "", false
+		}
+		switch {
+		case weekdays:
+			return "the " + icalOrdinalWord(k, "weekday"), true
+		case len(days) == 1:
+			return "the " + icalOrdinalWord(k, days[0]), true
+		}
+		return "", false
+	}
+	switch {
+	case ordinal:
+		return "the " + icalJoinAnd(days), true
+	case weekdays:
+		return "weekdays", true
+	case len(seen) == 7:
+		return "every day", true
+	}
+	return icalJoinAnd(days), true
+}
+
+// icalOrdinalWord names the nth thing: "second Tuesday", "last Friday",
+// "second-to-last day".
+func icalOrdinalWord(n int, thing string) string {
+	switch {
+	case n == -1:
+		return "last " + thing
+	case n < -1:
+		return icalOrdinal(-n) + "-to-last " + thing
+	}
+	if thing == "day" {
+		return icalOrdinal(n)
+	}
+	return icalOrdinal(n) + " " + thing
+}
+
+func icalOrdinal(n int) string {
+	switch n {
+	case 1:
+		return "first"
+	case 2:
+		return "second"
+	case 3:
+		return "third"
+	case 4:
+		return "fourth"
+	case 5:
+		return "fifth"
+	}
+	suffix := "th"
+	if n%100 < 11 || n%100 > 13 {
+		switch n % 10 {
+		case 1:
+			suffix = "st"
+		case 2:
+			suffix = "nd"
+		case 3:
+			suffix = "rd"
+		}
+	}
+	return strconv.Itoa(n) + suffix
+}
+
+// icalJoinAnd lists items as prose: "A", "A and B", "A, B and C".
+func icalJoinAnd(items []string) string {
+	switch len(items) {
+	case 0:
+		return ""
+	case 1:
+		return items[0]
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
+}
+
+var icalURLRE = regexp.MustCompile(`https?://[^\s<>"']+`)
+
+// linkifyICalText escapes text for HTML and turns its http(s) URLs into
+// links, leaving trailing punctuation outside the link.
+func linkifyICalText(s string) template.HTML {
+	var b strings.Builder
+	last := 0
+	for _, m := range icalURLRE.FindAllStringIndex(s, -1) {
+		b.WriteString(template.HTMLEscapeString(s[last:m[0]]))
+		u := s[m[0]:m[1]]
+		// Trailing punctuation belongs to the sentence, not the link —
+		// except a close paren that balances one inside the URL.
+		end := len(u)
+		for end > 0 {
+			c := u[end-1]
+			if c == ')' && strings.Count(u[:end], "(") >= strings.Count(u[:end], ")") {
+				break
+			}
+			if !strings.ContainsRune(".,;:!?)", rune(c)) {
+				break
+			}
+			end--
+		}
+		trimmed := u[:end]
+		esc := template.HTMLEscapeString(trimmed)
+		b.WriteString(`<a href="` + esc + `" target="_blank" rel="noopener">` + esc + `</a>`)
+		b.WriteString(template.HTMLEscapeString(u[len(trimmed):]))
+		last = m[1]
+	}
+	b.WriteString(template.HTMLEscapeString(s[last:]))
+	return template.HTML(b.String())
+}
+
+// safeICalHref admits only web and mail links from a calendar's URI
+// values, so a crafted file can't plant a javascript: link.
+func safeICalHref(v string) string {
+	u, err := url.Parse(v)
+	if err != nil {
+		return ""
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https", "mailto":
+		return v
+	}
+	return ""
+}
+
+type icalFact struct{ Key, Value string }
+
+type icalBadge struct{ Text, Class string }
+
+type icalLink struct{ Text, Href string }
+
+// icalPerson is an ORGANIZER or ATTENDEE, worded for display.
+type icalPerson struct {
+	Name   string
+	Email  string // shown after the name, unless it is the name
+	Href   string
+	Role   string // chair, optional, room, …; "" for an ordinary required attendee
+	Status string // their response, in words
+	Mark   string // a glyph for the response
+	Class  string // css class for the response
+}
+
+func icalPersonFrom(p icalProp) icalPerson {
+	v := strings.TrimSpace(p.Value)
+	person := icalPerson{Href: safeICalHref(v)}
+	if strings.HasPrefix(strings.ToLower(v), "mailto:") {
+		person.Email = v[len("mailto:"):]
+	}
+	person.Name = strings.TrimSpace(p.param("CN"))
+	if person.Name == "" {
+		person.Name = person.Email
+	}
+	if person.Name == "" {
+		person.Name = v
+	}
+	if strings.EqualFold(person.Name, person.Email) {
+		person.Email = ""
+	}
+	if n, _ := strconv.Atoi(p.param("X-NUM-GUESTS")); n > 0 {
+		person.Name += fmt.Sprintf(" (+%d guest%s)", n, plural(n))
+	}
+	switch strings.ToUpper(p.param("CUTYPE")) {
+	case "ROOM":
+		person.Role = "room"
+	case "RESOURCE":
+		person.Role = "resource"
+	case "GROUP":
+		person.Role = "group"
+	default:
+		switch strings.ToUpper(p.param("ROLE")) {
+		case "CHAIR":
+			person.Role = "chair"
+		case "OPT-PARTICIPANT":
+			person.Role = "optional"
+		case "NON-PARTICIPANT":
+			person.Role = "non-participant"
+		}
+	}
+	switch strings.ToUpper(p.param("PARTSTAT")) {
+	case "ACCEPTED":
+		person.Status, person.Mark, person.Class = "accepted", "✓", "accepted"
+	case "DECLINED":
+		person.Status, person.Mark, person.Class = "declined", "✗", "declined"
+	case "TENTATIVE":
+		person.Status, person.Mark, person.Class = "tentative", "?", "tentative"
+	case "DELEGATED":
+		person.Status, person.Mark, person.Class = "delegated", "→", "needs"
+	case "NEEDS-ACTION":
+		person.Status, person.Mark, person.Class = "awaiting reply", "·", "needs"
+	case "COMPLETED":
+		person.Status, person.Mark, person.Class = "completed", "✓", "accepted"
+	case "IN-PROCESS":
+		person.Status, person.Mark, person.Class = "in progress", "…", "tentative"
+	}
+	return person
+}
+
+type icalPropView struct{ Name, Params, Value string }
+
+type icalCard struct {
+	Title       string
+	Short       string // the start, for the collapsed summary line
+	Badges      []icalBadge
+	When        string
+	WhenNote    string
+	Repeats     string
+	Exceptions  string
+	Extra       string // RDATE additions
+	Location    template.HTML
+	Organizer   *icalPerson
+	Attendees   []icalPerson
+	Description template.HTML
+	Links       []icalLink
+	Alarms      []string
+	Facts       []icalFact
+	Props       []icalPropView
+	Open        bool
+
+	sortKey  int64
+	hasStart bool
+}
+
+// icalDateProps are the properties whose values are dates, shown formatted
+// in the property tables.
+var icalDateProps = map[string]bool{
+	"DTSTART": true, "DTEND": true, "DTSTAMP": true, "CREATED": true, "LAST-MODIFIED": true,
+	"RECURRENCE-ID": true, "DUE": true, "COMPLETED": true, "EXDATE": true, "RDATE": true,
+}
+
+// icalKinds names the component types that get cards, with their section
+// titles; anything else not structural is an "other component".
+var icalKinds = []struct{ name, title, untitled string }{
+	{"VEVENT", "Events", "Untitled event"},
+	{"VTODO", "To-dos", "Untitled to-do"},
+	{"VJOURNAL", "Journal entries", "Untitled entry"},
+	{"VFREEBUSY", "Free/busy", "Free/busy"},
+}
+
+func (z *icalZones) card(c *icalComponent) icalCard {
+	card := icalCard{Title: c.text("SUMMARY")}
+	if card.Title == "" {
+		card.Title = c.Name
+		for _, k := range icalKinds {
+			if k.name == c.Name {
+				card.Title = k.untitled
+			}
+		}
+	}
+
+	switch strings.ToUpper(c.text("STATUS")) {
+	case "CANCELLED":
+		card.Badges = append(card.Badges, icalBadge{"cancelled", "cancelled"})
+	case "TENTATIVE":
+		card.Badges = append(card.Badges, icalBadge{"tentative", "tentative"})
+	case "COMPLETED":
+		card.Badges = append(card.Badges, icalBadge{"completed", "done"})
+	case "IN-PROCESS":
+		card.Badges = append(card.Badges, icalBadge{"in progress", ""})
+	case "NEEDS-ACTION":
+		card.Badges = append(card.Badges, icalBadge{"needs action", "tentative"})
+	}
+	switch strings.ToUpper(c.text("CLASS")) {
+	case "PRIVATE":
+		card.Badges = append(card.Badges, icalBadge{"private", ""})
+	case "CONFIDENTIAL":
+		card.Badges = append(card.Badges, icalBadge{"confidential", ""})
+	}
+
+	var start, end *icalTime
+	if t, ok := z.parseTime(c.prop("DTSTART")); ok {
+		start = &t
+	}
+	endName := "DTEND"
+	if c.Name == "VTODO" {
+		endName = "DUE"
+	}
+	if t, ok := z.parseTime(c.prop(endName)); ok {
+		end = &t
+	} else if start != nil {
+		if d, ok := parseICalDuration(c.text("DURATION")); ok && d > 0 {
+			e := *start
+			e.Time = e.Time.Add(d)
+			end = &e
+		}
+	}
+	if c.Name == "VTODO" && start == nil && end != nil {
+		card.When = "due " + icalStamp(*end, z.local)
+	} else {
+		card.When, card.WhenNote = icalWhen(start, end, z.local)
+	}
+	first := start
+	if first == nil {
+		first = end
+	}
+	if first != nil {
+		card.hasStart = true
+		card.sortKey = first.sortKey(z.local)
+		d, _ := first.display(z.local)
+		card.Short = d.Format("Jan 2, 2006")
+		if !first.DateOnly {
+			card.Short += ", " + d.Format(icalClockFmt)
+		}
+	}
+
+	if p := c.prop("RRULE"); p != nil {
+		if desc, ok := describeRRule(p.Value, start, z.local); ok {
+			card.Repeats = desc
+		} else {
+			card.Repeats = p.Value
+		}
+	}
+	card.Exceptions = z.dateList(c.props("EXDATE"))
+	card.Extra = z.dateList(c.props("RDATE"))
+
+	if loc := c.text("LOCATION"); loc != "" {
+		card.Location = linkifyICalText(loc)
+	}
+	if p := c.prop("ORGANIZER"); p != nil {
+		o := icalPersonFrom(*p)
+		card.Organizer = &o
+	}
+	for _, p := range c.props("ATTENDEE") {
+		card.Attendees = append(card.Attendees, icalPersonFrom(p))
+	}
+	if d := c.text("DESCRIPTION"); d != "" {
+		card.Description = linkifyICalText(d)
+	}
+	for _, name := range []string{"URL", "CONFERENCE", "ATTACH"} {
+		for _, p := range c.props(name) {
+			href := safeICalHref(strings.TrimSpace(p.Value))
+			if href == "" {
+				continue
+			}
+			text := p.param("LABEL")
+			if text == "" {
+				text = p.param("FILENAME")
+			}
+			if text == "" {
+				text = href
+			}
+			card.Links = append(card.Links, icalLink{Text: text, Href: href})
+		}
+	}
+	for _, child := range c.Children {
+		if child.Name == "VALARM" {
+			if s := z.describeAlarm(child); s != "" {
+				card.Alarms = append(card.Alarms, s)
+			}
+		}
+	}
+
+	if p := c.prop("CATEGORIES"); p != nil {
+		if list := icalTextList(p.Value); len(list) > 0 {
+			card.Facts = append(card.Facts, icalFact{"Categories", strings.Join(list, ", ")})
+		}
+	}
+	if p := c.prop("RECURRENCE-ID"); p != nil {
+		if t, ok := z.parseTime(p); ok {
+			card.Facts = append(card.Facts, icalFact{"Occurrence of", icalStamp(t, z.local)})
+		}
+	}
+	if s := c.text("PERCENT-COMPLETE"); s != "" {
+		card.Facts = append(card.Facts, icalFact{"Complete", s + "%"})
+	}
+	if n, err := strconv.Atoi(c.text("PRIORITY")); err == nil && n > 0 {
+		level := "medium"
+		switch {
+		case n <= 4:
+			level = "high"
+		case n >= 6:
+			level = "low"
+		}
+		card.Facts = append(card.Facts, icalFact{"Priority", fmt.Sprintf("%s (%d)", level, n)})
+	}
+	if s := c.text("SEQUENCE"); s != "" && s != "0" {
+		card.Facts = append(card.Facts, icalFact{"Revision", s})
+	}
+	for _, name := range []string{"LAST-MODIFIED", "DTSTAMP"} {
+		if t, ok := z.parseTime(c.prop(name)); ok {
+			card.Facts = append(card.Facts, icalFact{"Updated", icalStamp(t, z.local)})
+			break
+		}
+	}
+
+	for _, p := range c.Props {
+		card.Props = append(card.Props, z.propView(p))
+	}
+	return card
+}
+
+// dateList words EXDATE/RDATE values: "Sep 29, 2026, Oct 6, 2026", with a
+// long list cut short.
+func (z *icalZones) dateList(props []icalProp) string {
+	var all []icalTime
+	for _, p := range props {
+		all = append(all, z.times(p)...)
+	}
+	const show = 8
+	var out []string
+	for i, t := range all {
+		if i == show {
+			out = append(out, fmt.Sprintf("and %d more", len(all)-show))
+			break
+		}
+		d, _ := t.display(z.local)
+		if t.DateOnly {
+			out = append(out, d.Format("Jan 2, 2006"))
+		} else {
+			out = append(out, d.Format("Jan 2, 2006")+", "+d.Format(icalClockFmt))
+		}
+	}
+	return strings.Join(out, "; ")
+}
+
+// describeAlarm words a VALARM: "15 minutes before start", "1 day before
+// start (email)", "at Tue, Sep 22, 2026, 1:45 PM EDT".
+func (z *icalZones) describeAlarm(a *icalComponent) string {
+	trigger := a.prop("TRIGGER")
+	if trigger == nil {
+		return ""
+	}
+	var when string
+	if d, ok := parseICalDuration(trigger.Value); ok {
+		rel := "start"
+		if strings.EqualFold(trigger.param("RELATED"), "END") {
+			rel = "end"
+		}
+		switch {
+		case d == 0:
+			when = "at " + rel
+		case d < 0:
+			when = humanICalDuration(-d) + " before " + rel
+		default:
+			when = humanICalDuration(d) + " after " + rel
+		}
+	} else if t, ok := z.parseTime(trigger); ok {
+		when = "at " + icalStamp(t, z.local)
+	} else {
+		when = strings.TrimSpace(trigger.Value)
+	}
+	switch strings.ToUpper(a.text("ACTION")) {
+	case "EMAIL":
+		when += " (email)"
+	case "AUDIO":
+		when += " (sound)"
+	case "NONE":
+		return ""
+	}
+	return when
+}
+
+// propView is a property as it appears in a card's table of everything:
+// dates formatted, text unescaped, long values cut short.
+func (z *icalZones) propView(p icalProp) icalPropView {
+	var params []string
+	for name, values := range p.Params {
+		params = append(params, name+"="+strings.Join(values, ","))
+	}
+	sort.Strings(params)
+
+	value := p.text()
+	switch {
+	case icalDateProps[p.Name]:
+		var stamps []string
+		for _, t := range z.times(p) {
+			stamps = append(stamps, icalStamp(t, z.local))
+		}
+		if len(stamps) > 0 {
+			value = strings.Join(stamps, "; ")
+		}
+	case p.Name == "DURATION":
+		if d, ok := parseICalDuration(p.Value); ok {
+			value = humanICalDuration(d)
+		}
+	}
+	const maxLen = 500
+	if len(value) > maxLen {
+		n := maxLen
+		for n > 0 && !utf8.RuneStart(value[n]) {
+			n--
+		}
+		value = value[:n] + "…"
+	}
+	return icalPropView{Name: p.Name, Params: strings.Join(params, "; "), Value: value}
+}
+
+type icalSection struct {
+	Title string
+	Count int
+	Cards []icalCard
+}
+
+type icalPage struct {
+	Title    string
+	Crumbs   []crumb
+	RawHref  string
+	Heading  string
+	Badges   []icalBadge
+	Facts    []icalFact
+	Empty    bool
+	Sections []icalSection
+	Source   template.HTML
+	Lines    int
+}
+
+// buildICalPage lays out a calendar: its own facts up top, then a section
+// of cards per component kind, events first, each section in date order.
+// It reports false when src holds no calendar at all.
+func buildICalPage(src string, local *time.Location) (icalPage, bool) {
+	root := parseICalendar(src)
+	z := newICalZones(local)
+	var page icalPage
+
+	// First pass: calendar-level properties and time zones, so every card
+	// can use them.
+	var calendars, zones []*icalComponent
+	var walk func(c *icalComponent)
+	walk = func(c *icalComponent) {
+		switch c.Name {
+		case "VCALENDAR":
+			calendars = append(calendars, c)
+		case "VTIMEZONE":
+			zones = append(zones, c)
+		}
+		for _, child := range c.Children {
+			walk(child)
+		}
+	}
+	walk(root)
+	if len(calendars) == 0 {
+		calendars = []*icalComponent{root}
+	}
+	cal := calendars[0]
+
+	page.Heading = cal.text("X-WR-CALNAME")
+	switch strings.ToUpper(cal.text("METHOD")) {
+	case "REQUEST":
+		page.Badges = append(page.Badges, icalBadge{"invitation", ""})
+	case "CANCEL":
+		page.Badges = append(page.Badges, icalBadge{"cancellation", "cancelled"})
+	case "REPLY":
+		page.Badges = append(page.Badges, icalBadge{"reply", ""})
+	case "COUNTER":
+		page.Badges = append(page.Badges, icalBadge{"counter-proposal", ""})
+	case "DECLINECOUNTER":
+		page.Badges = append(page.Badges, icalBadge{"counter-proposal declined", "cancelled"})
+	case "ADD":
+		page.Badges = append(page.Badges, icalBadge{"addition", ""})
+	case "REFRESH":
+		page.Badges = append(page.Badges, icalBadge{"refresh request", ""})
+	}
+	if d := cal.text("X-WR-CALDESC"); d != "" {
+		page.Facts = append(page.Facts, icalFact{"Description", d})
+	}
+	if id := icalProducer(cal.text("PRODID")); id != "" {
+		page.Facts = append(page.Facts, icalFact{"Produced by", id})
+	}
+
+	var tzids []string
+	if tz := cal.text("X-WR-TIMEZONE"); tz != "" {
+		z.floating = loadICalZone(tz)
+		tzids = append(tzids, tz)
+	}
+	for _, vt := range zones {
+		id := vt.text("TZID")
+		if id == "" {
+			continue
+		}
+		if !slices.Contains(tzids, id) {
+			tzids = append(tzids, id)
+		}
+		if loc := vt.text("X-LIC-LOCATION"); loc != "" {
+			z.alias[id] = loc
+		}
+	}
+	if len(tzids) > 0 {
+		page.Facts = append(page.Facts, icalFact{"Time zone" + plural(len(tzids)), strings.Join(tzids, ", ")})
+	}
+
+	// Second pass: a card per event-like component, wherever it sits.
+	byKind := map[string][]icalCard{}
+	var other []icalCard
+	total := 0
+	var collect func(c *icalComponent)
+	collect = func(c *icalComponent) {
+		for _, child := range c.Children {
+			switch child.Name {
+			case "VCALENDAR":
+				collect(child)
+				continue
+			case "VTIMEZONE", "VALARM", "STANDARD", "DAYLIGHT", "":
+				continue
+			}
+			card := z.card(child)
+			total++
+			known := false
+			for _, k := range icalKinds {
+				if k.name == child.Name {
+					byKind[k.name] = append(byKind[k.name], card)
+					known = true
+				}
+			}
+			if !known {
+				other = append(other, card)
+			}
+		}
+	}
+	collect(root)
+	if total == 0 && len(calendars) == 1 && calendars[0] == root {
+		return icalPage{}, false
+	}
+
+	addSection := func(title string, cards []icalCard) {
+		if len(cards) == 0 {
+			return
+		}
+		sort.SliceStable(cards, func(i, j int) bool {
+			if cards[i].hasStart != cards[j].hasStart {
+				return cards[i].hasStart
+			}
+			return cards[i].sortKey < cards[j].sortKey
+		})
+		for i := range cards {
+			cards[i].Open = total <= 10
+		}
+		page.Sections = append(page.Sections, icalSection{Title: title, Count: len(cards), Cards: cards})
+	}
+	for _, k := range icalKinds {
+		addSection(k.title, byKind[k.name])
+	}
+	addSection("Other components", other)
+	page.Empty = total == 0
+	return page, true
+}
+
+// icalProducer tidies a PRODID — "-//Google Inc//Google Calendar 70.9054//EN"
+// — into "Google Inc · Google Calendar 70.9054".
+func icalProducer(id string) string {
+	var parts []string
+	for _, part := range strings.Split(id, "//") {
+		part = strings.TrimSpace(part)
+		if part == "" || part == "-" {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	if n := len(parts); n > 1 && len(parts[n-1]) == 2 && strings.ToUpper(parts[n-1]) == parts[n-1] {
+		parts = parts[:n-1] // a trailing language tag
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (s fileServer) serveICalendar(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
+	if info.Size() > maxHighlightBytes {
+		// text/calendar would download; too big to lay out, it at least
+		// displays as text.
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		s.serveRaw(w, r, name, info)
+		return
+	}
+
+	data, err := fs.ReadFile(s.fsys, name)
+	if err != nil {
+		http.Error(w, "cannot read file", http.StatusInternalServerError)
+		return
+	}
+	src := string(data)
+
+	base := path.Base(name)
+	page, ok := buildICalPage(src, time.Local)
+	if !ok {
+		// Not a calendar at all: show it as written, with line numbers.
+		s.renderSourcePage(w, r, name, info, path.Base(viewName(name))+".txt", src)
+		return
+	}
+	page.Title = base
+	page.Crumbs = s.breadcrumbs(path.Dir(name))
+	page.RawHref = (&url.URL{Path: base, RawQuery: "raw=1"}).String()
+	if page.Heading == "" {
+		page.Heading = base
+	}
+	if code, err := highlightSource(base+".txt", src); err == nil {
+		page.Source = code
+		page.Lines = len(strings.Split(strings.TrimRight(src, "\r\n"), "\n"))
+	}
+
+	var buf bytes.Buffer
+	if err := icalTemplate.Execute(&buf, page); err != nil {
+		log.Printf("render %s: %v", name, err)
+		http.Error(w, "cannot render calendar", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.ServeContent(w, r, strings.TrimSuffix(base, path.Ext(base))+".html", info.ModTime(), bytes.NewReader(buf.Bytes()))
+}
+
+var icalTemplate = template.Must(template.New("ical").Parse(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="/` + assetPrefix + `/favicon.png">
+<title>{{.Title}}</title>
+<style>
+  :root { color-scheme: light; }
+  html { color: #1a1a1a; background-color: #fdfdfd; }
+  body {
+    margin: 0 auto;
+    max-width: 70em;
+    padding: 50px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  @media (max-width: 600px) { body { padding: 12px; } }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  nav { margin-bottom: 1rem; font-size: 1.1rem; }
+  nav a { font-weight: 600; }
+  nav span.sep { color: #57606a; }
+  nav span.file { font-weight: 600; }
+  nav a.raw { float: right; font-weight: 400; font-size: 0.85rem; }
+  h1 { margin: 0 0 0.5rem; font-size: 1.4rem; font-weight: 600; overflow-wrap: anywhere; }
+  h2 { margin: 1.75rem 0 0.5rem; font-size: 1rem; font-weight: 600; }
+  span.count { margin-left: 0.4rem; color: #57606a; font-weight: 400; }
+  .badge {
+    display: inline-block;
+    margin-left: 0.5rem;
+    padding: 0.1rem 0.55rem;
+    border-radius: 1em;
+    font-size: 0.72rem;
+    font-weight: 600;
+    vertical-align: middle;
+    white-space: nowrap;
+    background: #ddf4ff;
+    color: #0550ae;
+  }
+  .badge.cancelled { background: #ffebe9; color: #a40e26; }
+  .badge.tentative { background: #fff8c5; color: #7d4e00; }
+  .badge.done { background: #dafbe1; color: #116329; }
+  table.kv { border-collapse: collapse; font-size: 0.9rem; }
+  table.kv td { padding: 0.3rem 1.25rem 0.3rem 0; vertical-align: top; }
+  table.kv td.k { color: #57606a; white-space: nowrap; }
+  .dim { color: #57606a; }
+  p.dim { font-size: 0.9rem; }
+  details.card { border: 1px solid #d0d7de; border-radius: 6px; margin: 0.6rem 0; background: #fff; }
+  details.card > summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.6rem 1rem;
+    cursor: pointer;
+    font-weight: 600;
+    list-style: none;
+  }
+  details.card > summary::-webkit-details-marker { display: none; }
+  details.card > summary .badge { margin-left: 0; }
+  details.card > summary .short { margin-left: auto; color: #57606a; font-weight: 400; font-size: 0.85rem; white-space: nowrap; }
+  details.card > div { padding: 0.25rem 1rem 0.9rem; }
+  .desc { white-space: pre-wrap; overflow-wrap: anywhere; }
+  table.people { border-collapse: collapse; font-size: 0.9rem; }
+  table.people td { padding: 0.1rem 0.9rem 0.1rem 0; vertical-align: baseline; }
+  table.people td.mark { width: 1em; padding-right: 0.5rem; text-align: center; }
+  .accepted { color: #1a7f37; }
+  .declined { color: #cf222e; }
+  .tentative { color: #9a6700; }
+  .needs { color: #8c959f; }
+  details.props { margin-top: 0.75rem; }
+  details.props > summary, details.src > summary { color: #57606a; font-size: 0.85rem; cursor: pointer; }
+  div.props { overflow-x: auto; }
+  table.props {
+    border-collapse: collapse;
+    margin-top: 0.4rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    line-height: 1.45;
+  }
+  table.props td { padding: 0.1rem 1rem 0.1rem 0; vertical-align: top; }
+  table.props td.n { color: #57606a; white-space: nowrap; }
+  table.props td.p { color: #8c959f; white-space: nowrap; }
+  table.props td.v { white-space: pre-wrap; overflow-wrap: anywhere; }
+  details.src { margin-top: 1.75rem; }
+  div.source {
+    margin-top: 0.5rem;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    overflow-x: auto;
+    background-color: #fff;
+  }
+  div.source pre {
+    margin: 0;
+    padding: 0.75rem 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    line-height: 1.45;
+  }
+</style>
+` + dropJS + freshBackJS + `</head>
+<body>
+<nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
+<h1>{{.Heading}}{{range .Badges}}<span class="badge{{with .Class}} {{.}}{{end}}">{{.Text}}</span>{{end}}</h1>
+{{if .Facts}}<table class="kv">
+{{range .Facts}}<tr><td class="k">{{.Key}}</td><td>{{.Value}}</td></tr>
+{{end}}</table>
+{{end}}{{if .Empty}}<p class="dim">No events.</p>
+{{end}}{{range .Sections}}<h2>{{.Title}}<span class="count">{{.Count}}</span></h2>
+{{range .Cards}}<details class="card"{{if .Open}} open{{end}}>
+<summary><span class="t">{{.Title}}</span>{{range .Badges}}<span class="badge{{with .Class}} {{.}}{{end}}">{{.Text}}</span>{{end}}{{if .Short}}<span class="short">{{.Short}}</span>{{end}}</summary>
+<div>
+<table class="kv">
+{{if .When}}<tr><td class="k">When</td><td>{{.When}}{{if .WhenNote}}<br><span class="dim">{{.WhenNote}}</span>{{end}}</td></tr>
+{{end}}{{if .Repeats}}<tr><td class="k">Repeats</td><td>{{.Repeats}}</td></tr>
+{{end}}{{if .Exceptions}}<tr><td class="k">Except</td><td>{{.Exceptions}}</td></tr>
+{{end}}{{if .Extra}}<tr><td class="k">Also on</td><td>{{.Extra}}</td></tr>
+{{end}}{{if .Location}}<tr><td class="k">Where</td><td>{{.Location}}</td></tr>
+{{end}}{{if .Organizer}}<tr><td class="k">Organizer</td><td>{{with .Organizer}}{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}{{if .Email}} <span class="dim">{{.Email}}</span>{{end}}{{end}}</td></tr>
+{{end}}{{if .Attendees}}<tr><td class="k">Attendees</td><td><table class="people">
+{{range .Attendees}}<tr><td class="mark{{with .Class}} {{.}}{{end}}">{{.Mark}}</td><td>{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</td><td class="dim">{{.Email}}</td><td class="dim">{{.Role}}</td><td{{with .Class}} class="{{.}}"{{end}}>{{.Status}}</td></tr>
+{{end}}</table></td></tr>
+{{end}}{{if .Description}}<tr><td class="k">Description</td><td><div class="desc">{{.Description}}</div></td></tr>
+{{end}}{{if .Links}}<tr><td class="k">Links</td><td>{{range .Links}}<div><a href="{{.Href}}" target="_blank" rel="noopener">{{.Text}}</a></div>{{end}}</td></tr>
+{{end}}{{if .Alarms}}<tr><td class="k">Reminders</td><td>{{range .Alarms}}<div>{{.}}</div>{{end}}</td></tr>
+{{end}}{{range .Facts}}<tr><td class="k">{{.Key}}</td><td>{{.Value}}</td></tr>
+{{end}}</table>
+<details class="props"><summary>All properties<span class="count">{{len .Props}}</span></summary>
+<div class="props"><table class="props">
+{{range .Props}}<tr><td class="n">{{.Name}}</td><td class="p">{{.Params}}</td><td class="v">{{.Value}}</td></tr>
+{{end}}</table></div></details>
+</div>
+</details>
+{{end}}{{end}}{{if .Source}}<details class="src"><summary>Source<span class="count">{{.Lines}} lines</span></summary>
+<div class="source">
+{{.Source}}
+</div></details>
 {{end}}` + pageFooter + `</body>
 </html>
 `))

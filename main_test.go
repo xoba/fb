@@ -3889,3 +3889,362 @@ func TestMalformedGoModShownAsSource(t *testing.T) {
 		t.Fatalf("body = %q, want no structured heading for an unparseable file", body)
 	}
 }
+
+// icalCRLF joins content lines with the CRLF line endings the format
+// prescribes.
+func icalCRLF(lines ...string) string {
+	return strings.Join(lines, "\r\n") + "\r\n"
+}
+
+func TestICalendarInviteRendered(t *testing.T) {
+	root := t.TempDir()
+	// A Google-style invitation, using an Outlook-style Windows TZID so the
+	// times show as written whatever zone the test machine is in.
+	src := icalCRLF(
+		"BEGIN:VCALENDAR",
+		"PRODID:-//Google Inc//Google Calendar 70.9054//EN",
+		"VERSION:2.0",
+		"METHOD:REQUEST",
+		"BEGIN:VTIMEZONE",
+		"TZID:Eastern Standard Time",
+		"BEGIN:STANDARD",
+		"DTSTART:16011104T020000",
+		"TZOFFSETFROM:-0400",
+		"TZOFFSETTO:-0500",
+		"END:STANDARD",
+		"END:VTIMEZONE",
+		"BEGIN:VEVENT",
+		"UID:abc123@example.com",
+		"DTSTAMP:20260919T213000Z",
+		"DTSTART;TZID=Eastern Standard Time:20260922T140000",
+		"DTEND;TZID=Eastern Standard Time:20260922T150000",
+		"RRULE:FREQ=WEEKLY;BYDAY=MO,WE;COUNT=10",
+		"EXDATE;TZID=Eastern Standard Time:20260930T140000",
+		"SUMMARY:Weekly sync\\, part 2",
+		"LOCATION:Room 4 · https://meet.example.com/abc-defg",
+		"DESCRIPTION:Agenda:\\n1. Review <plans>\\n2. Notes at https://docs.example.com",
+		" /notes.",
+		"ORGANIZER;CN=\"Alice Smith\":mailto:alice@example.com",
+		"ATTENDEE;CN=Bob Jones;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED:mailto:bob@example.com",
+		"ATTENDEE;CN=\"Carol; Chair\";ROLE=CHAIR;PARTSTAT=DECLINED:mailto:carol@example.com",
+		"ATTENDEE;ROLE=OPT-PARTICIPANT;PARTSTAT=NEEDS-ACTION;X-NUM-GUESTS=2:mailto:dave@example.com",
+		"ATTENDEE;CN=Big Room;CUTYPE=ROOM;PARTSTAT=TENTATIVE:mailto:room@example.com",
+		"CATEGORIES:Work,Meetings\\, weekly",
+		"URL:https://example.com/event",
+		"ATTACH:javascript:alert(1)",
+		"SEQUENCE:3",
+		"STATUS:TENTATIVE",
+		"BEGIN:VALARM",
+		"ACTION:DISPLAY",
+		"TRIGGER:-PT15M",
+		"END:VALARM",
+		"BEGIN:VALARM",
+		"ACTION:EMAIL",
+		"TRIGGER;RELATED=END:-P1DT2H",
+		"END:VALARM",
+		"END:VEVENT",
+		"END:VCALENDAR",
+	)
+	if err := os.WriteFile(filepath.Join(root, "invite.ics"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+
+	nav := httptest.NewRequest(http.MethodGet, "/invite.ics", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html", got)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`<h1>invite.ics<span class="badge">invitation</span></h1>`,
+		`<td class="k">Produced by</td><td>Google Inc · Google Calendar 70.9054</td>`,
+		`<td class="k">Time zone</td><td>Eastern Standard Time</td>`,
+		`Events<span class="count">1</span>`,
+		`<details class="card" open>`,
+		`<span class="t">Weekly sync, part 2</span><span class="badge tentative">tentative</span>`,
+		`<span class="short">Sep 22, 2026, 2:00 PM</span>`,
+		`<td class="k">When</td><td>Tue, Sep 22, 2026, 2:00 PM – 3:00 PM Eastern Standard Time</td>`,
+		`<td class="k">Repeats</td><td>every week on Monday and Wednesday, 10 times</td>`,
+		`<td class="k">Except</td><td>Sep 30, 2026, 2:00 PM</td>`,
+		`<td class="k">Where</td><td>Room 4 · <a href="https://meet.example.com/abc-defg" target="_blank" rel="noopener">https://meet.example.com/abc-defg</a></td>`,
+		`<td class="k">Organizer</td><td><a href="mailto:alice@example.com">Alice Smith</a> <span class="dim">alice@example.com</span></td>`,
+		`<td class="mark accepted">✓</td><td><a href="mailto:bob@example.com">Bob Jones</a></td><td class="dim">bob@example.com</td><td class="dim"></td><td class="accepted">accepted</td>`,
+		`<td class="mark declined">✗</td><td><a href="mailto:carol@example.com">Carol; Chair</a></td><td class="dim">carol@example.com</td><td class="dim">chair</td><td class="declined">declined</td>`,
+		`<td class="mark needs">·</td><td><a href="mailto:dave@example.com">dave@example.com (&#43;2 guests)</a></td><td class="dim"></td><td class="dim">optional</td><td class="needs">awaiting reply</td>`,
+		`<td class="dim">room</td><td class="tentative">tentative</td>`,
+		"<div class=\"desc\">Agenda:\n1. Review &lt;plans&gt;\n2. Notes at <a href=\"https://docs.example.com/notes\" target=\"_blank\" rel=\"noopener\">https://docs.example.com/notes</a>.</div>",
+		`<td class="k">Links</td><td><div><a href="https://example.com/event" target="_blank" rel="noopener">https://example.com/event</a></div></td>`,
+		`<td class="k">Reminders</td><td><div>15 minutes before start</div><div>1 day 2 hours before end (email)</div></td>`,
+		`<td class="k">Categories</td><td>Work, Meetings, weekly</td>`,
+		`<td class="k">Revision</td><td>3</td>`,
+		`<td class="k">Updated</td><td>`,
+		`All properties<span class="count">19</span>`,
+		`<td class="n">DTSTART</td><td class="p">TZID=Eastern Standard Time</td><td class="v">Tue, Sep 22, 2026, 2:00 PM Eastern Standard Time</td>`,
+		`<td class="n">SUMMARY</td><td class="p"></td><td class="v">Weekly sync, part 2</td>`,
+		fmt.Sprintf(`Source<span class="count">%d lines</span>`, strings.Count(src, "\r\n")),
+		`id="L1"`,
+		`href="invite.ics?raw=1"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %q", want)
+		}
+	}
+	if strings.Contains(body, `href="javascript:`) || strings.Contains(body, "ZgotmplZ") {
+		t.Errorf("javascript: URI became a link")
+	}
+	if !strings.Contains(body, `<td class="n">ATTACH</td><td class="p"></td><td class="v">javascript:alert(1)</td>`) {
+		t.Errorf("the rejected ATTACH should still show as text in the property table")
+	}
+	if t.Failed() {
+		t.Logf("body:\n%s", body)
+	}
+
+	raw := httptest.NewRequest(http.MethodGet, "/invite.ics", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, raw)
+	if got := rec.Body.String(); got != src {
+		t.Fatalf("non-browser body = %q, want verbatim .ics", got)
+	}
+	if got := rec.Header().Get("Content-Type"); strings.HasPrefix(got, "text/html") {
+		t.Fatalf("non-browser Content-Type = %q, want the file's own type", got)
+	}
+}
+
+func TestICalendarFeedCollapsedAndSorted(t *testing.T) {
+	root := t.TempDir()
+	lines := []string{"BEGIN:VCALENDAR", "X-WR-CALNAME:Team calendar", "X-WR-TIMEZONE:Pacific/Honolulu"}
+	for i := 12; i >= 1; i-- {
+		lines = append(lines,
+			"BEGIN:VEVENT",
+			fmt.Sprintf("SUMMARY:Event %d", i),
+			fmt.Sprintf("DTSTART;VALUE=DATE:202610%02d", i),
+			fmt.Sprintf("DTEND;VALUE=DATE:202610%02d", i+1),
+			"END:VEVENT")
+	}
+	lines = append(lines, "BEGIN:VTODO", "SUMMARY:Ship it", "DUE:20261101", "STATUS:COMPLETED", "END:VTODO", "END:VCALENDAR")
+	src := icalCRLF(lines...)
+	if err := os.WriteFile(filepath.Join(root, "feed.ics"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+	nav := httptest.NewRequest(http.MethodGet, "/feed.ics", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"<h1>Team calendar</h1>",
+		`<td class="k">Time zone</td><td>Pacific/Honolulu</td>`,
+		`Events<span class="count">12</span>`,
+		`To-dos<span class="count">1</span>`,
+		`<span class="t">Ship it</span><span class="badge done">completed</span>`,
+		`<td class="k">When</td><td>due Sun, Nov 1, 2026</td>`,
+		`<td class="k">When</td><td>Thu, Oct 1, 2026 · all day</td>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %q", want)
+		}
+	}
+	if strings.Contains(body, `<details class="card" open>`) {
+		t.Errorf("thirteen cards should start collapsed")
+	}
+	if strings.Index(body, "Event 1</span>") > strings.Index(body, "Event 12</span>") {
+		t.Errorf("events should be in date order, not file order")
+	}
+	if t.Failed() {
+		t.Logf("body:\n%s", body)
+	}
+}
+
+func TestICalendarNonCalendarShownAsSource(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "odd.ics"), []byte("just some text\nno calendar here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := fileServer{fsys: os.DirFS(root), pandoc: "unused", dir: root}
+	nav := httptest.NewRequest(http.MethodGet, "/odd.ics", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, nav)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="L2"`) || !strings.Contains(body, "no calendar here") {
+		t.Fatalf("body = %q, want the file as numbered source", body)
+	}
+	if strings.Contains(body, "<h1>") {
+		t.Fatalf("body = %q, want no calendar heading for a non-calendar", body)
+	}
+}
+
+func TestICalendarWhen(t *testing.T) {
+	local := time.FixedZone("XST", -5*3600)
+	z := newICalZones(local)
+	parse := func(name, value string) *icalTime {
+		t.Helper()
+		p, ok := parseICalendarLine(name + ":" + value)
+		if !ok {
+			t.Fatalf("bad line %q", name+":"+value)
+		}
+		it, ok := z.parseTime(&p)
+		if !ok {
+			t.Fatalf("cannot parse %q", value)
+		}
+		return &it
+	}
+	cases := []struct {
+		name       string
+		start, end *icalTime
+		when, note string
+	}{
+		{"utc to local", parse("DTSTART", "20260922T180000Z"), parse("DTEND", "20260922T190000Z"), "Tue, Sep 22, 2026, 1:00 PM – 2:00 PM XST", ""},
+		{"resolved zone differs", parse("DTSTART;TZID=Europe/London", "20260922T190000"), parse("DTEND;TZID=Europe/London", "20260922T200000"), "Tue, Sep 22, 2026, 1:00 PM – 2:00 PM XST", "In Europe/London: 7:00 PM – 8:00 PM BST"},
+		{"floating has no zone", parse("DTSTART", "20260922T090000"), nil, "Tue, Sep 22, 2026, 9:00 AM", ""},
+		{"unresolved zone shown as written", parse("DTSTART;TZID=Eastern Standard Time", "20260922T090000"), nil, "Tue, Sep 22, 2026, 9:00 AM Eastern Standard Time", ""},
+		{"all day", parse("DTSTART;VALUE=DATE", "20260922"), parse("DTEND;VALUE=DATE", "20260923"), "Tue, Sep 22, 2026 · all day", ""},
+		{"multi-day", parse("DTSTART;VALUE=DATE", "20260922"), parse("DTEND;VALUE=DATE", "20260925"), "Tue, Sep 22 – Thu, Sep 24, 2026 · all day", ""},
+		{"multi-day across years", parse("DTSTART;VALUE=DATE", "20261230"), parse("DTEND;VALUE=DATE", "20270102"), "Wed, Dec 30, 2026 – Fri, Jan 1, 2027 · all day", ""},
+		{"overnight", parse("DTSTART", "20260922T230000Z"), parse("DTEND", "20260923T060000Z"), "Tue, Sep 22, 2026, 6:00 PM – Wed, Sep 23, 2026, 1:00 AM XST", ""},
+		{"end only", nil, parse("DTEND", "20260922T180000Z"), "ends Tue, Sep 22, 2026, 1:00 PM XST", ""},
+	}
+	for _, c := range cases {
+		when, note := icalWhen(c.start, c.end, local)
+		if when != c.when || note != c.note {
+			t.Errorf("%s: got (%q, %q), want (%q, %q)", c.name, when, note, c.when, c.note)
+		}
+	}
+
+	// A calendar-wide zone hint pins floating times.
+	z.floating = time.FixedZone("HINT", 3*3600)
+	it := parse("DTSTART", "20260922T090000")
+	if when, _ := icalWhen(it, nil, local); when != "Tue, Sep 22, 2026, 1:00 AM XST" {
+		t.Errorf("floating with hint: got %q", when)
+	}
+
+	// DURATION stands in for a missing DTEND.
+	if d, ok := parseICalDuration("PT1H30M"); !ok || d != 90*time.Minute {
+		t.Errorf("PT1H30M = %v, %v", d, ok)
+	}
+	for _, bad := range []string{"", "P", "PT", "1H", "P1H", "PT1D", "P-1D", "PT1X"} {
+		if _, ok := parseICalDuration(bad); ok {
+			t.Errorf("%q parsed as a duration", bad)
+		}
+	}
+	for d, want := range map[string]string{"-PT15M": "15 minutes", "P1D": "1 day", "P2W": "2 weeks", "P10D": "10 days", "PT1H30M": "1 hour 30 minutes", "PT0S": "0 minutes"} {
+		dur, _ := parseICalDuration(d)
+		if got := humanICalDuration(dur); got != want {
+			t.Errorf("%s: got %q, want %q", d, got, want)
+		}
+	}
+}
+
+func TestDescribeRRule(t *testing.T) {
+	local := time.UTC
+	start := &icalTime{Time: time.Date(2026, 9, 22, 14, 0, 0, 0, time.UTC), Exact: true} // a Tuesday
+	cases := map[string]string{
+		"FREQ=DAILY":                       "every day",
+		"FREQ=DAILY;INTERVAL=3;COUNT=5":    "every 3 days, 5 times",
+		"FREQ=WEEKLY":                      "every week on Tuesday",
+		"FREQ=WEEKLY;BYDAY=MO,WE,FR":       "every week on Monday, Wednesday and Friday",
+		"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR": "every weekday",
+		"FREQ=WEEKLY;INTERVAL=2;BYDAY=TU,TH;UNTIL=20261231T045959Z": "every 2 weeks on Tuesday and Thursday, until Dec 31, 2026",
+		"FREQ=MONTHLY":                                  "every month on the 22nd",
+		"FREQ=MONTHLY;BYDAY=2TU":                        "every month on the second Tuesday",
+		"FREQ=MONTHLY;BYDAY=-1FR":                       "every month on the last Friday",
+		"FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1": "every month on the last weekday",
+		"FREQ=MONTHLY;BYMONTHDAY=1,15":                  "every month on the first and 15th",
+		"FREQ=MONTHLY;BYMONTHDAY=-1":                    "every month on the last day",
+		"FREQ=YEARLY":                                   "every year on September 22",
+		"FREQ=YEARLY;BYMONTH=3;BYMONTHDAY=15;COUNT=1":   "every year on the 15th in March, once",
+		"FREQ=HOURLY;INTERVAL=6;WKST=MO":                "every 6 hours",
+		"FREQ=WEEKLY;BYDAY=SU,MO,TU,WE,TH,FR,SA":        "every day",
+		"FREQ=WEEKLY;BYDAY=MO;COUNT=1":                  "every week on Monday, once",
+		"FREQ=DAILY;UNTIL=20261001":                     "every day, until Oct 1, 2026",
+	}
+	for rule, want := range cases {
+		got, ok := describeRRule(rule, start, local)
+		if !ok || got != want {
+			t.Errorf("%s: got (%q, %v), want %q", rule, got, ok, want)
+		}
+	}
+	for _, rule := range []string{"FREQ=WEEKLY;BYHOUR=9", "FREQ=FORTNIGHTLY", "FREQ=DAILY;INTERVAL=0", "FREQ=WEEKLY;BYDAY=XX", "nonsense", "FREQ=MONTHLY;BYDAY=MO,TU;BYSETPOS=2"} {
+		if got, ok := describeRRule(rule, start, local); ok {
+			t.Errorf("%s: described as %q, want verbatim fallback", rule, got)
+		}
+	}
+	if got, _ := describeRRule("FREQ=MONTHLY", nil, local); got != "every month" {
+		t.Errorf("no start: got %q", got)
+	}
+}
+
+func TestParseICalendarTolerance(t *testing.T) {
+	// Folding, quoted parameters, multi-valued parameters, caret escapes,
+	// bare LF endings, a BOM, junk lines, a mismatched END and a component
+	// never closed: all of it yields what structure there is.
+	src := "\uFEFFBEGIN:VCALENDAR\nBEGIN:VEVENT\nSUMMARY:A long\n  title\n\t continued\n" +
+		"ATTENDEE;CN=\"Doe, Jane\";MEMBER=\"mailto:a@example.com\",\"mailto:b@example.com\";X-NOTE=say ^'hi^':mailto:jane@example.com\n" +
+		"this line has no colon\n" +
+		";:\n" +
+		"BEGIN:VALARM\nTRIGGER:-PT5M\nEND:VEVENT\n"
+	root := parseICalendar(src)
+	if len(root.Children) != 1 || root.Children[0].Name != "VCALENDAR" {
+		t.Fatalf("root children = %+v", root.Children)
+	}
+	cal := root.Children[0]
+	if len(cal.Children) != 1 || cal.Children[0].Name != "VEVENT" {
+		t.Fatalf("calendar children = %+v", cal.Children)
+	}
+	ev := cal.Children[0]
+	if got := ev.text("SUMMARY"); got != "A long title continued" {
+		t.Errorf("SUMMARY = %q", got)
+	}
+	att := ev.prop("ATTENDEE")
+	if att == nil {
+		t.Fatal("no ATTENDEE")
+	}
+	if got := att.param("CN"); got != "Doe, Jane" {
+		t.Errorf("CN = %q", got)
+	}
+	if got := att.Params["MEMBER"]; len(got) != 2 || got[0] != "mailto:a@example.com" || got[1] != "mailto:b@example.com" {
+		t.Errorf("MEMBER = %q", got)
+	}
+	if got := att.param("X-NOTE"); got != `say "hi"` {
+		t.Errorf("X-NOTE = %q", got)
+	}
+	if got := att.Value; got != "mailto:jane@example.com" {
+		t.Errorf("ATTENDEE value = %q", got)
+	}
+	if len(ev.Props) != 2 {
+		t.Errorf("event props = %+v, want the two real ones", ev.Props)
+	}
+	if len(ev.Children) != 1 || ev.Children[0].Name != "VALARM" || ev.Children[0].text("TRIGGER") != "-PT5M" {
+		t.Errorf("alarm = %+v", ev.Children)
+	}
+
+	if got := icalUnescape(`a\,b\;c\\d\ne\Nf\x`); got != "a,b;c\\d\ne\nf\\x" {
+		t.Errorf("unescape = %q", got)
+	}
+	if got := icalTextList(`Work,Meetings\, weekly,,Home`); len(got) != 3 || got[1] != "Meetings, weekly" || got[2] != "Home" {
+		t.Errorf("text list = %q", got)
+	}
+	if got := icalProducer("-//Microsoft Corporation//Outlook 16.0 MIMEDIR//EN"); got != "Microsoft Corporation · Outlook 16.0 MIMEDIR" {
+		t.Errorf("producer = %q", got)
+	}
+	if got := string(linkifyICalText("see (https://example.com/a_(b)) & https://example.com/x, ok")); got !=
+		`see (<a href="https://example.com/a_(b)" target="_blank" rel="noopener">https://example.com/a_(b)</a>) &amp; <a href="https://example.com/x" target="_blank" rel="noopener">https://example.com/x</a>, ok` {
+		t.Errorf("linkify = %s", got)
+	}
+}
