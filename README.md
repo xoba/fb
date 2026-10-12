@@ -387,6 +387,12 @@ it, then use Back to return to the message. Headers and the original message
 source are available in disclosures; **Save original .eml** returns the
 complete original file.
 
+Attachments open with the same viewers as files elsewhere in fb: CSV files
+become queryable tables, PDFs display in the browser, images get the image
+viewer, documents render normally, and archives open as browsable folders.
+**Save this part** also lets you save the decoded attachment as a separate
+file. Plain-text and HTML message bodies retain their email previews.
+
 Folders containing `.eml` files also offer an **Inbox** view with sender,
 subject, and date columns and search. Each row opens the same MIME browser;
 the normal directory listing remains available. This browses local mail files
@@ -395,11 +401,10 @@ Navigating to another folder returns to the normal file browser; inbox mode
 applies only to the folder where you select it.
 
 The reader decodes MIME transfer encodings, encoded header values, and
-declared character sets. HTML is sanitized: scripts, forms, message styling,
-and remote images are removed. Embedded CID images can display without a
-network request. Attachments stay inside the message until you explicitly
-save a copy; browsing does not extract files onto disk. Messages inside
-ZIP/TAR archives work the same way.
+declared character sets. Message-body HTML is sanitized: scripts, forms,
+message styling, and remote images are removed. Embedded CID images can display without a
+network request. The message and its attachments remain unchanged; saving a
+copy is optional. Messages inside ZIP/TAR archives work the same way.
 
 Message parsing is limited to 32 MiB, 16 levels of MIME nesting, and 256 parts.
 Body and source previews are capped at 2 MiB. Inbox pages contain up to 500

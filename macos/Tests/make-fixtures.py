@@ -24,6 +24,33 @@ root.mkdir(parents=True, exist_ok=True)
 (root / "pixel.png").write_bytes(base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j53sAAAAASUVORK5CYII="
 ))
+# A minimal valid PDF, without depending on a PDF generator installation.
+objects = [
+    b"<< /Type /Catalog /Pages 2 0 R >>",
+    b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+]
+content = b"BT /F1 20 Tf 30 250 Td (Embedded PDF) Tj ET"
+objects.append(b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n" + content + b"\nendstream")
+pdf = bytearray(b"%PDF-1.4\n")
+offsets = [0]
+for i, obj in enumerate(objects, 1):
+    offsets.append(len(pdf))
+    pdf.extend(f"{i} 0 obj\n".encode() + obj + b"\nendobj\n")
+xref = len(pdf)
+pdf.extend(f"xref\n0 {len(offsets)}\n0000000000 65535 f \n".encode())
+for offset in offsets[1:]:
+    pdf.extend(f"{offset:010d} 00000 n \n".encode())
+pdf.extend(f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+(root / "sample.pdf").write_bytes(pdf)
+
+
+# Reuse the same document bytes inside the MIME message and on disk.
+(root / "note.md").write_text("# Attached document\n\nMarkdown inside an email.\n")
+with zipfile.ZipFile(root / "bundle.zip", "w") as archive:
+    archive.writestr("inside.md", "# Attached archive document\n")
+
 # Nested related/alternative parts make the structure meaningful to browse,
 # while the unsafe HTML verifies that previewing local mail stays inert.
 email = "\r\n".join([
@@ -66,6 +93,26 @@ email = "\r\n".join([
     "Content-Disposition: attachment; filename*=UTF-8''caf%C3%A9.bin",
     "Content-Transfer-Encoding: base64", "",
     base64.b64encode(bytes([0, 1, 2, 127, 128, 255])).decode("ascii"),
+    "--fb-mixed",
+    'Content-Type: text/csv; charset=UTF-8',
+    'Content-Disposition: attachment; filename="sample.csv"',
+    "Content-Transfer-Encoding: base64", "",
+    base64.b64encode((root / "sample.csv").read_bytes()).decode("ascii"),
+    "--fb-mixed",
+    "Content-Type: application/pdf",
+    'Content-Disposition: attachment; filename="sample.pdf"',
+    "Content-Transfer-Encoding: base64", "",
+    base64.b64encode((root / "sample.pdf").read_bytes()).decode("ascii"),
+    "--fb-mixed",
+    "Content-Type: text/markdown; charset=UTF-8",
+    'Content-Disposition: attachment; filename="note.md"',
+    "Content-Transfer-Encoding: base64", "",
+    base64.b64encode((root / "note.md").read_bytes()).decode("ascii"),
+    "--fb-mixed",
+    "Content-Type: application/zip",
+    'Content-Disposition: attachment; filename="bundle.zip"',
+    "Content-Transfer-Encoding: base64", "",
+    base64.b64encode((root / "bundle.zip").read_bytes()).decode("ascii"),
     "--fb-mixed--", "",
 ])
 (root / "message.eml").write_bytes(email.encode("ascii"))
@@ -92,26 +139,6 @@ with wave.open(str(root / "sample.wav"), "wb") as audio:
     audio.setframerate(8000)
     audio.writeframes(b"\0" * 16000)
 
-# A minimal valid PDF, without depending on a PDF generator installation.
-objects = [
-    b"<< /Type /Catalog /Pages 2 0 R >>",
-    b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-    b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-]
-content = b"BT /F1 20 Tf 30 250 Td (Embedded PDF) Tj ET"
-objects.append(b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n" + content + b"\nendstream")
-pdf = bytearray(b"%PDF-1.4\n")
-offsets = [0]
-for i, obj in enumerate(objects, 1):
-    offsets.append(len(pdf))
-    pdf.extend(f"{i} 0 obj\n".encode() + obj + b"\nendobj\n")
-xref = len(pdf)
-pdf.extend(f"xref\n0 {len(offsets)}\n0000000000 65535 f \n".encode())
-for offset in offsets[1:]:
-    pdf.extend(f"{offset:010d} 00000 n \n".encode())
-pdf.extend(f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
-(root / "sample.pdf").write_bytes(pdf)
 
 (root / "mailbox/emails").mkdir(parents=True, exist_ok=True)
 (root / "mailbox/emails/message.eml").write_bytes((root / "message.eml").read_bytes())

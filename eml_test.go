@@ -192,15 +192,13 @@ func TestEMLHTTPSelectedPartsAndEscapedSource(t *testing.T) {
 		}
 	})
 	w = emlHTTPRequest(t, s, "GET", "/message.eml?eml-view=1.5", true, nil)
-	doc = emlHTTPDocument(t, w.Body.String())
-	if !strings.Contains(emlHTTPText(emlHTTPElement(t, doc, "eml-body")), "Attachment preview") || !strings.Contains(emlHTTPText(doc), "<script>badAttachment()</script>") {
-		t.Fatal("HTML attachment lacks sanitized preview or escaped source")
+	if w.Code != http.StatusFound || w.Header().Get("Location") != "/message.eml/1.5/danger.html" {
+		t.Fatalf("HTML attachment should open its ordinary viewer: %d %v", w.Code, w.Header())
 	}
-	emlHTTPWalk(doc, func(node *nethtml.Node) {
-		if node.Data == "script" {
-			t.Error("source disclosure became executable HTML")
-		}
-	})
+	w = emlHTTPRequest(t, s, "GET", w.Header().Get("Location"), true, nil)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Attachment preview") || !strings.Contains(w.Header().Get("Content-Security-Policy"), "sandbox") {
+		t.Fatal("HTML attachment lacks the standard sandboxed inline view")
+	}
 }
 
 func TestEMLHTMLRemovesFetchesAndActiveContent(t *testing.T) {
@@ -355,6 +353,12 @@ func TestEMLHTTPSelectedMultipartAndAttachedEmail(t *testing.T) {
 		{"1.2", "HTML message"},
 	} {
 		w := emlHTTPRequest(t, s, "GET", "/message.eml?eml-view="+tc.part, true, nil)
+		if tc.part == "1.2" {
+			if w.Code != http.StatusFound || w.Header().Get("Location") != "/message.eml/1.2/nested.eml" {
+				t.Fatalf("forwarded message should open its ordinary viewer: %d %v", w.Code, w.Header())
+			}
+			w = emlHTTPRequest(t, s, "GET", w.Header().Get("Location"), true, nil)
+		}
 		if w.Code != http.StatusOK {
 			t.Fatalf("part %s response: %d %s", tc.part, w.Code, w.Body.String())
 		}

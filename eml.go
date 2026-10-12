@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"html/template"
 	"image"
-	"io"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -72,7 +71,7 @@ func emlFilename(node *emlNode) string {
 	if name != "" && name != "." && name != ".." && name != "/" {
 		return name
 	}
-	ext := map[string]string{"text/plain": ".txt", "text/html": ".html", "message/rfc822": ".eml", "image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}[node.MediaType]
+	ext := emlMediaExtensions[node.MediaType]
 	if ext == "" {
 		ext = ".bin"
 	}
@@ -205,9 +204,9 @@ func (s fileServer) emlHTML(source, name string, root *emlNode) template.HTML {
 }
 
 type emlTreeView struct {
-	ID, Href, Filename, MediaType, Size string
-	Selected                            bool
-	Children                            []*emlTreeView
+	ID, Href, Filename, MediaType, Size, Download string
+	Selected                                      bool
+	Children                                      []*emlTreeView
 }
 
 type emlPage struct {
@@ -229,6 +228,12 @@ func (s fileServer) emlTree(node *emlNode, name, selected string) *emlTreeView {
 		return nil
 	}
 	view := &emlTreeView{ID: node.ID, Href: s.emlURL(name, url.Values{"eml-view": {node.ID}}), Filename: node.Filename, MediaType: node.MediaType, Selected: node.ID == selected}
+	if emlHasFile(node) {
+		view.Download = s.emlFileURL(name, node) + "?raw=1"
+	}
+	if emlUsesFileViewer(node) {
+		view.Href = s.emlFileURL(name, node)
+	}
 	if len(node.Children) == 0 || len(node.Data) > 0 {
 		view.Size = humanSize(int64(len(node.Data)))
 	}
@@ -248,6 +253,7 @@ func emlPreview(text string) string {
 func (s fileServer) serveEML(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
 	release, ok := acquireHeavy(r.Context())
 	if !ok {
+		http.Error(w, "server busy", http.StatusServiceUnavailable)
 		return
 	}
 	defer release()
@@ -258,22 +264,7 @@ func (s fileServer) serveEML(w http.ResponseWriter, r *http.Request, name string
 	u, _ := url.Parse(page.InboxHref)
 	u.Path = strings.TrimSuffix(u.Path, "/") + "/"
 	page.InboxHref = u.String()
-	var data []byte
-	var err error
-	if info.Size() > maxEMLBytes {
-		err = fmt.Errorf("message exceeds the %d MiB browsing limit; open the original source to save a copy", maxEMLBytes>>20)
-	} else {
-		var file fs.File
-		file, err = s.fsys.Open(name)
-		if err == nil {
-			data, err = io.ReadAll(io.LimitReader(file, maxEMLBytes+1))
-			file.Close()
-		}
-	}
-	var message *emlMessage
-	if err == nil {
-		message, err = parseEML(data)
-	}
+	message, data, err := s.readEML(name, info)
 	if r.URL.Query().Has("eml-part") {
 		if err != nil {
 			http.Error(w, "cannot decode email: "+err.Error(), http.StatusUnprocessableEntity)
@@ -323,6 +314,12 @@ func (s fileServer) serveEML(w http.ResponseWriter, r *http.Request, name string
 			http.NotFound(w, r)
 			return
 		}
+		// Old selected-part links continue to work, but file attachments now
+		// open in the same viewer as their counterparts outside the message.
+		if r.URL.Query().Has("eml-view") && emlUsesFileViewer(part) {
+			http.Redirect(w, r, s.emlFileURL(name, part), http.StatusFound)
+			return
+		}
 		page.Tree = s.emlTree(message.Root, name, selected)
 		if selected == message.Root.ID {
 			page.HTML, page.Plain = s.emlHTML(message.HTML, name, message.Root), emlPreview(message.Plain)
@@ -336,7 +333,7 @@ func (s fileServer) serveEML(w http.ResponseWriter, r *http.Request, name string
 				page.PartTitle, page.PartSize = "Part "+part.ID, fmt.Sprintf("%d child parts", len(part.Children))
 			}
 			if len(part.Children) == 0 || emlAttachedMessage(part) {
-				page.PartDownload = s.emlURL(name, url.Values{"eml-part": {part.ID}})
+				page.PartDownload = s.emlFileURL(name, part) + "?raw=1"
 			}
 			scope := emlCIDScope(message.Root, selected)
 			switch {
@@ -359,11 +356,7 @@ func (s fileServer) serveEML(w http.ResponseWriter, r *http.Request, name string
 			case emlRasterType(part) != "":
 				page.ImageHref = s.emlURL(name, url.Values{"eml-part": {part.ID}, "inline": {"1"}})
 			default:
-				if len(part.Children) > 0 {
-					page.Plain = "Choose a child part from the MIME tree above."
-				} else {
-					page.Plain = "No inline preview for this part. Save a copy to open it in another viewer."
-				}
+				page.Plain = "Choose a child part from the MIME tree above."
 			}
 		}
 	}
@@ -385,7 +378,7 @@ var emlTemplate = template.Must(template.New("email").Parse(browserBreadcrumbsDe
 <nav class="breadcrumbs" aria-label="Path">{{template "breadcrumbs" .Crumbs}}</nav>
 <div class="tools"><a href="{{.InboxHref}}">Folder inbox</a><a href="{{.OverviewHref}}">Message overview</a><a href="{{.RawHref}}" download="{{.Title}}">Save original .eml</a></div>
 {{with .Tree}}<section class="eml-tree" aria-label="MIME parts"><strong>MIME parts</strong><ul>{{template "node" .}}</ul></section>{{end}}
-{{define "node"}}<li><a href="{{.Href}}"{{if .Selected}} class="selected" aria-current="page"{{end}}><code>{{.ID}}</code>{{if .Filename}}{{.Filename}} <span class="muted">{{.MediaType}}</span>{{else}}{{.MediaType}}{{if .Children}} /{{end}}{{end}}</a> <span class="muted">{{.Size}}</span>{{if .Children}}<ul>{{range .Children}}{{template "node" .}}{{end}}</ul>{{end}}</li>{{end}}
+{{define "node"}}<li><a href="{{.Href}}" data-eml-id="{{.ID}}"{{if .Selected}} class="selected" aria-current="page"{{end}}><code>{{.ID}}</code>{{if .Filename}}{{.Filename}} <span class="muted">{{.MediaType}}</span>{{else}}{{.MediaType}}{{if .Children}} /{{end}}{{end}}</a> <span class="muted">{{.Size}}{{if .Download}} · <a href="{{.Download}}" download>Save this part</a>{{end}}</span>{{if .Children}}<ul>{{range .Children}}{{template "node" .}}{{end}}</ul>{{end}}</li>{{end}}
 <h1>{{.Subject}}</h1><dl class="headers">{{range .SummaryHeaders}}<dt>{{.Name}}</dt><dd>{{.Value}}</dd>{{end}}</dl>
 {{if .Headers}}<details><summary>All message headers</summary><dl class="headers">{{range .Headers}}<dt>{{.Name}}</dt><dd>{{.Value}}</dd>{{end}}</dl></details>{{end}}
 {{with .Error}}<p class="warning">{{.}}</p>{{end}}{{range .Warnings}}<p class="warning">{{.}}</p>{{end}}

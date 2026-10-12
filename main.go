@@ -475,9 +475,13 @@ type fileServer struct {
 	pandoc string
 
 	// base is the URL path prefix at which fsys is mounted: "" for the serve
-	// root, or the archive's own URL path (e.g. "/notes/bundle.zip") when
-	// fsys is the contents of a zip file.
+	// root, or the container's URL path (e.g. "/notes/bundle.zip" or
+	// "/mail/message.eml") when fsys contains its virtual members.
 	base string
+
+	// Email mounts have their own nesting budget; opening an attachment must
+	// not consume one of the archive-within-archive levels.
+	emlDepth int
 
 	// dir is the OS path of fsys's root when it is a real directory, and ""
 	// when fsys is archive-backed. It lets sqlite databases be opened in
@@ -619,7 +623,7 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 }
 
 // routeIntoArchive handles paths that do not exist directly in s.fsys by
-// checking whether some prefix of them is an archive to descend into or a
+// checking whether some prefix is an archive or email to descend into, or a
 // tabular container (spreadsheet, database) whose sheet or table is named.
 func (s fileServer) routeIntoArchive(w http.ResponseWriter, r *http.Request, name string, depth int) {
 	elems := strings.Split(name, "/")
@@ -631,6 +635,10 @@ func (s fileServer) routeIntoArchive(w http.ResponseWriter, r *http.Request, nam
 		}
 		if info.IsDir() {
 			continue
+		}
+		if strings.EqualFold(path.Ext(viewName(prefix)), ".eml") {
+			s.descendEML(w, r, prefix, info, path.Join(elems[i+1:]...), depth)
+			return
 		}
 		if isArchiveName(prefix) {
 			s.descendArchive(w, r, prefix, info, path.Join(elems[i+1:]...), depth)
@@ -738,7 +746,7 @@ func (s fileServer) descendArchive(w http.ResponseWriter, r *http.Request, arcNa
 		return
 	}
 
-	sub := fileServer{fsys: arc, pandoc: s.pandoc, base: s.base + "/" + arcName}
+	sub := fileServer{fsys: arc, pandoc: s.pandoc, base: s.base + "/" + arcName, emlDepth: s.emlDepth}
 	sub.route(w, r, inner, depth+1)
 }
 

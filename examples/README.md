@@ -15,8 +15,10 @@ open -a fb examples
 
 - [mime-tour.eml](mime-tour.eml) is a fictional message with plain-text and
   HTML alternatives, an embedded CID image, a CSV attachment with a Unicode
-  filename, and a forwarded message with its own headers and body. Expand
-  the MIME tree and open individual parts to explore it.
+  filename, a PDF, a Markdown document, a ZIP archive, and a forwarded message
+  with its own headers and body. Open the CSV as a queryable table, view the
+  PDF and image, read the Markdown, or browse the ZIP's contents directly
+  from the MIME tree. Each part also has an option to save a separate copy.
 - [mime-tour-reply.eml](mime-tour-reply.eml) is a plain-text reply using
   ISO-8859-1 and quoted-printable encoding.
 - Select **Inbox** in this folder's listing to compare the two messages by

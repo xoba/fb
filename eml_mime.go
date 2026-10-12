@@ -316,8 +316,8 @@ func (p *emlParser) parsePart(header textproto.MIMEHeader, input io.Reader, id s
 	}
 	if filename == "" {
 		filename = "attachment-" + id
-		if mediaType == "message/rfc822" || mediaType == "message/global" {
-			filename += ".eml"
+		if extension := emlMediaExtensions[mediaType]; extension != "" {
+			filename += extension
 		} else if extensions, err := mime.ExtensionsByType(mediaType); err == nil && len(extensions) > 0 {
 			sort.Strings(extensions)
 			filename += extensions[0]

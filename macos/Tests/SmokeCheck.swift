@@ -12,6 +12,8 @@ final class SmokeCheck: NSObject, WKNavigationDelegate {
     private var navigation: CheckedContinuation<Void, any Error>?
     private var timeout: Task<Void, Never>?
     private var passed: [String] = []
+    private var responseMIMEType: String?
+    private var responseCanDisplay = false
 
     init(fixtures: URL, pandoc: String) throws {
         self.fixtures = fixtures
@@ -32,6 +34,15 @@ final class SmokeCheck: NSObject, WKNavigationDelegate {
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
         if action.targetFrame?.isMainFrame == true, let url = action.request.url {
             handler.prepareNavigation(to: url)
+        }
+        decisionHandler(.allow)
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
+                 decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
+        if response.isForMainFrame {
+            responseMIMEType = response.response.mimeType
+            responseCanDisplay = response.canShowMIMEType
         }
         decisionHandler(.allow)
     }
@@ -67,6 +78,8 @@ final class SmokeCheck: NSObject, WKNavigationDelegate {
     }
 
     private func navigate(_ label: String, action: () -> Void) async throws {
+        responseMIMEType = nil
+        responseCanDisplay = false
         try await withCheckedThrowingContinuation { continuation in
             navigation = continuation
             timeout = Task { [weak self] in
@@ -80,7 +93,7 @@ final class SmokeCheck: NSObject, WKNavigationDelegate {
 
     private func followEmailPart(_ id: String) async throws {
         let literal = String(decoding: try JSONEncoder().encode(id), as: UTF8.self)
-        let selector = "[...document.querySelectorAll('.eml-tree a')].find(a => new URL(a.href).searchParams.get('eml-view') === \(literal))"
+        let selector = "[...document.querySelectorAll('.eml-tree a')].find(a => a.dataset.emlId === \(literal))"
         guard try await webView.evaluateJavaScript("\(selector) !== undefined") as? Bool == true else {
             throw FBError.message("No MIME tree link for part \(id)")
         }
@@ -171,7 +184,7 @@ final class SmokeCheck: NSObject, WKNavigationDelegate {
         try await check("archive member rendering", "document.querySelector('h1')?.textContent === 'Archive rendering works'")
         try await load("message.eml")
         try await check("email body and decoded headers", "document.querySelector('h1')?.textContent === 'Café MIME browser' && document.body.innerText.includes('sender@example.com') && document.querySelector('#eml-body')?.textContent.includes('MIME email body')")
-        try await check("hierarchical MIME tree preserves alternatives and attachments", "['1.1', '1.1.1', '1.1.1.1', '1.1.1.2', '1.1.2', '1.2'].every(id => [...document.querySelectorAll('.eml-tree a')].some(a => new URL(a.href).searchParams.get('eml-view') === id)) && document.body.innerText.includes('café.bin')")
+        try await check("hierarchical MIME tree preserves alternatives and attachments", "['1.1', '1.1.1', '1.1.1.1', '1.1.1.2', '1.1.2', '1.2', '1.3', '1.4', '1.5', '1.6'].every(id => [...document.querySelectorAll('.eml-tree a')].some(a => a.dataset.emlId === id)) && document.body.innerText.includes('café.bin')")
         try await check("email HTML blocks active content and remote images", "window.fbUnsafeEmailExecuted === undefined && document.querySelector('#eml-body script, #eml-body style, #eml-body [onerror]') === null && [...document.querySelectorAll('#eml-body img')].every(i => i.src.startsWith('fb://local/') && new URL(i.src).searchParams.has('eml-part')) && document.querySelector('#eml-body a[href^=\"file:\"]') === null")
         try await waitFor("email embedded CID image", "[...document.querySelectorAll('#eml-body img')].some(i => i.naturalWidth === 1)")
         _ = try await webView.evaluateJavaScript("fetch(location.pathname + '?eml-part=1.2').then(r => r.arrayBuffer()).then(v => window.fbSmokeAttachment = [...new Uint8Array(v)].join(',')).catch(e => window.fbSmokeError = String(e)); void 0")
@@ -181,6 +194,31 @@ final class SmokeCheck: NSObject, WKNavigationDelegate {
         guard webView.canGoBack else { throw FBError.message("MIME part navigation did not enter browser history") }
         try await navigate("back to email") { webView.goBack() }
         try await check("email MIME navigation browser history", "!new URL(location.href).searchParams.has('eml-view') && document.querySelector('#eml-body')?.textContent.includes('MIME email body')")
+        try await followEmailPart("1.3")
+        try await check("email CSV attachment uses the table viewer", "location.pathname.endsWith('/message.eml/1.3/sample.csv') && document.querySelector('table') !== null && document.body.innerText.includes('alpha') && document.body.innerText.includes('20')")
+        try await submitQuery("select sum(amount) as total from t")
+        try await check("email CSV attachment supports SQL queries", "document.body.innerText.includes('total') && document.body.innerText.includes('30')")
+        try await load("message.eml")
+        try await followEmailPart("1.1.2")
+        try await waitFor("email image attachment uses the image viewer", "location.pathname.endsWith('/message.eml/1.1.2/pixel.png') && document.querySelector('img.subject')?.naturalWidth === 1")
+        try await navigate("back from attached image") { webView.goBack() }
+        try await check("back from attachment restores the email", "document.querySelector('#eml-body')?.textContent.includes('MIME email body')")
+        try await followEmailPart("1.4")
+        guard responseMIMEType == "application/pdf", responseCanDisplay,
+              webView.url?.path.hasSuffix("/message.eml/1.4/sample.pdf") == true else {
+            throw FBError.message("Attached PDF did not navigate to WebKit's PDF viewer")
+        }
+        passed.append("email PDF attachment displays in WebKit")
+        print("PASS email PDF attachment displays in WebKit")
+        try await navigate("back from attached PDF") { webView.goBack() }
+        try await check("back from attached PDF restores the email", "document.querySelector('#eml-body')?.textContent.includes('MIME email body')")
+        try await followEmailPart("1.5")
+        try await check("email Markdown attachment uses bundled Pandoc", "document.querySelector('h1')?.textContent === 'Attached document'")
+        try await load("message.eml")
+        try await followEmailPart("1.6")
+        try await check("email archive attachment uses directory browsing", "document.querySelector('table.listing') !== null && document.body.innerText.includes('inside.md')")
+        try await load("message.eml/1.6/bundle.zip/inside.md")
+        try await check("email archive attachment member uses bundled Pandoc", "document.querySelector('h1')?.textContent === 'Attached archive document'")
         try await load("sample.zip/message.eml")
         try await check("email inside archive", "document.querySelector('h1')?.textContent === 'Café MIME browser' && document.querySelector('.eml-tree') !== null")
         try await waitFor("email CID image inside archive", "[...document.querySelectorAll('#eml-body img')].some(i => i.naturalWidth === 1)")
