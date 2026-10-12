@@ -8411,7 +8411,7 @@ const dataTableCSS = `  p.summary { color: #57606a; font-size: 0.85rem; }
   }
 `
 
-var directoryTemplate = template.Must(template.New("directory").Parse(dataTableDefine + `<!DOCTYPE html>
+var directoryTemplate = template.Must(template.New("directory").Parse(browserBreadcrumbsDefine + dataTableDefine + `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -8430,9 +8430,6 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
   @media (max-width: 600px) { body { padding: 12px; } }
   a { color: #0969da; text-decoration: none; }
   a:hover { text-decoration: underline; }
-  nav { margin-bottom: 1rem; font-size: 1.1rem; }
-  nav a { font-weight: 600; }
-  nav span.sep { color: #57606a; }
   p.blurb { margin: -0.5rem 0 1rem; color: #57606a; }
   div.sort { margin-bottom: 0.5rem; font-size: 0.85rem; color: #57606a; }
   div.sort a.active { font-weight: 600; color: #1a1a1a; }
@@ -8529,10 +8526,10 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
-` + dataTableCSS + `</style>
+` + browserBreadcrumbsCSS + dataTableCSS + `</style>
 ` + dropJS + freshBackJS + `</head>
 <body>
-<nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if .RawHref}}<a class="raw" href="{{.RawHref}}">raw</a>{{end}}</nav>
+<nav class="breadcrumbs" aria-label="Path">{{template "breadcrumbs" .Crumbs}}{{if .RawHref}}<a class="raw" href="{{.RawHref}}">raw</a>{{end}}</nav>
 {{if .InboxHref}}<p><a href="{{.InboxHref}}">Email inbox view</a></p>{{end}}
 {{if .Blurb}}<p class="blurb">{{.Blurb}}</p>
 {{end}}{{if .Summary}}<p class="summary" id="listsum">{{.Summary}}</p>

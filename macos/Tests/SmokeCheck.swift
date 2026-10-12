@@ -186,6 +186,16 @@ final class SmokeCheck: NSObject, WKNavigationDelegate {
         try await waitFor("email CID image inside archive", "[...document.querySelectorAll('#eml-body img')].some(i => i.naturalWidth === 1)")
         try await load("", queryItems: [URLQueryItem(name: "view", value: "inbox")])
         try await check("directory email inbox", "document.body.innerText.includes('Café MIME browser') && document.body.innerText.includes('sender@example.com') && [...document.querySelectorAll('a')].some(a => a.href.includes('message.eml'))")
+        try await load("mailbox/emails/", queryItems: [URLQueryItem(name: "view", value: "inbox")])
+        try await navigate("leave inbox for parent folder") {
+            Task {
+                do { _ = try await webView.evaluateJavaScript("[...document.querySelectorAll('.folders a')].find(a => a.textContent === '../').click(); void 0") }
+                catch { complete(error) }
+            }
+        }
+        try await check("leaving inbox restores normal file browsing", "location.pathname.endsWith('/mailbox/') && !new URL(location.href).searchParams.has('view') && document.querySelector('table.listing') !== null && document.body.innerText.includes('notes.txt') && !document.body.innerText.includes('0 messages')")
+        try await load("mailbox/", queryItems: [URLQueryItem(name: "view", value: "inbox")])
+        try await check("stale inbox link to non-mail folder recovers", "!new URL(location.href).searchParams.has('view') && document.querySelector('table.listing') !== null && document.body.innerText.includes('notes.txt')")
         try await load("raw.html")
         do {
             _ = try await webView.evaluateJavaScript("window.fbUnsafeScriptExecuted")

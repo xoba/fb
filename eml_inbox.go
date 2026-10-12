@@ -89,16 +89,14 @@ func (s fileServer) serveEMLInbox(w http.ResponseWriter, r *http.Request, name s
 	if name == "." && s.base == "" {
 		page.Title = "/"
 	}
-	for i := range page.Crumbs {
-		page.Crumbs[i].Href += "?view=inbox"
-	}
+	// Inbox is a view of this directory, not a mode inherited by every folder
+	// we visit. Parent, breadcrumb, and child links use normal file browsing.
 	if name != "." || s.base != "" {
 		u, _ := url.Parse(page.FilesHref)
 		u.Path = path.Dir(strings.TrimSuffix(u.Path, "/"))
 		if !strings.HasSuffix(u.Path, "/") {
 			u.Path += "/"
 		}
-		u.RawQuery = "view=inbox"
 		page.Folders = append(page.Folders, crumb{Name: "../", Href: u.String()})
 	}
 	var messages []fs.DirEntry
@@ -106,21 +104,24 @@ func (s fileServer) serveEMLInbox(w http.ResponseWriter, r *http.Request, name s
 		if entry.IsDir() {
 			page.Folders = append(page.Folders, crumb{
 				Name: entry.Name() + "/",
-				Href: s.emlInboxHref(path.Join(name, entry.Name()), true, url.Values{"view": {"inbox"}}),
+				Href: s.emlInboxHref(path.Join(name, entry.Name()), true, nil),
 			})
 		} else if emlInboxFile(entry.Name()) {
 			messages = append(messages, entry)
 		}
 	}
 	page.Total = len(messages)
+	if page.Total == 0 {
+		// Recover old bookmarks and links that carried inbox mode into folders
+		// without mail. Keep the directory's regular listing and README visible.
+		http.Redirect(w, r, page.FilesHref, http.StatusFound)
+		return
+	}
 	page.Pages = max(1, (len(messages)+emlInboxPageSize-1)/emlInboxPageSize)
 	page.Page = min(pageNumber, page.Pages)
 	start := (page.Page - 1) * emlInboxPageSize
 	end := min(start+emlInboxPageSize, len(messages))
 	page.Start, page.End = start+1, end
-	if page.Total == 0 {
-		page.Start = 0
-	}
 	page.Scope = "Messages sorted by date."
 	if page.Pages > 1 {
 		page.Scope = "Files are grouped into pages by filename; dates and search apply to this page only."
@@ -231,21 +232,21 @@ func readEMLInboxHeaders(reader io.Reader) (mail.Header, error) {
 	return message.Header, nil
 }
 
-var emlInboxTemplate = template.Must(template.New("eml-inbox").Parse(`<!DOCTYPE html>
+var emlInboxTemplate = template.Must(template.New("eml-inbox").Parse(browserBreadcrumbsDefine + `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Inbox · {{.Title}}</title><style>
-:root { color-scheme: light dark; } * { box-sizing: border-box; }
-body { font: 16px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height: 1.5; max-width: 1200px; margin: 2rem auto; padding: 0 1.5rem; color: #24292f; background: #fff; }
+:root { color-scheme: light; } * { box-sizing: border-box; }
+body { font: 16px -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; line-height: 1.5; max-width: 56em; margin: 0 auto; padding: 50px; box-sizing: content-box; color: #1a1a1a; background: #fdfdfd; }
+@media(max-width: 600px) { body { padding: 12px; } }
 a { color: #0969da; text-decoration: none; } a:hover { text-decoration: underline; }
-nav { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; } .breadcrumbs { font-size: .9rem; } .breadcrumbs a + a:before { content: "/"; color: #8c959f; margin-right: .5rem; }
+.folders, .pagination { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
 header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; } h1 { font-size: 1.8rem; margin-bottom: .5rem; }
 .muted, small { color: #57606a; } .warning { display: block; color: #9a6700; }
 form { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1rem 0; } input, button { font: inherit; padding: .45rem .65rem; border: 1px solid #d0d7de; border-radius: 6px; color: inherit; background: inherit; } input[type=search] { flex: 1; min-width: 12rem; } button { cursor: pointer; }
 .folders { border-top: 1px solid #d0d7de; border-bottom: 1px solid #d0d7de; padding: .65rem 0; margin: 1rem 0; gap: 1rem; }
 .table-scroll { overflow-x: auto; } table { width: 100%; border-collapse: collapse; text-align: left; } th { color: #57606a; font-weight: 600; font-size: .85rem; } th,td { padding: .65rem .7rem; border-bottom: 1px solid #d8dee4; vertical-align: top; } th:first-child,td:first-child { padding-left: 0; } td { overflow-wrap: anywhere; } .sender { max-width: 18rem; width: 25%; } .subject { min-width: 14rem; } .date { white-space: nowrap; font-size: .9rem; } small { display: block; font-size: .8rem; } .pagination { justify-content: space-between; margin-top: 1.25rem; }
-@media(prefers-color-scheme: dark) { body { color: #e6edf3; background: #0d1117; } a { color: #58a6ff; } .muted,small,th { color: #8b949e; } input,button,.folders,th,td { border-color: #30363d; } .warning { color: #d29922; } }
-</style>` + dropJS + freshBackJS + `</head><body>
-<nav class="breadcrumbs" aria-label="Breadcrumb">{{range .Crumbs}}<a href="{{.Href}}">{{.Name}}</a>{{end}}</nav>
+` + browserBreadcrumbsCSS + `</style>` + dropJS + freshBackJS + `</head><body>
+<nav class="breadcrumbs" aria-label="Path">{{template "breadcrumbs" .Crumbs}}</nav>
 <header><h1>Inbox</h1><a href="{{.FilesHref}}">Files</a></header>
 <p class="muted">{{.Title}} · {{.Total}} message{{if ne .Total 1}}s{{end}}</p>
 {{if .Folders}}<nav class="folders" aria-label="Folders">{{range .Folders}}<a href="{{.Href}}">{{.Name}}</a>{{end}}</nav>{{end}}

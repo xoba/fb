@@ -391,6 +391,8 @@ Folders containing `.eml` files also offer an **Inbox** view with sender,
 subject, and date columns and search. Each row opens the same MIME browser;
 the normal directory listing remains available. This browses local mail files
 without connecting to an email account or changing message state.
+Navigating to another folder returns to the normal file browser; inbox mode
+applies only to the folder where you select it.
 
 The reader decodes MIME transfer encodings, encoded header values, and
 declared character sets. HTML is sanitized: scripts, forms, message styling,

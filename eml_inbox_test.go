@@ -32,7 +32,7 @@ func TestEMLInboxDecodedHeadersEscapingAndDateOrder(t *testing.T) {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
 	html := w.Body.String()
-	for _, want := range []string{"André &lt;new@example.com&gt;", "Résumé &lt;img src=x onerror=alert(1)&gt;", "2026-10-12 09:00", "Invalid message headers.", `href="/nested/?view=inbox"`, `href="/new.EML~"`, "3 messages"} {
+	for _, want := range []string{"André &lt;new@example.com&gt;", "Résumé &lt;img src=x onerror=alert(1)&gt;", "2026-10-12 09:00", "Invalid message headers.", `href="/nested/"`, `href="/new.EML~"`, "3 messages"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("missing %q", want)
 		}
@@ -78,14 +78,64 @@ func TestEMLInboxArchiveURLsAndFallbackDate(t *testing.T) {
 	html := w.Body.String()
 	for _, want := range []string{
 		`href="/archive%20%25.zip/mail%20100%25/r%C3%A9sum%C3%A9%20%25.eml"`,
-		`href="/archive%20%25.zip/mail%20100%25/%E5%AD%90/?view=inbox"`,
-		`href="/archive%20%25.zip/?view=inbox"`,
+		`href="/archive%20%25.zip/mail%20100%25/%E5%AD%90/"`,
+		`href="/archive%20%25.zip/"`,
 		`href="/archive%20%25.zip/mail%20100%25/">Files</a>`,
 		"2026-10-11 13:14 UTC",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("missing %q", want)
 		}
+	}
+}
+
+func TestEMLInboxFolderNavigationReturnsToFiles(t *testing.T) {
+	s := fileServer{fsys: fstest.MapFS{
+		"notes.txt":           {Data: []byte("ordinary file")},
+		"mail/message.eml":    {Data: []byte("Subject: A message\n\nbody")},
+		"mail/docs/guide.txt": {Data: []byte("ordinary child file")},
+	}}
+	w := emlHTTPRequest(t, s, http.MethodGet, "/mail/?view=inbox", true, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("inbox status %d", w.Code)
+	}
+	for _, want := range []string{`href="/">../</a>`, `href="/mail/docs/">docs/</a>`, `href="/mail/"`} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("missing normal folder link %q", want)
+		}
+	}
+	for _, unwanted := range []string{`href="/?view=inbox"`, `href="/mail/?view=inbox"`, `href="/mail/docs/?view=inbox"`} {
+		if strings.Contains(w.Body.String(), unwanted) {
+			t.Errorf("folder navigation retained inbox mode: %q", unwanted)
+		}
+	}
+	for _, tc := range []struct{ target, file string }{{"/", "notes.txt"}, {"/mail/docs/", "guide.txt"}} {
+		w := emlHTTPRequest(t, s, http.MethodGet, tc.target, true, nil)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), tc.file) || strings.Contains(w.Body.String(), "<h1>Inbox</h1>") {
+			t.Errorf("folder %q did not show its regular file listing: status %d", tc.target, w.Code)
+		}
+	}
+}
+
+func TestEMLInboxEmptyFoldersRedirectToFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name, base, target, location string
+	}{
+		{".", "", "/?view=inbox", "/"},
+		{"mail 100%", "", "/mail%20100%25/?view=inbox&q=missing&page=2", "/mail%20100%25/"},
+		{".", "/archive %.zip", "/archive%20%25.zip/?view=inbox", "/archive%20%25.zip/"},
+		{"mail 100%", "/archive %.zip", "/archive%20%25.zip/mail%20100%25/?view=inbox", "/archive%20%25.zip/mail%20100%25/"},
+	} {
+		t.Run(tc.target, func(t *testing.T) {
+			s := fileServer{base: tc.base, fsys: fstest.MapFS{
+				"notes.txt":            {Data: []byte("ordinary file")},
+				"mail 100%/résumé.txt": {Data: []byte("ordinary child file")},
+			}}
+			w := emlInboxTestResponse(s, tc.target, tc.name)
+			if w.Code != http.StatusFound || w.Header().Get("Location") != tc.location {
+				t.Fatalf("redirect = %d %q, want %d %q", w.Code, w.Header().Get("Location"), http.StatusFound, tc.location)
+			}
+		})
 	}
 }
 

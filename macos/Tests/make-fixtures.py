@@ -113,4 +113,8 @@ for offset in offsets[1:]:
 pdf.extend(f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
 (root / "sample.pdf").write_bytes(pdf)
 
+(root / "mailbox/emails").mkdir(parents=True, exist_ok=True)
+(root / "mailbox/emails/message.eml").write_bytes((root / "message.eml").read_bytes())
+(root / "mailbox/notes.txt").write_text("Normal folder contents remain visible.\n")
+
 print(json.dumps({"fixtures": str(root), "files": len(list(root.rglob("*")))}))
