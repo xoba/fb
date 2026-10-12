@@ -562,6 +562,10 @@ And filenames with special roles inside directory listings:
 | `.fb.css` | Linked as a stylesheet into markdown rendered at or below its directory |
 | `index.html` | Viewable in place rather than redirecting back to the directory |
 
+Try the [example gallery](examples/README.md) for sample files covering every
+listed extension and special filename, including a multipart email and a
+second message for exploring Inbox view.
+
 ## Drag and drop
 
 In the macOS app, dragging in a file or folder is a navigation action: it opens

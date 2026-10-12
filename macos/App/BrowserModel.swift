@@ -13,6 +13,7 @@ final class BrowserModel: NSObject, WKNavigationDelegate, WKUIDelegate {
     private(set) var canGoForward = false
     var errorMessage: String?
     var showingFind = false
+    private(set) var findFocusRequest = 0
     var findText = ""
     var findResult = ""
     var openAdditional: ((URL) -> Void)?
@@ -113,6 +114,11 @@ final class BrowserModel: NSObject, WKNavigationDelegate, WKUIDelegate {
         webView.pageZoom = zoom
         // Only explicit changes update the default; closing another window cannot overwrite it.
         preferences.set(zoom, forKey: Self.zoomPreferenceKey)
+    }
+
+    func showFind() {
+        showingFind = true
+        findFocusRequest += 1
     }
 
     func find(backwards: Bool = false) {

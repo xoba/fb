@@ -1,0 +1,1 @@
+Sample files for every documented type: documents, code, email, calendars, tables, databases, archives, images, audio, and video. See README.md for a tour.

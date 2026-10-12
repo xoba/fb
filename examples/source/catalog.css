@@ -1,0 +1,8 @@
+/* A compact, responsive list of sample files. */
+.catalog {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 1rem;
+  font-family: system-ui, sans-serif;
+}
+.catalog a { color: #1769aa; }

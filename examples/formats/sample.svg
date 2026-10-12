@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="220" viewBox="0 0 480 220" role="img" aria-labelledby="title description">
+  <title id="title">Local file viewing diagram</title>
+  <desc id="description">A local file points to a rendered view. The original file remains unchanged.</desc>
+  <rect width="480" height="220" fill="#ffffff"/>
+  <g font-family="sans-serif" fill="#182330">
+    <text x="24" y="36" font-size="20">Local file viewing</text>
+    <rect x="24" y="68" width="162" height="70" rx="8" fill="#edf4fc" stroke="#3683d6"/>
+    <text x="105" y="110" font-size="17" text-anchor="middle">Local file</text>
+    <path d="M198 103 H270 M260 95 L270 103 L260 111" fill="none" stroke="#3683d6" stroke-width="3"/>
+    <rect x="282" y="68" width="174" height="70" rx="8" fill="#edf4fc" stroke="#3683d6"/>
+    <text x="369" y="110" font-size="17" text-anchor="middle">Rendered view</text>
+    <text x="24" y="185" font-size="15">The original file remains unchanged.</text>
+  </g>
+</svg>

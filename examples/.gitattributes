@@ -1,0 +1,7 @@
+# Keep MIME and calendar wire-format CRLF bytes unchanged.
+*.eml -text whitespace=cr-at-eol
+*.ics -text whitespace=cr-at-eol
+# PDFs can look textual but contain byte offsets and fixed-width xref entries.
+*.pdf binary
+# A JAR manifest ends its main section with a blank line.
+source/MANIFEST.mf whitespace=-blank-at-eof

@@ -1,0 +1,23 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//fb//Original local calendar example//EN
+CALSCALE:GREGORIAN
+BEGIN:VEVENT
+UID:fb-example-reading-session
+DTSTAMP:20261012T120000Z
+DTSTART:20261013T140000Z
+DTEND:20261013T143000Z
+SUMMARY:Example reading session
+LOCATION:Local sample room
+DESCRIPTION:Fictional event for testing calendar cards. No invitation is se
+ nt.
+RRULE:FREQ=WEEKLY;COUNT=3
+TRANSP:TRANSPARENT
+END:VEVENT
+BEGIN:VTODO
+UID:fb-example-reading-task
+DTSTAMP:20261012T120000Z
+SUMMARY:Browse the sample documents
+STATUS:NEEDS-ACTION
+END:VTODO
+END:VCALENDAR

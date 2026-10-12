@@ -111,7 +111,9 @@ may create temporary files, and the app saves preferences such as zoom and the
 last opened location.
 
 The toolbar and menus provide Back/Forward, Reload, Reveal in Finder, Find
-(⌘F), zoom, and Save a Copy (⇧⌘S). External links open in the default browser.
+(⌘F), zoom, and Save a Copy (⇧⌘S). Find temporarily replaces the path in the
+same toolbar row; Escape or Done restores the path. External links open in
+the default browser.
 Save a Copy writes only to a destination explicitly selected in the save panel
 and can replace an existing file there.
 The most recent filesystem location is remembered across launches.

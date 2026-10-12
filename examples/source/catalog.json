@@ -1,0 +1,7 @@
+{
+  "title": "Example folder",
+  "files": [
+    {"name": "notes.md", "kind": "document", "bytes": 120},
+    {"name": "letter.eml", "kind": "message", "bytes": 240}
+  ]
+}

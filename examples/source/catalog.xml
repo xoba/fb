@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog title="Example folder">
+  <file name="notes.md" kind="document" bytes="120"/>
+  <file name="letter.eml" kind="message" bytes="240"/>
+</catalog>

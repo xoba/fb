@@ -1,0 +1,9 @@
+<% files = ["notes.md", "letter.eml"] %>
+<section aria-label="Example files">
+  <h1>Catalog</h1>
+  <ul>
+    <% files.each do |name| %>
+      <li><%= name %></li>
+    <% end %>
+  </ul>
+</section>

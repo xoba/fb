@@ -24,7 +24,7 @@ struct FBApp: App {
                     .keyboardShortcut("r", modifiers: [.command, .shift]).disabled(browser == nil)
             }
             CommandGroup(after: .textEditing) {
-                Button("Find…") { browser?.showingFind = true }
+                Button("Find…") { browser?.showFind() }
                     .keyboardShortcut("f").disabled(browser == nil)
                 Button("Find Next") { browser?.find() }.keyboardShortcut("g").disabled(browser == nil)
                 Button("Find Previous") { browser?.find(backwards: true) }

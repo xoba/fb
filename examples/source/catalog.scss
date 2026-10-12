@@ -1,0 +1,10 @@
+$link-color: #1769aa;
+$spacing: 1rem;
+
+.catalog {
+  padding: $spacing;
+  a {
+    color: $link-color;
+    &:hover { text-decoration-thickness: 2px; }
+  }
+}

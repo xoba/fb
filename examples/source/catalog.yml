@@ -1,0 +1,8 @@
+title: Example folder
+sort: name
+preview:
+  theme: system
+  font_size: 16
+files:
+  - notes.md
+  - letter.eml

@@ -18,7 +18,6 @@ extension FocusedValues {
 struct BrowserView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var model: BrowserModel
-    @FocusState private var findFocused: Bool
 
     init(location: BrowserWindowLocation?) {
         let path = location?.path ?? UserDefaults.standard.string(forKey: "lastOpenedPath") ?? NSHomeDirectory()
@@ -27,20 +26,6 @@ struct BrowserView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if model.showingFind {
-                HStack {
-                    TextField("Find in this page", text: $model.findText)
-                        .textFieldStyle(.roundedBorder).frame(maxWidth: 280)
-                        .focused($findFocused).onSubmit { model.find() }
-                    Text(model.findResult).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Previous", systemImage: "chevron.up") { model.find(backwards: true) }
-                    Button("Next", systemImage: "chevron.down") { model.find() }
-                    Button("Done") { model.showingFind = false }
-                }
-                .padding(10)
-                Divider()
-            }
             if let error = model.errorMessage {
                 HStack(alignment: .top) {
                     Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
@@ -70,11 +55,15 @@ struct BrowserView: View {
                 Button("Open", systemImage: "folder") { model.chooseFiles() }.help("Open files or folders")
             }
             ToolbarItem(placement: .principal) {
-                HStack(spacing: 8) {
-                    if model.isLoading { ProgressView().controlSize(.small) }
-                    Text(model.path).font(.callout).lineLimit(1).truncationMode(.middle)
-                        .help(model.path).textSelection(.enabled)
-                }.padding(.horizontal, 12).frame(maxWidth: 600)
+                if model.showingFind {
+                    findControls
+                } else {
+                    HStack(spacing: 8) {
+                        if model.isLoading { ProgressView().controlSize(.small) }
+                        Text(model.path).font(.callout).lineLimit(1).truncationMode(.middle)
+                            .help(model.path).textSelection(.enabled)
+                    }.padding(.horizontal, 12).frame(maxWidth: 600)
+                }
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 Button("Reload", systemImage: "arrow.clockwise") { model.reload() }
@@ -91,7 +80,145 @@ struct BrowserView: View {
             })
             model.start()
         }
-        .onChange(of: model.showingFind) { _, visible in findFocused = visible }
+        .onChange(of: model.findText) { model.findResult = "" }
+    }
+
+    private var findControls: some View {
+        HStack(spacing: 6) {
+            ToolbarFindField(text: $model.findText, focusRequest: model.findFocusRequest,
+                             find: { model.find() }, dismiss: dismissFind)
+                .frame(minWidth: 120, idealWidth: 200, maxWidth: 200)
+            Image(systemName: "exclamationmark.circle")
+                .foregroundStyle(.secondary)
+                .frame(width: 14)
+                .opacity(model.findResult.isEmpty ? 0 : 1)
+                .accessibilityHidden(model.findResult.isEmpty)
+                .accessibilityLabel("No matches")
+                .help("No matches")
+            Button { model.find(backwards: true) } label: {
+                Image(systemName: "chevron.up")
+            }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Previous match")
+                .accessibilityAddTraits(.isButton)
+                .help("Previous match (⇧⌘G)")
+                .disabled(model.findText.isEmpty)
+            Button { model.find() } label: {
+                Image(systemName: "chevron.down")
+            }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Next match")
+                .accessibilityAddTraits(.isButton)
+                .help("Next match (⌘G)")
+                .disabled(model.findText.isEmpty)
+            Button { dismissFind() } label: {
+                Image(systemName: "xmark")
+            }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Done")
+                .accessibilityAddTraits(.isButton)
+                .help("Close Find (Esc)")
+                .keyboardShortcut(.cancelAction)
+        }
+        .controlSize(.small)
+        .padding(.horizontal, 6)
+    }
+
+    private func dismissFind() {
+        model.showingFind = false
+        if let webView = model.webView {
+            webView.window?.makeFirstResponder(webView)
+        }
+    }
+}
+
+private struct ToolbarFindField: NSViewRepresentable {
+    @Binding var text: String
+    let focusRequest: Int
+    let find: () -> Void
+    let dismiss: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> FindSearchField {
+        let field = FindSearchField()
+        field.placeholderString = "Find in this page"
+        field.setAccessibilityLabel("Find in this page")
+        field.controlSize = .small
+        field.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        field.sendsWholeSearchString = true
+        field.delegate = context.coordinator
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.submit)
+        return field
+    }
+
+    func updateNSView(_ field: FindSearchField, context: Context) {
+        context.coordinator.parent = self
+        if field.stringValue != text { field.stringValue = text }
+        field.requestFocus(focusRequest)
+    }
+
+    static func dismantleNSView(_ field: FindSearchField, coordinator: Coordinator) {
+        field.cancelFocusRequest()
+        field.delegate = nil
+        field.target = nil
+    }
+
+    final class Coordinator: NSObject, NSSearchFieldDelegate {
+        var parent: ToolbarFindField
+        init(_ parent: ToolbarFindField) { self.parent = parent }
+
+        @objc func submit() { parent.find() }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSSearchField else { return }
+            parent.text = field.stringValue
+        }
+
+        func control(_ control: NSControl, textView: NSTextView,
+                     doCommandBy commandSelector: Selector) -> Bool {
+            switch commandSelector {
+            case #selector(NSResponder.insertNewline(_:)):
+                parent.find()
+                return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                parent.dismiss()
+                return true
+            default:
+                return false
+            }
+        }
+    }
+}
+
+private final class FindSearchField: NSSearchField {
+    private var requestedFocus: Int?
+    private var appliedFocus: Int?
+
+    func requestFocus(_ request: Int) {
+        requestedFocus = request
+        focusWhenAttached()
+    }
+
+    func cancelFocusRequest() { requestedFocus = nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        focusWhenAttached()
+    }
+
+    private func focusWhenAttached() {
+        guard let request = requestedFocus, request != appliedFocus, let window else { return }
+        // A toolbar view can acquire its window before its native controls are ready.
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window, self.window === window,
+                  self.requestedFocus == request, self.appliedFocus != request else { return }
+            if window.makeFirstResponder(self) {
+                self.selectText(nil)
+                self.appliedFocus = request
+            }
+        }
     }
 }
 

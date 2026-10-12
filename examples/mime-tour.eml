@@ -1,0 +1,99 @@
+From: Example Studio <studio@example.com>
+To: Example Reader <reader@example.com>
+Subject: =?utf-8?q?Caf=C3=A9_preview_=E2=80=94?= a MIME tour
+Date: Mon, 12 Oct 2026 09:00:00 +0000
+Message-ID: <mime-tour@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="fb-example-mime-tour-0"
+
+--fb-example-mime-tour-0
+Content-Type: multipart/alternative; boundary="fb-example-mime-tour-1"
+
+--fb-example-mime-tour-1
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+Hello, reader!
+
+This is a fictional message created for fb's examples. Nobody sent it.
+Open the MIME tree to compare this plain-text body with its HTML alternative.
+
+The HTML body includes a small embedded blue square. The message also carries
+an agenda CSV and a forwarded note, each available as its own MIME part.
+
+Caf=C3=A9 preview agenda:
+09:00  Welcome
+09:15  Browse the examples
+09:30  Questions
+
+Example Studio
+
+--fb-example-mime-tour-1
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="fb-example-mime-tour-3"
+
+--fb-example-mime-tour-3
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+<!doctype html>
+<html><body>
+<h1>Caf=C3=A9 preview</h1>
+<p>Hello, reader! This is a <strong>fictional message</strong> created for fb=
+'s examples. Nobody sent it.</p>
+<p>Compare this HTML body with the plain-text alternative in the MIME tree.</=
+p>
+<p><img src=3D"cid:blue-square@example.com" width=3D"48" height=3D"48" alt=3D=
+"An embedded blue square"> This image is embedded in the message.</p>
+<table><thead><tr><th>Time</th><th>Activity</th></tr></thead><tbody>
+<tr><td>09:00</td><td>Welcome</td></tr>
+<tr><td>09:15</td><td>Browse the examples</td></tr>
+<tr><td>09:30</td><td>Questions</td></tr>
+</tbody></table>
+<p>Open <strong>caf=C3=A9-agenda.csv</strong> or <strong>forwarded-note.eml</=
+strong> from the MIME tree to inspect the attachments.</p>
+<p>Example Studio</p>
+</body></html>
+
+--fb-example-mime-tour-3
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-Disposition: inline; filename="blue-square.png"
+Content-ID: <blue-square@example.com>
+MIME-Version: 1.0
+
+iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGNQqztCEmIY1TCqYfhq
+AADFSmgQKgy74wAAAABJRU5ErkJggg==
+
+--fb-example-mime-tour-3--
+
+--fb-example-mime-tour-1--
+
+--fb-example-mime-tour-0
+Content-Type: text/csv
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename*=utf-8''caf%C3%A9-agenda.csv
+MIME-Version: 1.0
+
+dGltZSxhY3Rpdml0eQ0KMDk6MDAsV2VsY29tZQ0KMDk6MTUsQnJvd3NlIHRoZSBleGFtcGxlcw0K
+MDk6MzAsUXVlc3Rpb25zDQo=
+
+--fb-example-mime-tour-0
+Content-Type: message/rfc822
+Content-Transfer-Encoding: 8bit
+Content-Disposition: attachment; filename="forwarded-note.eml"
+MIME-Version: 1.0
+
+From: Example Organizer <organizer@example.com>
+To: Example Studio <studio@example.com>
+Subject: A note inside a note
+Date: Sun, 11 Oct 2026 16:00:00 +0000
+Message-ID: <forwarded-note@example.com>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+This fictional forwarded message demonstrates a message/rfc822 part.
+Expand it in the MIME tree to inspect its own headers and text body.
+
+--fb-example-mime-tour-0--

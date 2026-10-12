@@ -1,0 +1,8 @@
+// A standalone Gradle task with no external dependencies.
+tasks.register('catalog') {
+    group = 'examples'
+    description = 'Print the example file names.'
+    doLast {
+        ['notes.md', 'letter.eml'].each { println it }
+    }
+}

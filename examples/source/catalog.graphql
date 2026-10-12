@@ -1,0 +1,15 @@
+enum FileKind {
+  DOCUMENT
+  MESSAGE
+  IMAGE
+}
+
+type File {
+  name: String!
+  kind: FileKind!
+  bytes: Int!
+}
+
+type Query {
+  files: [File!]!
+}

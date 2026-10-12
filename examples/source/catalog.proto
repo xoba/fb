@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package example.catalog;
+
+message Entry {
+  string name = 1;
+  uint64 bytes = 2;
+  enum Kind {
+    UNSPECIFIED = 0;
+    DOCUMENT = 1;
+    MESSAGE = 2;
+  }
+  Kind kind = 3;
+}

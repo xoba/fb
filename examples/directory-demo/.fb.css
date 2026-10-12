@@ -1,0 +1,10 @@
+/* Original example: a local accent for Markdown in this folder tree. */
+blockquote {
+  border-left: 4px solid #3683d6;
+  background: rgba(54, 131, 214, 0.08);
+  margin-left: 0;
+  padding: 0.75em 1em;
+}
+
+blockquote p:first-child { margin-top: 0; }
+blockquote p:last-child { margin-bottom: 0; }
