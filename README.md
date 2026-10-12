@@ -17,7 +17,8 @@ The app is signed and notarized, with everything bundled. You can also
 ## About fb
 
 A local file browser that presents Markdown, office documents, notebooks,
-source code, spreadsheets, databases, and archives in a form meant for reading.
+source code, email messages, spreadsheets, databases, and archives in a form
+meant for reading.
 The macOS app embeds the Go renderer and Pandoc, reads original files in place,
 and does not run a web server.
 
@@ -376,6 +377,35 @@ with line numbers.
 linked the same way. A module file that doesn't parse shows as plain
 numbered text.
 
+### Email messages
+
+`.eml` files open like a directory with a README: a tree of MIME parts comes
+first, followed by the readable message. The tree preserves the message's
+structure, including multipart containers, plain-text and HTML alternatives,
+inline images, attachments, and forwarded messages. Click a part to inspect
+it, then use Back to return to the message. Headers and the original message
+source are available in disclosures; **Save original .eml** returns the
+complete original file.
+
+Folders containing `.eml` files also offer an **Inbox** view with sender,
+subject, and date columns and search. Each row opens the same MIME browser;
+the normal directory listing remains available. This browses local mail files
+without connecting to an email account or changing message state.
+
+The reader decodes MIME transfer encodings, encoded header values, and
+declared character sets. HTML is sanitized: scripts, forms, message styling,
+and remote images are removed. Embedded CID images can display without a
+network request. Attachments stay inside the message until you explicitly
+save a copy; browsing does not extract files onto disk. Messages inside
+ZIP/TAR archives work the same way.
+
+Message parsing is limited to 32 MiB, 16 levels of MIME nesting, and 256 parts.
+Body and source previews are capped at 2 MiB. Inbox pages contain up to 500
+files grouped by filename; sorting by date and searching apply to the current
+page. The inbox reads only headers, capped at 64 KiB per message.
+Unsupported or malformed content reports a warning or falls back to source;
+the original bytes remain accessible.
+
 ### Calendar files
 
 `.ics` files — meeting invitations, cancellations and replies, exported
@@ -513,6 +543,7 @@ extensionless files that sniff as markup display as plain text.
 | Syntax-highlighted by exact filename | `Makefile` `makefile` `GNUmakefile` `Dockerfile` `CMakeLists.txt` `.bashrc` `.zshrc` |
 | Highlighted as XML (binary converted via plutil) | `.plist` |
 | Structured module pages | `go.mod` `go.work` `go.sum` `go.work.sum` |
+| Email reader and hierarchical MIME browser | `.eml` |
 | Calendar event cards | `.ics` |
 | Displayed as tables | `.csv` `.tsv` `.parquet` (and every sheet/table inside the containers below) |
 | Browsed like directories | `.zip` `.jar` `.tar` `.tar.gz` `.tgz` `.tar.bz2` `.xlsx` `.sqlite` `.sqlite3` `.db` |
@@ -581,6 +612,9 @@ Folders outside the serve root are rejected by name.
   in the parent's listing, in muted text between the name and the date.
 - **Readmes** — a `README.md` renders inline at the bottom of the listing
   (via pandoc); `README.txt` is shown preformatted as a fallback.
+- **Email** — folders containing `.eml` files offer an Inbox view with sender,
+  subject, date, and search; individual messages have a MIME part tree with
+  the readable message below it. See [Email messages](#email-messages).
 - **Dot-files** — entries starting with `.` collapse into a "N dot-files"
   disclosure section at the bottom; one click expands them.
 - **Git** — listings inside a git worktree annotate entries with their

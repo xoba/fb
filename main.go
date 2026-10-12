@@ -527,6 +527,10 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 	}
 
 	if info.IsDir() {
+		if r.URL.Query().Get("view") == "inbox" {
+			s.serveEMLInbox(w, r, name)
+			return
+		}
 		s.serveDirectory(w, r, name)
 		return
 	}
@@ -534,6 +538,10 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 	ext := strings.ToLower(path.Ext(viewName(name)))
 	raw := r.URL.Query().Get("raw") == "1"
 	browserView := !raw && wantsDocument(r.Header)
+	if ext == ".eml" && !raw && (browserView || r.URL.Query().Has("eml-part")) {
+		s.serveEML(w, r, name, info)
+		return
+	}
 
 	// Markdown renders for every client (the server's original purpose);
 	// other pandoc-supported documents render only on browser navigation so
@@ -7222,6 +7230,12 @@ func (s fileServer) serveDirectory(w http.ResponseWriter, r *http.Request, name 
 		Blurb:     s.readBlurb(name),
 		SortLinks: sortLinks(key, desc),
 	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.EqualFold(path.Ext(viewName(entry.Name())), ".eml") {
+			page.InboxHref = "?view=inbox"
+			break
+		}
+	}
 	if s.base != "" {
 		page.RawHref = (&url.URL{Path: s.base, RawQuery: "raw=1"}).String()
 	}
@@ -8096,6 +8110,7 @@ func humanSize(n int64) string {
 
 type directoryPage struct {
 	Title      string
+	InboxHref  string
 	Crumbs     []crumb
 	Blurb      string
 	Summary    string
@@ -8518,6 +8533,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(dataTableD
 ` + dropJS + freshBackJS + `</head>
 <body>
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if .RawHref}}<a class="raw" href="{{.RawHref}}">raw</a>{{end}}</nav>
+{{if .InboxHref}}<p><a href="{{.InboxHref}}">Email inbox view</a></p>{{end}}
 {{if .Blurb}}<p class="blurb">{{.Blurb}}</p>
 {{end}}{{if .Summary}}<p class="summary" id="listsum">{{.Summary}}</p>
 {{end}}{{with .GitLine}}<p class="gitline">git: {{range $i, $it := .}}{{if $i}}<span class="sep"> &middot; </span>{{end}}<span{{if $it.Bad}} class="bad"{{end}}>{{$it.Text}}</span>{{end}}</p>

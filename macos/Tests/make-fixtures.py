@@ -24,6 +24,51 @@ root.mkdir(parents=True, exist_ok=True)
 (root / "pixel.png").write_bytes(base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j53sAAAAASUVORK5CYII="
 ))
+# Nested related/alternative parts make the structure meaningful to browse,
+# while the unsafe HTML verifies that previewing local mail stays inert.
+email = "\r\n".join([
+    "From: Example Sender <sender@example.com>",
+    "To: Example Reader <reader@example.com>",
+    "Subject: =?UTF-8?B?Q2Fmw6kgTUlNRSBicm93c2Vy?=",
+    "Date: Mon, 12 Oct 2026 10:00:00 -0400",
+    "MIME-Version: 1.0",
+    'Content-Type: multipart/mixed; boundary="fb-mixed"',
+    "", "--fb-mixed",
+    'Content-Type: multipart/related; boundary="fb-related"',
+    "", "--fb-related",
+    'Content-Type: multipart/alternative; boundary="fb-alternative"',
+    "", "--fb-alternative",
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: quoted-printable",
+    "", "Plain MIME alternative: caf=C3=A9.",
+    "--fb-alternative",
+    "Content-Type: text/html; charset=UTF-8",
+    "Content-Transfer-Encoding: quoted-printable",
+    "",
+    '<p>Readable <strong>MIME email body</strong>: caf=C3=A9.</p>',
+    '<img src=3D"cid:pixel@example.com" alt=3D"Embedded pixel">',
+    '<img src=3D"https://example.com/tracker.png" alt=3D"Remote tracker">',
+    '<a href=3D"https://example.com/message">External message link</a>',
+    '<a href=3D"file:///etc/passwd">Unsafe local link</a>',
+    '<img src=3D"/etc/passwd" onerror=3D"window.fbUnsafeEmailExecuted=3Dtrue">',
+    '<script>window.fbUnsafeEmailExecuted=3Dtrue</script>',
+    '<style>body { display: none }</style>',
+    "--fb-alternative--",
+    "--fb-related",
+    "Content-Type: image/png",
+    "Content-ID: <pixel@example.com>",
+    'Content-Disposition: inline; filename="pixel.png"',
+    "Content-Transfer-Encoding: base64", "",
+    base64.b64encode((root / "pixel.png").read_bytes()).decode("ascii"),
+    "--fb-related--",
+    "--fb-mixed",
+    "Content-Type: application/octet-stream",
+    "Content-Disposition: attachment; filename*=UTF-8''caf%C3%A9.bin",
+    "Content-Transfer-Encoding: base64", "",
+    base64.b64encode(bytes([0, 1, 2, 127, 128, 255])).decode("ascii"),
+    "--fb-mixed--", "",
+])
+(root / "message.eml").write_bytes(email.encode("ascii"))
 (root / "raw.html").write_text(
     "<!doctype html><title>Sandbox check</title><p>Raw HTML still displays</p>"
     "<script>window.fbUnsafeScriptExecuted = true</script>"
@@ -40,6 +85,7 @@ db.commit()
 db.close()
 with zipfile.ZipFile(root / "sample.zip", "w") as archive:
     archive.writestr("inside.md", "# Archive rendering works\n")
+    archive.writestr("message.eml", email.encode("ascii"))
 with wave.open(str(root / "sample.wav"), "wb") as audio:
     audio.setnchannels(1)
     audio.setsampwidth(2)

@@ -139,7 +139,8 @@ The last command needs a logged-in graphical Mac session and Python 3. It
 creates disposable fixtures under `.build/smoke`, compiles the actual Swift/Go
 bridge, and exercises WebKit loading, Pandoc, math, relative resources, native
 file/folder pasteboard URLs, SQL form submission and script requests, archive
-members, HTML script sandboxing, audio metadata, and PDF navigation. A temporary
+members, email MIME navigation and decoded attachments, embedded email images,
+inbox listings, HTML script sandboxing, audio metadata, and PDF navigation. A temporary
 window is required because WebKit defers media loading for unattached views.
 
 ## Signing and packaging
