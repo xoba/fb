@@ -148,8 +148,8 @@ window is required because WebKit defers media loading for unattached views.
 ## Signing and packaging
 
 The public channels are a notarized GitHub Release download and
-`brew install --cask xoba/tap/fb`. Version 0.1.2 (build 4) is published as
-[`mac-v0.1.2`](https://github.com/xoba/fb/releases/tag/mac-v0.1.2). See
+`brew install --cask xoba/tap/fb`. Version 0.1.3 (build 5) is published as
+[`mac-v0.1.3`](https://github.com/xoba/fb/releases/tag/mac-v0.1.3). See
 [Distribution.md](Distribution.md) for the concrete release workflow and
 legacy-server migration. Local redeployment is separate from publication.
 
@@ -250,7 +250,7 @@ Submit using an existing Keychain profile:
 ```sh
 NOTARY_PROFILE='your-existing-profile' \
   macos/Scripts/notarize-existing.sh /absolute/path/to/export/fb.app \
-  macos/.build/distribution/fb-0.1.2-arm64
+  macos/.build/distribution/fb-0.1.3-arm64
 ```
 
 Alternatively, use an existing team API key with file permissions `600`:
@@ -258,7 +258,7 @@ Alternatively, use an existing team API key with file permissions `600`:
 ```sh
 ASC_RELEASE_KEY_PATH=/absolute/path/to/AuthKey_6B7NTN43DS.p8 \
   macos/Scripts/notarize-existing.sh /absolute/path/to/export/fb.app \
-  macos/.build/distribution/fb-0.1.2-arm64
+  macos/.build/distribution/fb-0.1.3-arm64
 ```
 
 Choose one authentication method, and use a fresh output directory. Key ID,

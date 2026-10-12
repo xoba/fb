@@ -1,27 +1,23 @@
-# fb for macOS 0.1.2
+# fb for macOS 0.1.3
 
 fb is a standalone local file browser for Apple Silicon Macs running macOS 26
 or later. It presents documents, source code, spreadsheets, databases, and
 archives in a readable interface.
 
-Version 0.1.2 (build 4) adds email browsing and improves navigation. It is signed
-with Developer ID and notarized by Apple.
+Version 0.1.3 (build 5) opens email attachments with fb's existing file viewers
+and keeps Find in the main toolbar. It is signed with Developer ID and notarized
+by Apple.
 
-- Open `.eml` messages as a navigable MIME tree with the readable message below
-  it, like a directory with a README. Explore plain text and HTML alternatives,
-  inline images, attachments, and forwarded messages; save individual parts or
-  the original message.
-- Switch a folder containing `.eml` files to an inbox with sender, subject, and
-  date columns. Search sender, recipient, subject, or filename within the current
-  page of up to 500 messages.
-- Email browsing is local and read-only, with no email account connection.
-  Remote email images and scripts are blocked; embedded message images can be
-  displayed.
-- Email breadcrumbs now match the file browser, and navigating to another folder
-  leaves inbox mode.
-- The toolbar path has more padding inside its glass capsule, thanks to
-  [PR #2](https://github.com/xoba/fb/pull/2) from @Broyojo.
-- Refreshed Go dependencies.
+- Open MIME attachments just like ordinary files: CSV and TSV become queryable
+  tables, PDFs and images display directly, documents render normally, and
+  spreadsheets, SQLite databases, and archives remain browsable.
+- Explore nested archives and forwarded emails, then use Back to return to the
+  message. **Save this part** keeps the attachment's filename and original
+  decoded bytes; saving a separate file is optional.
+- Keep the window header to one row. Find temporarily replaces the toolbar path;
+  Command-F focuses the search field, and Escape or Done returns to the path.
+- Browse a self-contained example gallery covering every explicitly documented
+  extension and special filename, including an email with sample attachments.
 
 **Migrating from the old Homebrew server?** Stop its service and uninstall the
 formula before installing the app:
@@ -50,7 +46,7 @@ brew update
 brew upgrade --cask xoba/tap/fb
 ```
 
-Or download `fb-0.1.2-arm64-notarized.zip` below. `SHA256SUMS` covers the app,
+Or download `fb-0.1.3-arm64-notarized.zip` below. `SHA256SUMS` covers the app,
 dependency notices, and Pandoc source archive.
 
 - Open files and folders from Finder, the Desktop, Open With, or File → Open.
