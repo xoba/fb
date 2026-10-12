@@ -74,7 +74,7 @@ struct BrowserView: View {
                     if model.isLoading { ProgressView().controlSize(.small) }
                     Text(model.path).font(.callout).lineLimit(1).truncationMode(.middle)
                         .help(model.path).textSelection(.enabled)
-                }.frame(maxWidth: 600)
+                }.padding(.horizontal, 12).frame(maxWidth: 600)
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 Button("Reload", systemImage: "arrow.clockwise") { model.reload() }
