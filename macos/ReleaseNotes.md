@@ -1,23 +1,22 @@
-# fb for macOS 0.1.3
+# fb for macOS 0.1.4
 
 fb is a standalone local file browser for Apple Silicon Macs running macOS 26
 or later. It presents documents, source code, spreadsheets, databases, and
 archives in a readable interface.
 
-Version 0.1.3 (build 5) opens email attachments with fb's existing file viewers
-and keeps Find in the main toolbar. It is signed with Developer ID and notarized
-by Apple.
+Version 0.1.4 (build 6) adds formatted printing and link destination previews.
+It is signed with Developer ID and notarized by Apple.
 
-- Open MIME attachments just like ordinary files: CSV and TSV become queryable
-  tables, PDFs and images display directly, documents render normally, and
-  spreadsheets, SQLite databases, and archives remain browsable.
-- Explore nested archives and forwarded emails, then use Back to return to the
-  message. **Save this part** keeps the attachment's filename and original
-  decoded bytes; saving a separate file is optional.
-- Keep the window header to one row. Find temporarily replaces the toolbar path;
-  Command-F focuses the search field, and Escape or Done returns to the path.
-- Browse a self-contained example gallery covering every explicitly documented
-  extension and special filename, including an email with sample attachments.
+- Print the rendered page with **File → Print** or **⌘P**, including Markdown
+  formatting, tables, images, and math. Long documents flow across pages. Select
+  paper size, orientation, scaling, or a page range in the native print dialog,
+  or use its PDF menu to **Save as PDF**.
+- Hover over a link to see its destination at the bottom of the window, including
+  queries and heading anchors. Local links use relative paths when shorter;
+  links within the same page show just the `#anchor`.
+- The About window now identifies fb as **File Browser**, credits **Michael
+  Raskin Andrews LLC**, and continues to show the release version, build number,
+  and source revision.
 
 **Migrating from the old Homebrew server?** Stop its service and uninstall the
 formula before installing the app:
@@ -46,7 +45,7 @@ brew update
 brew upgrade --cask xoba/tap/fb
 ```
 
-Or download `fb-0.1.3-arm64-notarized.zip` below. `SHA256SUMS` covers the app,
+Or download `fb-0.1.4-arm64-notarized.zip` below. `SHA256SUMS` covers the app,
 dependency notices, and Pandoc source archive.
 
 - Open files and folders from Finder, the Desktop, Open With, or File → Open.
@@ -60,8 +59,11 @@ dependency notices, and Pandoc source archive.
   source code, calendars, and supported PDF, image, audio, and video files.
 - Browse spreadsheets, SQLite databases, and archives. Run read-only SQL
   queries against supported tabular formats.
-- Use native Back/Forward, Reload, Find, zoom, Reveal in Finder, and Save a Copy.
-  The most recent location is remembered across launches.
+- Browse email inboxes and MIME parts, viewing attachments with the same file
+  viewers used elsewhere in the app. Save decoded attachments separately when
+  needed.
+- Use native Back/Forward, Reload, Find, Print, zoom, Reveal in Finder, and
+  Save a Copy. The most recent location is remembered across launches.
 - The Go rendering engine and Pandoc 3.12.1 are bundled in the app. No local
   web server, listening port, Homebrew installation, or separate Pandoc setup
   is required.
