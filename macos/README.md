@@ -115,7 +115,8 @@ The toolbar and menus provide Back/Forward, Reload, Reveal in Finder, Find
 path in the same toolbar row; Escape or Done restores the path. External links open in
 the default browser. Hover over a link to preview its destination at the bottom
 of the window, including any query or heading anchor. Local destinations appear
-as filesystem paths.
+as paths relative to the current page when shorter than the absolute path.
+Links within the same page show just the `#anchor`.
 Save a Copy writes only to a destination explicitly selected in the save panel
 and can replace an existing file there.
 The most recent filesystem location is remembered across launches.

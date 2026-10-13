@@ -88,7 +88,9 @@ with its formatted headings, tables, images, and math, flowing onto as many
 pages as needed. The standard macOS print dialog also offers **Save as PDF**.
 
 Hover over a link to preview its destination at the bottom of the window,
-including any `#anchor` that jumps to a particular heading.
+including any `#anchor` that jumps to a particular heading. Local paths appear
+relative to the current page when shorter; links within the same page show
+just the `#anchor`.
 
 Install the signed, notarized app:
 

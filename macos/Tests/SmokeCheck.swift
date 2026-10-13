@@ -367,7 +367,7 @@ private final class BrowserNavigationCheck: NSObject, WKNavigationDelegate {
     private func checkLinkPreview() async throws {
         let originalURL = webView.url
         try await hover("a[href*=\"raw=1\"] strong")
-        let localDestination = fixtures.appendingPathComponent("spaced & café #1.md").path + "?raw=1#somewhere"
+        let localDestination = "spaced & café #1.md?raw=1#somewhere"
         try await waitUntil("local link preview") { model.hoveredLink == localDestination }
         guard let exit = NSEvent.enterExitEvent(with: .mouseExited, location: .zero, modifierFlags: [],
                                                timestamp: ProcessInfo.processInfo.systemUptime,

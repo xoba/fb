@@ -354,7 +354,7 @@ final class FileDropWebView: WKWebView {
 
     private func updateLinkHover(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        guard bounds.contains(point), url?.scheme == "fb", url?.host == "local" else {
+        guard bounds.contains(point), let pageURL = url, pageURL.scheme == "fb", pageURL.host == "local" else {
             clearLinkHover()
             return
         }
@@ -376,15 +376,39 @@ final class FileDropWebView: WKWebView {
         evaluateJavaScript(script, in: nil, in: .defaultClient) { [weak self] result in
             guard let self, self.linkHoverRequest == request else { return }
             let address = (try? result.get()) as? String
-            self.onLinkHover?(address.flatMap(Self.linkPreviewText))
+            self.onLinkHover?(address.flatMap { Self.linkPreviewText($0, relativeTo: pageURL) })
         }
     }
 
-    static func linkPreviewText(_ address: String) -> String? {
+    static func linkPreviewText(_ address: String, relativeTo currentURL: URL? = nil) -> String? {
         guard !address.isEmpty, let url = URL(string: address), url.scheme != nil else { return nil }
         if url.scheme == "fb", url.host == "local",
            let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
             var text = components.path
+            if let currentURL, currentURL.scheme == url.scheme, currentURL.host == url.host,
+               let current = URLComponents(url: currentURL, resolvingAgainstBaseURL: false) {
+                // Use the displayed page's directory, not a document's custom <base>.
+                // The destination has already been resolved by WebKit above.
+                var directory = current.path.split(separator: "/")
+                if !current.path.hasSuffix("/"), !directory.isEmpty { directory.removeLast() }
+                let destination = components.path.split(separator: "/")
+                let shared = zip(directory, destination).prefix { $0.0 == $0.1 }.count
+                let segments = Array(repeating: "..", count: directory.count - shared) +
+                    destination.dropFirst(shared).map(String.init)
+                var relative = segments.joined(separator: "/")
+                if components.path.hasSuffix("/") { relative += "/" }
+                if relative == "/" { relative = "./" }
+                if segments.first?.contains(":") == true { relative = "./" + relative }
+                if !relative.isEmpty, relative.count < text.count { text = relative }
+
+                // An anchor in this same view needs only its #fragment. A changed
+                // query must stay visible (e.g. an email part or archive member).
+                if components.path == current.path,
+                   components.percentEncodedQuery == current.percentEncodedQuery,
+                   let fragment = components.percentEncodedFragment {
+                    return "#" + fragment
+                }
+            }
             if let query = components.percentEncodedQuery { text += "?" + query }
             if let fragment = components.percentEncodedFragment { text += "#" + fragment }
             return text
