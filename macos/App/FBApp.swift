@@ -13,7 +13,7 @@ struct FBApp: App {
         .defaultSize(width: 1120, height: 820)
         .commands {
             CommandGroup(replacing: .appInfo) {
-                Button("About fb") { Self.showAbout() }
+                Button("About File Browser") { Self.showAbout() }
             }
             CommandGroup(after: .newItem) {
                 Button("Open…") { ApplicationCoordinator.shared.chooseFiles(in: browser) }
@@ -51,7 +51,7 @@ struct FBApp: App {
         let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
         let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
         let revision = bundle.object(forInfoDictionaryKey: "FBBuildRevision") as? String ?? ""
-        var details = "Browse local files and folders.\n"
+        var details = "By Michael Raskin Andrews LLC\n\nBrowse local files and folders.\n"
         if let url = bundle.url(forResource: "pandoc", withExtension: "json", subdirectory: "Dependencies"),
            let data = try? Data(contentsOf: url),
            let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -62,7 +62,7 @@ struct FBApp: App {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         var options: [NSApplication.AboutPanelOptionKey: Any] = [
-            .applicationName: "fb",
+            .applicationName: "File Browser",
             .applicationVersion: version,
             .version: build,
             .credits: NSAttributedString(string: details, attributes: [

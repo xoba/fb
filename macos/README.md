@@ -64,7 +64,7 @@ macos/Scripts/deploy.sh
 This runs an incremental Release build, stages and verifies the complete bundle,
 then replaces the installed copy with rollback on failure. Only a running app
 at that installed path is asked to quit; it reopens after installation. Running
-Debug copies are left alone. The source revision appears in About fb; builds
+Debug copies are left alone. The source revision appears in About File Browser; builds
 from an uncommitted working tree carry a `-dirty` suffix. Commit before deploying
 when the installed app should identify a clean revision. The build script also
 accepts an explicit `FB_BUILD_REVISION` override.
@@ -200,7 +200,7 @@ not prove that permission.
 Commit the intended release source and run a local build to prepare the matching
 Go archive, Pandoc, and generated project. From the repository root, create a
 development-signed archive. The clean-checkout guard prevents archiving
-uncommitted source, and the explicit revision keeps About fb tied to the commit:
+uncommitted source, and the explicit revision keeps About File Browser tied to the commit:
 
 ```sh
 test -z "$(git status --porcelain)" &&

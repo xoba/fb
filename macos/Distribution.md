@@ -15,7 +15,7 @@ installation test. This workflow describes how to prepare subsequent releases.
    Xcode cloud-signing account. The app and its bundled helper must have the
    expected Developer ID signatures, hardened runtime, and secure timestamps.
    The [archive example](README.md#cloud-developer-id-signing) requires a clean
-   checkout and sets `FB_BUILD_REVISION` from Git so About fb identifies the source.
+   checkout and sets `FB_BUILD_REVISION` from Git so About File Browser identifies the source.
 2. Notarize the exact release and staple the ticket to the app. Create the final
    ZIP **after** stapling; `package.sh` does this when `NOTARY_PROFILE` is supplied.
    For a cloud-signed export or an existing signed app/ZIP, use
