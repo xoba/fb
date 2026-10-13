@@ -23,6 +23,10 @@ struct FBApp: App {
                 Button("Reveal in Finder") { browser?.reveal() }
                     .keyboardShortcut("r", modifiers: [.command, .shift]).disabled(browser == nil)
             }
+            CommandGroup(replacing: .printItem) {
+                Button("Print…") { browser?.printDocument() }
+                    .keyboardShortcut("p").disabled(browser?.canPrint != true)
+            }
             CommandGroup(after: .textEditing) {
                 Button("Find…") { browser?.showFind() }
                     .keyboardShortcut("f").disabled(browser == nil)

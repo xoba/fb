@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import PDFKit
 import WebKit
 
 @MainActor
@@ -273,6 +274,7 @@ private final class BrowserNavigationCheck: NSObject, WKNavigationDelegate {
     private var cancelNextResponse = false
     private var finished: [WKNavigation] = []
     private var failures: [NSError] = []
+    private var printCompletion: CheckedContinuation<Bool, any Error>?
 
     init(fixtures: URL, pandoc: String) throws {
         self.fixtures = fixtures
@@ -334,6 +336,155 @@ private final class BrowserNavigationCheck: NSObject, WKNavigationDelegate {
         throw FBError.message("Timed out waiting for \(label); banner: \(model.errorMessage ?? "none")")
     }
 
+    private func hover(_ selector: String) async throws {
+        let literal = String(decoding: try JSONEncoder().encode(selector), as: UTF8.self)
+        let script = "(() => { const r = document.querySelector(\(literal)).getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })()"
+        let point: [Double] = try await withCheckedThrowingContinuation { continuation in
+            webView.evaluateJavaScript(script, in: nil, in: .defaultClient) { result in
+                switch result {
+                case .success(let value):
+                    guard let point = value as? [Double], point.count == 2 else {
+                        continuation.resume(throwing: FBError.message("No coordinates for the hovered link"))
+                        return
+                    }
+                    continuation.resume(returning: point)
+                case .failure(let error): continuation.resume(throwing: error)
+                }
+            }
+        }
+        let x = point[0] * webView.pageZoom
+        let y = point[1] * webView.pageZoom
+        let location = webView.convert(NSPoint(x: x, y: webView.isFlipped ? y : webView.bounds.height - y), to: nil)
+        guard let event = NSEvent.mouseEvent(with: .mouseMoved, location: location, modifierFlags: [],
+                                            timestamp: ProcessInfo.processInfo.systemUptime,
+                                            windowNumber: window.windowNumber, context: nil,
+                                            eventNumber: 0, clickCount: 0, pressure: 0) else {
+            throw FBError.message("Could not create a native hover event")
+        }
+        webView.mouseMoved(with: event)
+    }
+
+    private func checkLinkPreview() async throws {
+        let originalURL = webView.url
+        try await hover("a[href*=\"raw=1\"] strong")
+        let localDestination = fixtures.appendingPathComponent("spaced & café #1.md").path + "?raw=1#somewhere"
+        try await waitUntil("local link preview") { model.hoveredLink == localDestination }
+        guard let exit = NSEvent.enterExitEvent(with: .mouseExited, location: .zero, modifierFlags: [],
+                                               timestamp: ProcessInfo.processInfo.systemUptime,
+                                               windowNumber: window.windowNumber, context: nil,
+                                               eventNumber: 0, trackingNumber: 0, userData: nil) else {
+            throw FBError.message("Could not create a native mouse-exit event")
+        }
+        webView.mouseExited(with: exit)
+        try await waitUntil("link preview clears after pointer leaves") { model.hoveredLink == nil }
+        try await hover("a[href^=\"https:\"]")
+        try await waitUntil("external link preview") { model.hoveredLink == "https://example.com/reference?from=fb#details" }
+        guard webView.url == originalURL else { throw FBError.message("Hovering navigated away from the current document") }
+    }
+
+    private func checkHTMLLinkPreview() async throws {
+        let finishCount = finished.count
+        model.open(fixtures.appendingPathComponent("raw.html"))
+        try await waitUntil("plain HTML for link preview") { finished.count > finishCount && !model.isLoading }
+        try await hover("#external")
+        try await waitUntil("link preview in sandboxed HTML at saved zoom") {
+            model.hoveredLink == "https://example.com/plain-html#details"
+        }
+    }
+
+    @objc nonisolated private func printOperationDidRun(_ operation: NSPrintOperation, success: Bool,
+                                                        contextInfo: UnsafeMutableRawPointer?) {
+        Task { @MainActor [weak self] in
+            let continuation = self?.printCompletion
+            self?.printCompletion = nil
+            continuation?.resume(returning: success)
+        }
+    }
+
+    private func checkPrinting() async throws {
+        let finishCount = finished.count
+        model.open(fixtures.appendingPathComponent("print.md"))
+        try await waitUntil("print document navigation") { finished.count > finishCount && !model.isLoading }
+        let ready = "document.querySelector('mjx-container') !== null && [...document.images].every(i => i.complete && i.naturalWidth > 0)"
+        var rendered = false
+        for _ in 0..<150 {
+            if try await webView.evaluateJavaScript(ready) as? Bool == true {
+                rendered = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        guard rendered else { throw FBError.message("Print document image or math did not render") }
+        guard try await webView.evaluateJavaScript("document.querySelector('#print-end-marker').getBoundingClientRect().top > innerHeight") as? Bool == true else {
+            throw FBError.message("Print fixture did not extend beyond the viewport")
+        }
+        let originalURL = webView.url
+        let originalZoom = webView.pageZoom
+        let outputURL = fixtures.deletingLastPathComponent().appendingPathComponent("printed-markdown.pdf")
+        if FileManager.default.fileExists(atPath: outputURL.path) { try FileManager.default.removeItem(at: outputURL) }
+        // Save directly to a test PDF. This exercises AppKit's paginated print
+        // operation without showing a dialog or sending a job to a printer.
+        let printInfo = NSPrintInfo(dictionary: [.jobSavingURL: outputURL])
+        printInfo.jobDisposition = .save
+        printInfo.paperSize = NSSize(width: 612, height: 792)
+        printInfo.leftMargin = 36
+        printInfo.rightMargin = 36
+        printInfo.topMargin = 36
+        printInfo.bottomMargin = 36
+        guard let operation = model.makePrintOperation(printInfo: printInfo) else {
+            throw FBError.message("The loaded document did not provide a print operation")
+        }
+        guard operation.printInfo.jobDisposition == .save,
+              operation.printInfo.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] as? URL == outputURL else {
+            throw FBError.message("Print test requires saving to its PDF destination")
+        }
+        operation.showsPrintPanel = false
+        operation.showsProgressPanel = false
+        // WebKit computes page ranges asynchronously. Use the same modal
+        // execution path as the app, so its printing thread can await that work.
+        var printTimeout: Task<Void, Never>?
+        defer { printTimeout?.cancel() }
+        let printed = try await withCheckedThrowingContinuation { continuation in
+            printCompletion = continuation
+            printTimeout = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(45))
+                guard !Task.isCancelled else { return }
+                let pending = self?.printCompletion
+                self?.printCompletion = nil
+                pending?.resume(throwing: FBError.message("Timed out saving the paginated print PDF"))
+            }
+            operation.runModal(for: window, delegate: self,
+                               didRun: #selector(printOperationDidRun(_:success:contextInfo:)), contextInfo: nil)
+        }
+        guard printed, let pdf = PDFDocument(url: outputURL), pdf.pageCount > 1,
+              pdf.page(at: 0)?.string?.contains("Printable Markdown") == true,
+              pdf.page(at: pdf.pageCount - 1)?.string?.contains("Print end marker") == true,
+              pdf.string?.contains("North") == true,
+              pdf.string?.contains("Final row") == true,
+              pdf.string?.contains("final formatted code") == true else {
+            throw FBError.message("Printing did not produce a complete, paginated Markdown PDF")
+        }
+        guard webView.url == originalURL, webView.pageZoom == originalZoom,
+              model.errorMessage == nil else {
+            throw FBError.message("Printing changed the current document or zoom")
+        }
+        for index in 0..<pdf.pageCount {
+            guard let page = pdf.page(at: index),
+                  let text = page.selection(for: NSRange(location: 0, length: page.numberOfCharacters)) else {
+                throw FBError.message("Printed page \(index + 1) has no selectable text")
+            }
+            let bounds = text.bounds(for: page)
+            let paper = page.bounds(for: .mediaBox)
+            // Font selection rectangles can extend slightly beyond the glyphs.
+            let tolerance: CGFloat = 6
+            guard bounds.minY >= printInfo.bottomMargin - tolerance,
+                  bounds.maxY <= paper.height - printInfo.topMargin + tolerance else {
+                throw FBError.message("Printed page \(index + 1) escapes the requested margins: \(bounds)")
+            }
+        }
+        print("Printed Markdown PDF: \(outputURL.path) (\(pdf.pageCount) pages)")
+    }
+
     func run() async throws -> [String] {
         defer {
             webView.stopLoading()
@@ -347,9 +498,12 @@ private final class BrowserNavigationCheck: NSObject, WKNavigationDelegate {
         try await waitUntil("initial model navigation") { finished.count == 1 && !model.isLoading }
         guard webView.pageZoom == 1 else { throw FBError.message("Initial navigation changed the default zoom") }
         passed.append("fresh zoom defaults to actual size")
+        try await checkLinkPreview()
+        passed.append("hover previews local and external destinations without navigating")
         model.zoom(0.2)
         cancelNextResponse = true
         model.open(fixtures.appendingPathComponent("nested/next.md"))
+        guard model.hoveredLink == nil else { throw FBError.message("Navigation retained a stale link preview") }
         try await waitUntil("real policy interruption") {
             failures.contains { $0.domain == "WebKitErrorDomain" && $0.code == 102 }
         }
@@ -410,6 +564,10 @@ private final class BrowserNavigationCheck: NSObject, WKNavigationDelegate {
         passed.append("actual size persists without changing another open window")
         window.contentView = webView
 
+        try await checkPrinting()
+        passed.append("formatted printing includes every page without changing the document or zoom")
+        try await checkHTMLLinkPreview()
+        passed.append("hover preview works on plain HTML with page scripts disabled")
         // Remove this test-only engine to cause a real transport failure, rather than
         // an ordinary HTTP error page. The active navigation must still show an error.
         FBDestroy(engine.handle)
@@ -425,6 +583,7 @@ private final class BrowserNavigationCheck: NSObject, WKNavigationDelegate {
 @main
 enum SmokeMain {
     @MainActor static func main() {
+        setbuf(stdout, nil)
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
         guard CommandLine.arguments.count == 3 else {

@@ -14,8 +14,38 @@ root.mkdir(parents=True, exist_ok=True)
 (root / "sample.md").write_text(
     "# Embedded engine\n\nOriginal file, rendered with bundled Pandoc.\n\n"
     "[Relative link](nested/next.md)\n\n![Pixel](pixel.png)\n\n"
+    "[**Hover local**](spaced%20%26%20caf%C3%A9%20%231.md?raw=1#somewhere)\n\n"
+    "[External reference](https://example.com/reference?from=fb#details)\n\n"
     "$$x^2 + y^2 = z^2$$\n"
 )
+(root / "print-mark.svg").write_text(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="60" viewBox="0 0 240 60">'
+    '<rect width="240" height="60" rx="8" fill="#1268be"/>'
+    '<circle cx="30" cy="30" r="16" fill="#fff"/>'
+    '<path d="M65 20h150M65 40h105" stroke="#fff" stroke-width="6"/>'
+    '</svg>'
+)
+print_sections = [
+    "# Printable Markdown\n\n**Print start marker.** This document checks formatted printing.\n\n"
+    "![A blue document illustration](print-mark.svg)\n\n"
+    "| Region | Amount |\n| :--- | ---: |\n| North | 120 |\n| South | 240 |\n\n"
+    "```python\nprint(\"formatted code\")\n```\n\n"
+    "$$x^2 + y^2 = z^2$$\n"
+]
+for section in range(1, 25):
+    print_sections.append(
+        f"## Section {section}\n\n"
+        "A printed document should include the complete rendered content, including paragraphs "
+        "that begin below the visible window. Headings, tables, illustrations, and code remain "
+        "readable across page boundaries. This paragraph provides enough content to exercise "
+        "normal pagination without requiring any remote assets or changing the original file.\n"
+    )
+print_sections.append(
+    "| Tail region | Amount |\n| :--- | ---: |\n| Final row | 360 |\n\n"
+    "```python\nprint(\"final formatted code\")\n```\n\n"
+    "## Print end marker\n\nThe complete document reaches the final printed page.\n"
+)
+(root / "print.md").write_text("\n".join(print_sections))
 (root / "nested/next.md").write_text("# Relative navigation works\n")
 (root / "spaced & café #1.md").write_text("# Encoded filename works\n")
 (root / "100%.md").write_text("# Percent filename works\n")
@@ -118,6 +148,7 @@ email = "\r\n".join([
 (root / "message.eml").write_bytes(email.encode("ascii"))
 (root / "raw.html").write_text(
     "<!doctype html><title>Sandbox check</title><p>Raw HTML still displays</p>"
+    '<a id="external" href="https://example.com/plain-html#details">External reference</a>'
     "<script>window.fbUnsafeScriptExecuted = true</script>"
 )
 (root / "payload.txt~").write_text(

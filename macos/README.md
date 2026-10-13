@@ -111,12 +111,19 @@ may create temporary files, and the app saves preferences such as zoom and the
 last opened location.
 
 The toolbar and menus provide Back/Forward, Reload, Reveal in Finder, Find
-(⌘F), zoom, and Save a Copy (⇧⌘S). Find temporarily replaces the path in the
-same toolbar row; Escape or Done restores the path. External links open in
-the default browser.
+(⌘F), Print (⌘P), zoom, and Save a Copy (⇧⌘S). Find temporarily replaces the
+path in the same toolbar row; Escape or Done restores the path. External links open in
+the default browser. Hover over a link to preview its destination at the bottom
+of the window, including any query or heading anchor. Local destinations appear
+as filesystem paths.
 Save a Copy writes only to a destination explicitly selected in the save panel
 and can replace an existing file there.
 The most recent filesystem location is remembered across launches.
+
+File → Print prints the active window's rendered page, including Markdown
+formatting, tables, images, and math. Long documents flow across printed pages.
+Use the standard print dialog to select a printer, paper size, or page range,
+or choose **Save as PDF** from its PDF menu.
 
 View → Zoom In and Zoom Out adjust document zoom between 50% and 300%.
 Your last chosen level is saved for new windows and future launches; existing

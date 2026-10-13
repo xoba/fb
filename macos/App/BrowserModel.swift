@@ -11,6 +11,7 @@ final class BrowserModel: NSObject, WKNavigationDelegate, WKUIDelegate {
     private(set) var isLoading = false
     private(set) var canGoBack = false
     private(set) var canGoForward = false
+    private(set) var hoveredLink: String?
     var errorMessage: String?
     var showingFind = false
     private(set) var findFocusRequest = 0
@@ -42,6 +43,7 @@ final class BrowserModel: NSObject, WKNavigationDelegate, WKUIDelegate {
             webView.uiDelegate = self
             webView.allowsBackForwardNavigationGestures = true
             webView.onFilesDropped = { [weak self] in self?.open($0) }
+            webView.onLinkHover = { [weak self] in self?.hoveredLink = $0 }
             webView.registerForDraggedTypes([.fileURL])
             self.webView = webView
         } catch { errorMessage = error.localizedDescription }
@@ -132,6 +134,30 @@ final class BrowserModel: NSObject, WKNavigationDelegate, WKUIDelegate {
         }
     }
 
+    var canPrint: Bool { webView?.url != nil && !isLoading }
+
+    func makePrintOperation(printInfo: NSPrintInfo? = nil) -> NSPrintOperation? {
+        guard canPrint, let webView else { return nil }
+        let settings = (printInfo ?? NSPrintInfo.shared).copy() as! NSPrintInfo
+        settings.horizontalPagination = .fit
+        settings.verticalPagination = .automatic
+        settings.isVerticallyCentered = false
+        // WebKit prints the rendered document, including content below the
+        // viewport, with its styles, images, and native page breaks.
+        let operation = webView.printOperation(with: settings)
+        operation.jobTitle = title
+        operation.showsPrintPanel = true
+        operation.showsProgressPanel = true
+        operation.printPanel.options.formUnion([.showsPaperSize, .showsOrientation, .showsScaling])
+        return operation
+    }
+
+    func printDocument() {
+        guard let window = webView?.window, window.attachedSheet == nil,
+              let operation = makePrintOperation() else { return }
+        operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+    }
+
     func saveOriginal() {
         guard let url = webView?.url else { return }
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
@@ -196,6 +222,7 @@ final class BrowserModel: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     private func track(_ navigation: WKNavigation?) {
         guard let navigation else { return }
+        webView?.clearLinkHover()
         activeNavigation = navigation
         isLoading = true
         errorMessage = nil
@@ -239,6 +266,7 @@ final class BrowserModel: NSObject, WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
         guard let url = action.request.url else { decisionHandler(.cancel); return }
+        if action.targetFrame?.isMainFrame != false { self.webView?.clearLinkHover() }
         if url.scheme == "fb", url.host == "local" {
             if action.shouldPerformDownload {
                 decisionHandler(.cancel)
@@ -275,6 +303,7 @@ final class BrowserModel: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        self.webView?.clearLinkHover()
         activeNavigation = nil
         isLoading = false
         errorMessage = "The document view stopped unexpectedly. Reload to reopen this file."
@@ -284,6 +313,84 @@ final class BrowserModel: NSObject, WKNavigationDelegate, WKUIDelegate {
 @MainActor
 final class FileDropWebView: WKWebView {
     var onFilesDropped: (([URL]) -> Void)?
+    var onLinkHover: ((String?) -> Void)?
+    private var linkTrackingArea: NSTrackingArea?
+    private var linkHoverRequest = 0
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let linkTrackingArea { removeTrackingArea(linkTrackingArea) }
+        let area = NSTrackingArea(rect: .zero,
+                                 options: [.inVisibleRect, .mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow],
+                                 owner: self, userInfo: nil)
+        addTrackingArea(area)
+        linkTrackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        updateLinkHover(with: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        updateLinkHover(with: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        clearLinkHover()
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        clearLinkHover()
+        super.scrollWheel(with: event)
+    }
+
+    func clearLinkHover() {
+        linkHoverRequest &+= 1
+        onLinkHover?(nil)
+    }
+
+    private func updateLinkHover(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard bounds.contains(point), url?.scheme == "fb", url?.host == "local" else {
+            clearLinkHover()
+            return
+        }
+        let x = (point.x - bounds.minX) / pageZoom
+        let y = (isFlipped ? point.y - bounds.minY : bounds.maxY - point.y) / pageZoom
+        linkHoverRequest &+= 1
+        let request = linkHoverRequest
+        // Native pointer tracking works even when a document's sandbox blocks
+        // JavaScript event handlers. This isolated evaluation only reads the
+        // hovered anchor; it does not enable page scripts or change navigation.
+        let script = """
+        (() => {
+          const link = document.elementFromPoint(\(x), \(y))?.closest('a[href], area[href]');
+          if (!link) return null;
+          try { return new URL(link.getAttribute('href'), document.baseURI).href; }
+          catch { return null; }
+        })()
+        """
+        evaluateJavaScript(script, in: nil, in: .defaultClient) { [weak self] result in
+            guard let self, self.linkHoverRequest == request else { return }
+            let address = (try? result.get()) as? String
+            self.onLinkHover?(address.flatMap(Self.linkPreviewText))
+        }
+    }
+
+    static func linkPreviewText(_ address: String) -> String? {
+        guard !address.isEmpty, let url = URL(string: address), url.scheme != nil else { return nil }
+        if url.scheme == "fb", url.host == "local",
+           let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            var text = components.path
+            if let query = components.percentEncodedQuery { text += "?" + query }
+            if let fragment = components.percentEncodedFragment { text += "#" + fragment }
+            return text
+        }
+        return url.absoluteString
+    }
 
     static func fileURLs(from pasteboard: NSPasteboard) -> [URL] {
         (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? [])

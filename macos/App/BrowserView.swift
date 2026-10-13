@@ -40,6 +40,21 @@ struct BrowserView: View {
             }
             if let webView = model.webView {
                 NativeWebView(webView: webView)
+                    .overlay(alignment: .bottomLeading) {
+                        if let destination = model.hoveredLink {
+                            Text(destination)
+                                .font(.system(size: 11))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 5))
+                                .frame(maxWidth: 600, alignment: .leading)
+                                .padding(8)
+                                .allowsHitTesting(false)
+                                .accessibilityLabel("Link destination: \(destination)")
+                        }
+                    }
             } else {
                 ContentUnavailableView("The document engine could not start", systemImage: "doc.badge.ellipsis",
                                        description: Text("Rebuild or reinstall fb with its bundled Pandoc executable."))
@@ -227,6 +242,7 @@ private struct NativeWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> FileDropWebView { webView }
     func updateNSView(_ nsView: FileDropWebView, context: Context) {}
     static func dismantleNSView(_ nsView: FileDropWebView, coordinator: ()) {
+        nsView.clearLinkHover()
         nsView.stopLoading()
         (nsView.configuration.urlSchemeHandler(forURLScheme: "fb") as? FBSchemeHandler)?.cancelAll()
         nsView.navigationDelegate = nil

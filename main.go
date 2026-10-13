@@ -8639,8 +8639,8 @@ var pandocHeader = `<link rel="icon" href="/` + assetPrefix + `/favicon.png">
   }
 
   @media print {
+    /* Let the print settings control margins consistently on every page. */
     @page {
-      margin: 0.6in 0.6in 1.0in 0.6in;
       @bottom-center {
         content: counter(page) " / " counter(pages);
         color: #000 !important;
@@ -8648,6 +8648,31 @@ var pandocHeader = `<link rel="icon" href="/` + assetPrefix + `/favicon.png">
         font-size: 11pt;
       }
     }
+
+    body {
+      margin: 0;
+      max-width: none;
+      padding: 0;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      overflow: visible;
+    }
+
+    pre code {
+      white-space: inherit;
+      overflow-wrap: anywhere;
+    }
+
+    table {
+      display: table;
+      max-width: 100%;
+      overflow: visible;
+    }
+
+    thead { display: table-header-group; }
+    h1, h2, h3, h4, h5, h6 { break-after: avoid; }
 
     html,
     body,

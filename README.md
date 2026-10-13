@@ -83,6 +83,13 @@ Choose View → Zoom In, Zoom Out, or Actual Size (⌘0) to adjust document zoom
 fb remembers your last chosen zoom level for new windows and future launches.
 Existing windows keep their current zoom until you change it there.
 
+Choose File → Print (⌘P) to print the current rendered page. Markdown prints
+with its formatted headings, tables, images, and math, flowing onto as many
+pages as needed. The standard macOS print dialog also offers **Save as PDF**.
+
+Hover over a link to preview its destination at the bottom of the window,
+including any `#anchor` that jumps to a particular heading.
+
 Install the signed, notarized app:
 
 ```sh
