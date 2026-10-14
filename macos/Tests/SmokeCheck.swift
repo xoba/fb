@@ -172,6 +172,8 @@ final class SmokeCheck: NSObject, WKNavigationDelegate {
         try await check("literal percent filename", "document.querySelector('h1')?.textContent === 'Percent filename works'")
         try await load("example.go")
         try await check("source highlighting", "document.body.innerText.includes('func main()') && document.querySelector('pre') !== null")
+        try await load("example.asm")
+        try await check("assembly source highlighting", "document.querySelector('#L1') !== null && document.body.innerText.includes('entry:') && [...document.querySelectorAll('pre span')].some(s => s.textContent === '#1.25e-06') && document.querySelector('a[href=\"example.asm?raw=1\"]') !== null")
         try await load("sample.csv")
         try await submitQuery("select sum(amount) as total from t")
         try await check("CSV SQL form submission", "document.body.innerText.includes('total') && document.body.innerText.includes('30')")

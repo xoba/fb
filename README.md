@@ -341,7 +341,7 @@ shows as ordinary text.
 About sixty extensions render as GitHub-styled pages with clickable,
 linkable line numbers (`#L42`):
 
-> `.ada .adb .ads .awk .bash .bat .c .cc .clj .coffee .cpp .cs .css .dart
+> `.ada .adb .ads .asm .awk .bash .bat .c .cc .clj .coffee .cpp .cs .css .dart
 > .diff .el .erb .erl .ex .exs .f .f90 .feature .fish .go .gradle .graphql
 > .groovy .h .hcl .hpp .hs .ini .java .jl .js .json .jsx .kt .lisp .lua
 > .mjs .nix .patch .php .pl .properties .proto .ps1 .py .r .rb .rs .s
@@ -351,6 +351,11 @@ linkable line numbers (`#L42`):
 Plus exact filenames without useful extensions: `Makefile`, `makefile`,
 `GNUmakefile`, `Dockerfile`, `CMakeLists.txt`, `.bashrc`, `.zshrc` — and
 `.mf` jar manifests, colored as key/value properties.
+
+`.asm` assembly files show comments, labels, directives, instructions, registers,
+and numeric operands with the original spacing preserved. Mixed RISC-V and
+accelerator code supports both `#` comments and numeric immediates such as
+`#0.5` and `#-127`.
 
 `.plist` property lists also render as highlighted XML — binary ones are
 converted first with macOS's built-in `plutil` (elsewhere, binary plists
@@ -555,7 +560,7 @@ extensionless files that sniff as markup display as plain text.
 | Treatment | Types |
 |-----------|-------|
 | Rendered as a document (pandoc) | `.md` `.rst` `.ipynb` `.doc` `.docx` `.odt` `.rtf` `.epub` |
-| Syntax-highlighted source | `.ada` `.adb` `.ads` `.awk` `.bash` `.bat` `.c` `.cc` `.clj` `.coffee` `.cpp` `.cs` `.css` `.dart` `.diff` `.el` `.erb` `.erl` `.ex` `.exs` `.f` `.f90` `.feature` `.fish` `.go` `.gradle` `.graphql` `.groovy` `.h` `.hcl` `.hpp` `.hs` `.ini` `.java` `.jl` `.js` `.json` `.jsx` `.kt` `.lisp` `.lua` `.mf` `.mjs` `.nix` `.patch` `.php` `.pl` `.properties` `.proto` `.ps1` `.py` `.r` `.rb` `.rs` `.s` `.scala` `.scss` `.sh` `.sql` `.svelte` `.swift` `.tex` `.tf` `.toml` `.ts` `.tsx` `.typ` `.vue` `.xml` `.yaml` `.yml` `.zig` `.zsh` |
+| Syntax-highlighted source | `.ada` `.adb` `.ads` `.asm` `.awk` `.bash` `.bat` `.c` `.cc` `.clj` `.coffee` `.cpp` `.cs` `.css` `.dart` `.diff` `.el` `.erb` `.erl` `.ex` `.exs` `.f` `.f90` `.feature` `.fish` `.go` `.gradle` `.graphql` `.groovy` `.h` `.hcl` `.hpp` `.hs` `.ini` `.java` `.jl` `.js` `.json` `.jsx` `.kt` `.lisp` `.lua` `.mf` `.mjs` `.nix` `.patch` `.php` `.pl` `.properties` `.proto` `.ps1` `.py` `.r` `.rb` `.rs` `.s` `.scala` `.scss` `.sh` `.sql` `.svelte` `.swift` `.tex` `.tf` `.toml` `.ts` `.tsx` `.typ` `.vue` `.xml` `.yaml` `.yml` `.zig` `.zsh` |
 | Syntax-highlighted by exact filename | `Makefile` `makefile` `GNUmakefile` `Dockerfile` `CMakeLists.txt` `.bashrc` `.zshrc` |
 | Highlighted as XML (binary converted via plutil) | `.plist` |
 | Structured module pages | `go.mod` `go.work` `go.sum` `go.work.sum` |

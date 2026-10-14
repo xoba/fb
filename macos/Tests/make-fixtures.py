@@ -50,6 +50,11 @@ print_sections.append(
 (root / "spaced & café #1.md").write_text("# Encoded filename works\n")
 (root / "100%.md").write_text("# Percent filename works\n")
 (root / "example.go").write_text("package main\n\nfunc main() {}\n")
+(root / "example.asm").write_text(
+    "# Assembly preview\n        .text\nentry:\n"
+    "        fnma v2, v0, #1.25e-06, v1 # keep immediate colored\n"
+    "        max v2, v2, #-127\n"
+)
 (root / "sample.csv").write_text("name,amount\nalpha,10\nbeta,20\n")
 (root / "pixel.png").write_bytes(base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j53sAAAAASUVORK5CYII="

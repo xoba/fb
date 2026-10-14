@@ -2974,6 +2974,7 @@ var highlightExts = map[string]bool{
 	".ada":        true,
 	".adb":        true,
 	".ads":        true,
+	".asm":        true,
 	".awk":        true,
 	".bash":       true,
 	".bat":        true,
@@ -3263,6 +3264,9 @@ var forcedLexers = map[string]string{
 
 func highlightSource(filename, src string) (template.HTML, error) {
 	lexer := lexers.Match(filename)
+	if strings.EqualFold(path.Ext(filename), ".asm") {
+		lexer = assemblyLexer
+	}
 	if alias, ok := forcedLexers[strings.ToLower(path.Ext(filename))]; ok {
 		if forced := lexers.Get(alias); forced != nil {
 			lexer = forced
