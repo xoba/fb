@@ -147,7 +147,7 @@ macos/Scripts/smoke-test.sh
 
 The last command needs a logged-in graphical Mac session and Python 3. It
 creates disposable fixtures under `.build/smoke`, compiles the actual Swift/Go
-bridge, and exercises WebKit loading, Pandoc, math, relative resources, native
+bridge, and exercises WebKit loading, Pandoc, math, assembly highlighting, relative resources, native
 file/folder pasteboard URLs, SQL form submission and script requests, archive
 members, email MIME navigation and decoded attachments, embedded email images,
 inbox listings, HTML script sandboxing, audio metadata, PDF navigation, formatted
@@ -157,8 +157,8 @@ required because WebKit defers media loading for unattached views.
 ## Signing and packaging
 
 The public channels are a notarized GitHub Release download and
-`brew install --cask xoba/tap/fb`. Version 0.1.4 (build 6) is published as
-[`mac-v0.1.4`](https://github.com/xoba/fb/releases/tag/mac-v0.1.4). See
+`brew install --cask xoba/tap/fb`. Version 0.1.5 (build 7) is published as
+[`mac-v0.1.5`](https://github.com/xoba/fb/releases/tag/mac-v0.1.5). See
 [Distribution.md](Distribution.md) for the concrete release workflow and
 legacy-server migration. Local redeployment is separate from publication.
 
@@ -259,7 +259,7 @@ Submit using an existing Keychain profile:
 ```sh
 NOTARY_PROFILE='your-existing-profile' \
   macos/Scripts/notarize-existing.sh /absolute/path/to/export/fb.app \
-  macos/.build/distribution/fb-0.1.4-arm64
+  macos/.build/distribution/fb-0.1.5-arm64
 ```
 
 Alternatively, use an existing team API key with file permissions `600`:
@@ -267,7 +267,7 @@ Alternatively, use an existing team API key with file permissions `600`:
 ```sh
 ASC_RELEASE_KEY_PATH=/absolute/path/to/AuthKey_6B7NTN43DS.p8 \
   macos/Scripts/notarize-existing.sh /absolute/path/to/export/fb.app \
-  macos/.build/distribution/fb-0.1.4-arm64
+  macos/.build/distribution/fb-0.1.5-arm64
 ```
 
 Choose one authentication method, and use a fresh output directory. Key ID,
