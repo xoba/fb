@@ -14,6 +14,7 @@ root.mkdir(parents=True, exist_ok=True)
 (root / "sample.md").write_text(
     "# Embedded engine\n\nOriginal file, rendered with bundled Pandoc.\n\n"
     "[Relative link](nested/next.md)\n\n![Pixel](pixel.png)\n\n"
+    "[Linked folder](linked-folder)\n\n[Linked file](linked-file.md)\n\n"
     "[**Hover local**](spaced%20%26%20caf%C3%A9%20%231.md?raw=1#somewhere)\n\n"
     "[External reference](https://example.com/reference?from=fb#details)\n\n"
     "$$x^2 + y^2 = z^2$$\n"
@@ -59,6 +60,21 @@ print_sections.append(
 (root / "pixel.png").write_bytes(base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j53sAAAAASUVORK5CYII="
 ))
+# Absolute symlinks reproduce links to folders elsewhere on disk.
+# Their targets stay inside the disposable fixture tree.
+linked_target = root / "symlink-target"
+linked_target.mkdir(exist_ok=True)
+(linked_target / "readme.md").write_text(
+    "# Linked folder README\n\n[Linked child](child.md)\n\n![Linked pixel](pixel.png)\n"
+)
+(linked_target / "child.md").write_text("# Linked child document\n")
+(linked_target / "pixel.png").write_bytes((root / "pixel.png").read_bytes())
+for alias, target in (
+    (root / "linked-folder", linked_target),
+    (root / "linked-file.md", linked_target / "child.md"),
+):
+    alias.unlink(missing_ok=True)
+    alias.symlink_to(target.resolve(), target_is_directory=target.is_dir())
 # A minimal valid PDF, without depending on a PDF generator installation.
 objects = [
     b"<< /Type /Catalog /Pages 2 0 R >>",

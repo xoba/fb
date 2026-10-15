@@ -83,9 +83,16 @@ func newDesktopEngine(root, pandoc string) (*desktopEngine, error) {
 	if err != nil {
 		return nil, err
 	}
+	fsys := osRoot.FS()
+	if resolved == string(os.PathSeparator) {
+		// The native app browses the whole filesystem with the user's permissions.
+		// os.Root rejects absolute symlinks even when rooted at /, so use normal
+		// filesystem resolution here. Keep confinement for narrower engine roots.
+		fsys = os.DirFS(resolved)
+	}
 	return &desktopEngine{
 		root:    osRoot,
-		handler: fileServer{fsys: osRoot.FS(), pandoc: pandoc, dir: resolved},
+		handler: fileServer{fsys: fsys, pandoc: pandoc, dir: resolved},
 		active:  make(map[*desktopRequest]struct{}),
 	}, nil
 }

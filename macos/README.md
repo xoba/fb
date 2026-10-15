@@ -120,6 +120,9 @@ Links within the same page show just the `#anchor`.
 Save a Copy writes only to a destination explicitly selected in the save panel
 and can replace an existing file there.
 The most recent filesystem location is remembered across launches.
+Symbolic links to files and folders work in directory listings and Markdown
+links, including links with absolute targets. Navigation keeps the symlink's
+path, so relative links and resources continue to resolve through it.
 
 File → Print prints the active window's rendered page, including Markdown
 formatting, tables, images, and math. Long documents flow across printed pages.

@@ -106,6 +106,20 @@ final class SmokeCheck: NSObject, WKNavigationDelegate {
         }
     }
 
+    private func followLink(_ href: String) async throws {
+        let literal = String(decoding: try JSONEncoder().encode(href), as: UTF8.self)
+        let selector = "[...document.querySelectorAll('a')].find(a => a.getAttribute('href') === \(literal))"
+        guard try await webView.evaluateJavaScript("\(selector) !== undefined") as? Bool == true else {
+            throw FBError.message("No document link for \(href)")
+        }
+        try await navigate("link \(href)") {
+            Task {
+                do { _ = try await webView.evaluateJavaScript("\(selector).click(); void 0") }
+                catch { complete(error) }
+            }
+        }
+    }
+
     func submitQuery(_ query: String) async throws {
         try await withCheckedThrowingContinuation { continuation in
             navigation = continuation
@@ -164,6 +178,16 @@ final class SmokeCheck: NSObject, WKNavigationDelegate {
         try await waitFor("bundled MathJax", "document.querySelector('mjx-container') !== null")
         let relative = try await webView.evaluateJavaScript("document.querySelector('a[href*=\"nested/next\"]').href") as! String
         guard URL(string: relative)?.scheme == "fb" else { throw FBError.message("Relative link escaped custom scheme") }
+        try await followLink("linked-folder")
+        try await check("absolute directory symlink link and slash redirect", "location.pathname.endsWith('/linked-folder/') && document.querySelector('.readme')?.innerText.includes('Linked folder README')")
+        try await waitFor("relative image through directory symlink", "[...document.querySelectorAll('.readme img')].some(i => i.naturalWidth === 1 && new URL(i.src).pathname.endsWith('/linked-folder/pixel.png'))")
+        try await followLink("child.md")
+        try await check("relative document through directory symlink", "location.pathname.endsWith('/linked-folder/child.md') && document.querySelector('h1')?.textContent === 'Linked child document'")
+        try await navigate("back to linked folder") { webView.goBack() }
+        try await check("symlink directory browser history", "location.pathname.endsWith('/linked-folder/') && document.querySelector('.readme')?.innerText.includes('Linked folder README')")
+        try await load("sample.md")
+        try await followLink("linked-file.md")
+        try await check("absolute file symlink link", "location.pathname.endsWith('/linked-file.md') && document.querySelector('h1')?.textContent === 'Linked child document'")
         try await load("nested/next.md")
         try await check("relative document", "document.querySelector('h1')?.textContent === 'Relative navigation works'")
         try await load("spaced & café #1.md")

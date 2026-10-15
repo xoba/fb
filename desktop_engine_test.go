@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -212,6 +213,83 @@ func TestDesktopSymlinkConfinement(t *testing.T) {
 	response, body := desktopTestFetch(t, id, desktopRequestInput{URL: "fb://local/escape.txt?raw=1"})
 	if response.Status == http.StatusOK || bytes.Contains(body, []byte("outside-root-secret")) {
 		t.Fatalf("symlink escaped root: response=%+v body=%q", response, body)
+	}
+}
+
+func TestDesktopFilesystemRootSymlinks(t *testing.T) {
+	// The native app browses from /, not from the folder currently on screen.
+	// Absolute symlinks must work there just as they do in Finder.
+	id, err := registerDesktopEngine(string(os.PathSeparator), fakePandoc(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer destroyDesktopEngine(id)
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"notes.md":  "# Linked document\n",
+		"style.css": "body { color: red; }",
+	} {
+		if err := os.WriteFile(filepath.Join(target, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, destination := range map[string]string{
+		"absolute & café #1": target,
+		"relative":           "target",
+		"chain":              "absolute & café #1",
+		"file.md":            filepath.Join(target, "notes.md"),
+		"broken":             filepath.Join(root, "missing"),
+		"loop":               "loop",
+	} {
+		if err := os.Symlink(destination, filepath.Join(root, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	address := func(name string) string {
+		return (&url.URL{Scheme: "fb", Host: "local", Path: root + "/" + name}).String()
+	}
+	for _, alias := range []string{"absolute & café #1", "relative", "chain"} {
+		t.Run(alias, func(t *testing.T) {
+			response, _ := desktopTestFetch(t, id, desktopRequestInput{URL: address(alias) + "?sort=name", Document: true})
+			wantLocation := (&url.URL{Path: root + "/" + alias + "/", RawQuery: "sort=name"}).String()
+			if response.Status != http.StatusMovedPermanently || response.Headers["Location"] != wantLocation {
+				t.Fatalf("symlink directory redirect=%+v, want %q", response, wantLocation)
+			}
+			for _, test := range []struct {
+				path, want string
+				document   bool
+			}{
+				{alias + "/", "notes.md", true},
+				{alias + "/notes.md", "rendered markdown", true},
+				{alias + "/style.css", "body { color: red; }", false},
+			} {
+				response, body := desktopTestFetch(t, id, desktopRequestInput{URL: address(test.path), Document: test.document})
+				if response.Status != http.StatusOK || !bytes.Contains(body, []byte(test.want)) {
+					t.Errorf("%s: status=%d body=%.200s", test.path, response.Status, body)
+				}
+			}
+		})
+	}
+	for _, raw := range []bool{false, true} {
+		requestURL, want := address("file.md"), "rendered markdown"
+		if raw {
+			requestURL += "?raw=1"
+			want = "# Linked document\n"
+		}
+		response, body := desktopTestFetch(t, id, desktopRequestInput{URL: requestURL, Document: true})
+		if response.Status != http.StatusOK || !bytes.Contains(body, []byte(want)) {
+			t.Errorf("file symlink raw=%v: status=%d body=%.200s", raw, response.Status, body)
+		}
+	}
+	for _, name := range []string{"broken", "loop"} {
+		response, _ := desktopTestFetch(t, id, desktopRequestInput{URL: address(name), Document: true})
+		if response.Status != http.StatusNotFound {
+			t.Errorf("%s symlink: status=%d, want 404", name, response.Status)
+		}
 	}
 }
 

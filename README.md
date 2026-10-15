@@ -689,9 +689,11 @@ without `git` on the PATH, listings render plainly and nothing breaks.
 ## How it works, generally
 
 The Go rendering engine is built around a single abstraction: a `fileServer`
-that serves any `fs.FS`. The real filesystem is `os.OpenRoot(root).FS()` —
-a root-confined filesystem, so a symlink inside the tree cannot point
-browsing at files outside it; opening an archive produces another `fs.FS`
+that serves any `fs.FS`. The macOS app uses `os.DirFS("/")` to browse with the
+current user's filesystem permissions, following both absolute and relative
+symbolic links to files and folders. Narrower engine roots and the deprecated
+server use `os.OpenRoot(root).FS()`, which confines access to that tree and
+rejects absolute symbolic links. Opening an archive produces another `fs.FS`
 (zip natively, tar via an in-memory map), which gets wrapped in a nested
 `fileServer` mounted at the archive's URL path — that is the entire
 archive-browsing feature. Markdown is piped to pandoc over stdin, so
