@@ -1,18 +1,16 @@
-# fb for macOS 0.1.5
+# fb for macOS 0.1.6
 
 fb is a standalone local file browser for Apple Silicon Macs running macOS 26
 or later. It presents documents, source code, spreadsheets, databases, and
 archives in a readable interface.
 
-Version 0.1.5 (build 7) adds readable assembly source previews.
+Version 0.1.6 (build 8) fixes navigation through symbolic links.
 It is signed with Developer ID and notarized by Apple.
 
-- Open `.asm` files as syntax-highlighted source with clickable line numbers
-  and the original spacing preserved.
-- Read mixed RISC-V and accelerator code with highlighted instructions,
-  registers, labels, directives, and numeric operands. Hash comments remain
-  distinct from immediate values such as `#0.5`, `#-127`, and `#1.25e-06`.
-- The raw view still provides the original file contents.
+- Follow Markdown links and directory entries to symbolic links with absolute
+  targets without encountering a false “404 page not found” error.
+- Open linked folders and files while keeping the symlink's path. Relative
+  links, images, README previews, and Back/Forward navigation work through it.
 
 **Migrating from the old Homebrew server?** Stop its service and uninstall the
 formula before installing the app:
@@ -41,7 +39,7 @@ brew update
 brew upgrade --cask xoba/tap/fb
 ```
 
-Or download `fb-0.1.5-arm64-notarized.zip` below. `SHA256SUMS` covers the app,
+Or download `fb-0.1.6-arm64-notarized.zip` below. `SHA256SUMS` covers the app,
 dependency notices, and Pandoc source archive.
 
 - Open files and folders from Finder, the Desktop, Open With, or File → Open.

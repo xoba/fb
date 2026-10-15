@@ -2,8 +2,8 @@
 
 The direct-download package is the signed, notarized ZIP containing the
 standalone app. The cask in `xoba/homebrew-tap/Casks/fb.rb` installs that app. It
-has no Homebrew Go, Pandoc, or server dependency. Version 0.1.5 (build 7) is
-published at [mac-v0.1.5](https://github.com/xoba/fb/releases/tag/mac-v0.1.5), with
+has no Homebrew Go, Pandoc, or server dependency. Version 0.1.6 (build 8) is
+published at [mac-v0.1.6](https://github.com/xoba/fb/releases/tag/mac-v0.1.6), with
 checksums, dependency notices, and the Pandoc source distribution. Its uploaded
 bytes were verified, and the cask passed Homebrew style, online audit, and an
 installation test. This workflow describes how to prepare subsequent releases.
@@ -24,7 +24,7 @@ installation test. This workflow describes how to prepare subsequent releases.
    ```sh
    NOTARY_PROFILE='your-existing-profile' \
      macos/Scripts/notarize-existing.sh /absolute/path/to/export/fb.app \
-     macos/.build/distribution/fb-0.1.5-arm64
+     macos/.build/distribution/fb-0.1.6-arm64
    ```
 
    Alternatively, replace `NOTARY_PROFILE` with
@@ -36,13 +36,13 @@ installation test. This workflow describes how to prepare subsequent releases.
    local signature/architecture checks without submission. See the
    [notarization instructions](README.md#notarize-an-existing-signed-export).
 3. Choose the GitHub release tag and exact asset URL. A separate Mac tag namespace,
-   such as `mac-v0.1.5`, avoids confusing the earlier server release tags.
+   such as `mac-v0.1.6`, avoids confusing the earlier server release tags.
 4. Generate the cask from the actual notarized artifact:
 
    ```sh
    macos/Scripts/generate-cask.sh \
-     macos/.build/distribution/fb-0.1.5-arm64/fb-0.1.5-arm64-notarized.zip \
-     https://github.com/xoba/fb/releases/download/mac-v0.1.5/fb-0.1.5-arm64-notarized.zip
+     macos/.build/distribution/fb-0.1.6-arm64/fb-0.1.6-arm64-notarized.zip \
+     https://github.com/xoba/fb/releases/download/mac-v0.1.6/fb-0.1.6-arm64-notarized.zip
    ```
 
 The script reads the version and macOS minimum from the ZIP's app, checks both
