@@ -14,7 +14,7 @@
   "components": [
     {
       "name": "Go toolchain and standard library",
-      "version": "go1.27.2",
+      "version": "go1.27.3",
       "source": "https://go.dev/",
       "notices": [
         {
