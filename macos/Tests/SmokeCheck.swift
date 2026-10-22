@@ -160,6 +160,49 @@ final class SmokeCheck: NSObject, WKNavigationDelegate {
         throw FBError.message("Timed out waiting for \(label): \(String(describing: details))")
     }
 
+    private func checkImageDimensions() async throws {
+        for (name, label) in [("image-sizing/readme.md", "standalone Markdown"),
+                              ("image-sizing/", "directory README")] {
+            try await load(name)
+            try await waitFor("\(label) original image dimensions", """
+                ['width-image', 'height-image', 'dimension-image', 'markdown-image'].every(id => {
+                  const image = document.getElementById(id);
+                  return image?.naturalWidth === 1536 && image.naturalHeight === 1024;
+                })
+                """)
+            try await check("\(label) explicit image sizing", """
+                [['width-image', 300, 200], ['height-image', 300, 200],
+                 ['dimension-image', 300, 150], ['markdown-image', 300, 200]].every(([id, width, height]) => {
+                  const rect = document.getElementById(id).getBoundingClientRect();
+                  return Math.abs(rect.width - width) < 0.5 && Math.abs(rect.height - height) < 0.5;
+                })
+                """)
+            try await check("\(label) proportional image in a narrow container", """
+                (() => {
+                  const image = document.getElementById('width-image');
+                  const link = image.closest('a');
+                  const container = document.createElement('div');
+                  container.style.width = '150px';
+                  link.before(container);
+                  container.append(link);
+                  const rect = image.getBoundingClientRect();
+                  return Math.abs(rect.width - 150) < 0.5 && Math.abs(rect.height - 100) < 0.5;
+                })()
+                """)
+            try await navigate("\(label) image preview link") {
+                Task {
+                    do { _ = try await webView.evaluateJavaScript("document.getElementById('width-image').closest('a').click(); void 0") }
+                    catch { complete(error) }
+                }
+            }
+            try await waitFor("\(label) image link opens original", """
+                location.pathname.endsWith('/image-sizing/wide.png') &&
+                document.querySelector('img.subject')?.naturalWidth === 1536 &&
+                document.querySelector('img.subject')?.naturalHeight === 1024
+                """)
+        }
+    }
+
     func run() async throws {
         let pasteboard = NSPasteboard(name: .init("fb-smoke-\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
@@ -194,6 +237,7 @@ final class SmokeCheck: NSObject, WKNavigationDelegate {
         try await check("Unicode and reserved filename characters", "document.querySelector('h1')?.textContent === 'Encoded filename works'")
         try await load("100%.md")
         try await check("literal percent filename", "document.querySelector('h1')?.textContent === 'Percent filename works'")
+        try await checkImageDimensions()
         try await load("example.go")
         try await check("source highlighting", "document.body.innerText.includes('func main()') && document.querySelector('pre') !== null")
         try await load("example.asm")

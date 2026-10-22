@@ -3250,6 +3250,49 @@ func TestSanitizeRenderedFragment(t *testing.T) {
 	}
 }
 
+func TestSanitizeRenderedImageDimensions(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		attrs  string
+		retain string
+	}{
+		{"width", `width="300"`, ` width="300"`},
+		{"height", `height="200"`, ` height="200"`},
+		{"both", `width="300" height="200"`, ` width="300" height="200"`},
+		{"zero", `width="0" height="0"`, ` width="0" height="0"`},
+		{"leading zeros", `width="00300"`, ` width="00300"`},
+		{"mixed", `width="300" height="200px"`, ` width="300"`},
+		{"negative", `width="-300" height="-200"`, ""},
+		{"units", `width="300px" height="2in"`, ""},
+		{"percentage", `width="50%"`, ""},
+		{"fraction", `height="200.5"`, ""},
+		{"exponent", `width="3e2"`, ""},
+		{"plus sign", `width="+300"`, ""},
+		{"empty", `width=""`, ""},
+		{"non-ASCII digits", `width="٣٠٠"`, ""},
+		{"CSS", `width="300;display:none" height="auto"`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `<a href="full.png"><img src="full.png" alt="preview" ` + tc.attrs +
+				` style="width:900px" onerror="alert(1)"></a>`
+			want := `<a href="full.png"><img src="full.png" alt="preview"` + tc.retain + `></a>`
+			for _, standalone := range []bool{false, true} {
+				in, expected := input, want
+				if standalone {
+					in = `<html><body>` + in + `</body></html>`
+					expected = `<html><body>` + expected + `</body></html>`
+				}
+				if got := string(sanitizeRendered([]byte(in), standalone)); got != expected {
+					t.Errorf("standalone=%v: got %q, want %q", standalone, got, expected)
+				}
+			}
+		})
+	}
+	if got := string(sanitizeRendered([]byte(`<div width="300" height="200">text</div>`), false)); got != `<div>text</div>` {
+		t.Errorf("image dimensions allowed on another element: %q", got)
+	}
+}
+
 func TestSanitizeRenderedStandaloneKeepsHead(t *testing.T) {
 	in := `<!doctype html><html><head><script>MathJax = {};</script>` +
 		`<style>body{color:#000}</style></head><body>` +

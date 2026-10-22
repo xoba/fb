@@ -336,6 +336,12 @@ formatting, images, anchors, and tables survive. Markdown YAML front
 matter is not interpreted (metadata could inject into the page head); it
 shows as ordinary text.
 
+Image tags preserve non-negative integer `width` and `height` attributes, so
+`<img src="picture.png" alt="Preview" width="300">` displays a 300-pixel-wide
+preview in both documents and directory README previews, shrinking to fit if
+needed. Pandoc's `![Preview](picture.png){width=300px}` also works. Inline
+styles, including percentage dimensions, are still stripped.
+
 ### Source code (highlighted by chroma)
 
 About sixty extensions render as GitHub-styled pages with clickable,

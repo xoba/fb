@@ -4,9 +4,11 @@ import base64
 import json
 from pathlib import Path
 import sqlite3
+import struct
 import sys
 import wave
 import zipfile
+import zlib
 
 root = Path(sys.argv[1])
 root.mkdir(parents=True, exist_ok=True)
@@ -60,6 +62,28 @@ print_sections.append(
 (root / "pixel.png").write_bytes(base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j53sAAAAASUVORK5CYII="
 ))
+# An oversized PNG exercises display dimensions without resizing the source image.
+image_sizing = root / "image-sizing"
+image_sizing.mkdir(exist_ok=True)
+
+
+def png_chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+
+(image_sizing / "wide.png").write_bytes(
+    b"\x89PNG\r\n\x1a\n"
+    + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1536, 1024, 8, 2, 0, 0, 0))
+    + png_chunk(b"IDAT", zlib.compress((b"\0" + b"\x12\x68\xbe" * 1536) * 1024))
+    + png_chunk(b"IEND", b"")
+)
+(image_sizing / "readme.md").write_text(
+    "# Image dimensions\n\n"
+    '<a href="wide.png"><img id="width-image" src="wide.png" width="300" alt="Width only"></a>\n\n'
+    '<img id="height-image" src="wide.png" height="200" alt="Height only">\n\n'
+    '<img id="dimension-image" src="wide.png" width="300" height="150" alt="Both dimensions">\n\n'
+    "Inline Markdown: ![Markdown dimensions](wide.png){#markdown-image width=300px}\n"
+)
 # Absolute symlinks reproduce links to folders elsewhere on disk.
 # Their targets stay inside the disposable fixture tree.
 linked_target = root / "symlink-target"

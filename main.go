@@ -2103,6 +2103,9 @@ func newDocumentPolicy() *bluemonday.Policy {
 	p.AllowURLSchemes("http", "https", "mailto")
 	p.AllowRelativeURLs(true) // documents link to sibling files and #anchors
 	p.AllowAttrs("src", "alt", "title").OnElements("img")
+	// HTML image dimensions are non-negative integers in CSS pixels. Keep
+	// these inert attributes without permitting arbitrary inline styles.
+	p.AllowAttrs("width", "height").Matching(regexp.MustCompile(`^[0-9]+$`)).OnElements("img")
 	p.AllowDataURIImages() // --embed-resources inlines document images
 	// Task lists render as disabled checkboxes.
 	p.AllowAttrs("type").Matching(regexp.MustCompile(`^checkbox$`)).OnElements("input")
@@ -8517,6 +8520,7 @@ var directoryTemplate = template.Must(template.New("directory").Parse(browserBre
   p.gitline { margin: -0.3rem 0 0.6rem; font-size: 0.85rem; color: #57606a; }
   p.gitline span.bad { color: #9a6700; font-weight: 600; }
   section.readme { margin-top: 2rem; border-top: 1px solid #d0d7de; }
+  section.readme img { max-width: 100%; }
   section.readme h1.readme-title { font-size: 1rem; color: #57606a; font-weight: 600; }
   section.readme pre.readme-text {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
