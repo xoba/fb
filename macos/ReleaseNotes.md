@@ -1,16 +1,18 @@
-# fb for macOS 0.1.6
+# fb for macOS 0.1.7
 
 fb is a standalone local file browser for Apple Silicon Macs running macOS 26
 or later. It presents documents, source code, spreadsheets, databases, and
 archives in a readable interface.
 
-Version 0.1.6 (build 8) fixes navigation through symbolic links.
+Version 0.1.7 (build 9) respects image sizes in rendered documents.
 It is signed with Developer ID and notarized by Apple.
 
-- Follow Markdown links and directory entries to symbolic links with absolute
-  targets without encountering a false “404 page not found” error.
-- Open linked folders and files while keeping the symlink's path. Relative
-  links, images, README previews, and Back/Forward navigation work through it.
+- Use non-negative integer `width` and `height` attributes on HTML image tags,
+  such as `<img src="picture.png" alt="Preview" width="300">`, in documents
+  and directory README previews. Pandoc's `{width=300px}` syntax also works.
+- Keep directory README preview images within the available window width.
+- Continue sanitizing embedded HTML: scripts, event handlers, and inline styles
+  remain blocked. Numeric image dimensions are the only newly allowed attributes.
 
 **Migrating from the old Homebrew server?** Stop its service and uninstall the
 formula before installing the app:
@@ -39,7 +41,7 @@ brew update
 brew upgrade --cask xoba/tap/fb
 ```
 
-Or download `fb-0.1.6-arm64-notarized.zip` below. `SHA256SUMS` covers the app,
+Or download `fb-0.1.7-arm64-notarized.zip` below. `SHA256SUMS` covers the app,
 dependency notices, and Pandoc source archive.
 
 - Open files and folders from Finder, the Desktop, Open With, or File → Open.
