@@ -160,10 +160,10 @@ required because WebKit defers media loading for unattached views.
 ## Signing and packaging
 
 The public channels are a notarized GitHub Release download and
-`brew install --cask xoba/tap/fb`. Version 0.1.6 (build 8) is published as
-[`mac-v0.1.6`](https://github.com/xoba/fb/releases/tag/mac-v0.1.6). Version 0.1.7
-(build 9) is prepared with numeric image dimension support, but remains
-unpublished pending Developer ID signing and notarization. See
+`brew install --cask xoba/tap/fb`. Version 0.1.7 (build 9) adds numeric image
+dimension support and uses the release tag
+[`mac-v0.1.7`](https://github.com/xoba/fb/releases/tag/mac-v0.1.7). Public packages
+require Developer ID signing and notarization before publication. See
 [Distribution.md](Distribution.md) for the concrete release workflow and
 legacy-server migration. Local redeployment is separate from publication.
 
