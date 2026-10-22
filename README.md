@@ -120,10 +120,6 @@ Releases. Update it with `brew upgrade --cask xoba/tap/fb`. Releases also includ
 checksums, dependency notices, and Pandoc source materials. See the
 [distribution workflow](macos/Distribution.md) for release and migration steps.
 
-[Version 0.1.7 (build 9)](https://github.com/xoba/fb/releases/tag/mac-v0.1.7)
-preserves numeric HTML image dimensions in documents and directory README
-previews, while keeping image previews within the available width.
-
 ### Open from the terminal
 
 macOS's `open` command sends files and folders directly to the installed app:

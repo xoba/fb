@@ -2,16 +2,19 @@
 
 The direct-download package is the signed, notarized ZIP containing the
 standalone app. The cask in `xoba/homebrew-tap/Casks/fb.rb` installs that app. It
-has no Homebrew Go, Pandoc, or server dependency. Version 0.1.7 (build 9) is
-published at [mac-v0.1.7](https://github.com/xoba/fb/releases/tag/mac-v0.1.7), with
+has no Homebrew Go, Pandoc, or server dependency. Version 0.1.6 (build 8) is
+published at [mac-v0.1.6](https://github.com/xoba/fb/releases/tag/mac-v0.1.6), with
 checksums, dependency notices, and the Pandoc source distribution. Its uploaded
 bytes were verified, and the cask passed Homebrew style, online audit, and an
 installation test. This workflow describes how to prepare subsequent releases.
 
+Version 0.1.7 (build 9) is prepared but unpublished. Developer ID signing and
+notarization must complete before its GitHub release and Homebrew cask update.
+
 ## Prepare a reviewable release
 
 For each public update, increment `MARKETING_VERSION` and
-`CURRENT_PROJECT_VERSION` in `project.yml` before building. This release uses
+`CURRENT_PROJECT_VERSION` in `project.yml` before building. The prepared release uses
 `0.1.7` and `9`. The cask generator uses the app's marketing version; changing
 only the build number or archive checksum does not make a versioned cask
 eligible for ordinary `brew upgrade`.

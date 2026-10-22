@@ -1,11 +1,11 @@
-# fb for macOS 0.1.7
+# fb for macOS 0.1.7 (draft)
 
 fb is a standalone local file browser for Apple Silicon Macs running macOS 26
 or later. It presents documents, source code, spreadsheets, databases, and
 archives in a readable interface.
 
 Version 0.1.7 (build 9) respects image sizes in rendered documents.
-It is signed with Developer ID and notarized by Apple.
+Publication is pending Developer ID signing and Apple notarization.
 
 - Use non-negative integer `width` and `height` attributes on HTML image tags,
   such as `<img src="picture.png" alt="Preview" width="300">`, in documents
