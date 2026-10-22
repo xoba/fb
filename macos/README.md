@@ -167,38 +167,79 @@ unpublished pending Developer ID signing and notarization. See
 [Distribution.md](Distribution.md) for the concrete release workflow and
 legacy-server migration. Local redeployment is separate from publication.
 
-The local packaging script requires an installed **Developer ID Application**
-certificate with its matching private key. It does not create certificates or
-change the Apple developer account. App Store Connect credentials are not
-required for this signing path. With an existing identity:
+### Preferred: local signing and API-key notarization
+
+Set up a **Developer ID Application** certificate and its matching private key
+in the Mac's signing keychain once. Import an existing identity from a protected
+backup, or create a local private key and certificate request, obtain the
+Developer ID Application certificate from Apple, and install it in the same
+keychain. A certificate alone is insufficient without its matching private key.
+
+For a new identity, the one-time setup is:
+
+1. Create a certificate signing request (CSR) on the signing Mac, keeping its
+   private key in the login keychain.
+2. Sign into Apple's [Certificates, Identifiers & Profiles](https://developer.apple.com/account/resources/certificates/list)
+   as the team's Account Holder. Add a **Developer ID Application** certificate,
+   upload the CSR, and download the issued `.cer` file. Apple documents these
+   steps in [Developer ID certificates](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/).
+3. Import the downloaded certificate into the same keychain as the private key:
+
+   ```sh
+   security import /absolute/path/to/developerID_application.cer \
+     -k "$HOME/Library/Keychains/login.keychain-db"
+   security find-identity -v -p codesigning
+   ```
+
+Use the exact `Developer ID Application: ...` identity reported by the last
+command. The API key used below authenticates notarization; it does not replace
+the signing identity or issue the Developer ID certificate.
+
+Subsequent releases use that local identity and an existing team API key for
+notarization; they do not require a recurring Xcode account session. The packaging
+script does not create certificates or change the Apple developer account.
+From the intended clean, committed checkout, sign without submitting:
 
 ```sh
-DEVELOPER_ID_IDENTITY='Developer ID Application: Your Name (TEAMID)' \
+test -z "$(git status --porcelain)" &&
+env -u NOTARY_PROFILE \
+  DEVELOPER_ID_IDENTITY='Developer ID Application: Your Name (YOURTEAMID)' \
   macos/Scripts/package.sh
 ```
 
 This builds Release, signs Pandoc before signing the containing app, verifies
-the signatures, and writes a ZIP and checksum under `.build/distribution`.
-The file is explicitly named `signed` until notarization succeeds.
+the signatures, and writes the signed app, ZIP, and checksum under
+`.build/distribution/fb-0.1.7-arm64`. Packaging refuses an existing staged app;
+preserve earlier output before preparing another package for the same version.
+The ZIP is explicitly named `signed` until notarization succeeds.
 
-To submit to Apple's notarization service using credentials you have already
-stored in Keychain, supply the profile name:
+Then submit with an existing team API key whose file permissions are `600`.
+Replace the placeholders with the key's settings and signing team. Use a fresh
+output directory distinct from the signed package directory:
 
 ```sh
-DEVELOPER_ID_IDENTITY='Developer ID Application: Your Name (TEAMID)' \
-NOTARY_PROFILE='your-existing-profile' macos/Scripts/package.sh
+env -u NOTARY_PROFILE \
+  ASC_RELEASE_KEY_PATH=/absolute/path/to/AuthKey_KEYID.p8 \
+  ASC_RELEASE_KEY_ID=YOURKEYID \
+  ASC_RELEASE_ISSUER_ID=YOUR-ISSUER-UUID \
+  FB_DEVELOPMENT_TEAM=YOURTEAMID \
+  macos/Scripts/notarize-existing.sh \
+  macos/.build/distribution/fb-0.1.7-arm64/fb.app \
+  macos/.build/distribution/fb-0.1.7-arm64-notarized
 ```
 
-The script submits the ZIP, waits for acceptance, staples and validates the
-ticket, checks Gatekeeper, and emits a separate `notarized` ZIP. It never
-submits without `NOTARY_PROFILE` and does not publish or upload a release.
+The notarization script preserves the signed input, submits a staged copy,
+waits for acceptance, staples and validates the ticket, checks Gatekeeper, and
+creates the final `notarized` ZIP and checksum. Neither command publishes a
+release. Existing Keychain notarization profiles remain an alternative below.
 
 ### Cloud Developer ID signing
 
-If the Mac has no local Developer ID private key, Xcode's archive/export workflow
-can use Apple's cloud-managed Developer ID certificate. This is separate from
-the `codesign`-based packaging script above. Sign into Xcode > Settings >
-Accounts with the Account Holder, or an account granted cloud Developer ID
+Cloud signing is an optional fallback when a local Developer ID private key is
+unavailable. Xcode's archive/export workflow can use Apple's cloud-managed
+Developer ID certificate. This is separate from the preferred local workflow
+above. Sign into Xcode > Settings > Accounts with the Account Holder, or an
+account granted cloud Developer ID
 access. The script can also authenticate with an existing team API key that has
 the required cloud Developer ID permission; successful iOS signing alone does
 not prove that permission.
@@ -214,21 +255,24 @@ xcodebuild archive -project macos/FB.xcodeproj -scheme FB \
   -configuration Release -destination 'generic/platform=macOS' \
   -derivedDataPath macos/.build/xcode -archivePath macos/.build/FB.xcarchive \
   CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY='Apple Development' \
-  DEVELOPMENT_TEAM=3288VRMQE7 \
+  DEVELOPMENT_TEAM=YOURTEAMID \
   FB_BUILD_REVISION="$(git rev-parse --short HEAD)"
 ```
 
 Then export using the account already signed into Xcode:
 
 ```sh
-macos/Scripts/export-cloud.sh --xcode-account macos/.build/FB.xcarchive
+FB_DEVELOPMENT_TEAM=YOURTEAMID \
+  macos/Scripts/export-cloud.sh --xcode-account macos/.build/FB.xcarchive
 ```
 
 This mode does not require, read, or pass API key settings. As an alternative,
 use an existing team API key that is authorized for cloud Developer ID signing:
 
 ```sh
-ASC_RELEASE_KEY_PATH=/absolute/path/to/AuthKey_6B7NTN43DS.p8 \
+ASC_RELEASE_KEY_PATH=/absolute/path/to/AuthKey_KEYID.p8 \
+ASC_RELEASE_KEY_ID=YOURKEYID ASC_RELEASE_ISSUER_ID=YOUR-ISSUER-UUID \
+FB_DEVELOPMENT_TEAM=YOURTEAMID \
   macos/Scripts/export-cloud.sh --api-key macos/.build/FB.xcarchive
 ```
 
@@ -250,32 +294,26 @@ workflow](https://developer.apple.com/documentation/xcode/creating-distribution-
 
 ### Notarize an existing signed export
 
-Use `notarize-existing.sh` on the Developer ID-signed app or ZIP produced by the
-cloud export. It also accepts an existing locally signed release. No local
-Developer ID private key is needed for this step. Check the signatures and
+Use `notarize-existing.sh` on any existing locally or cloud-signed Developer ID
+app or ZIP. No local Developer ID private key is needed for this step. Check the signatures and
 architecture without submitting anything:
 
 ```sh
-macos/Scripts/notarize-existing.sh --check-only /absolute/path/to/export/fb.app
+FB_DEVELOPMENT_TEAM=YOURTEAMID \
+  macos/Scripts/notarize-existing.sh --check-only /absolute/path/to/export/fb.app
 ```
 
 Submit using an existing Keychain profile:
 
 ```sh
-NOTARY_PROFILE='your-existing-profile' \
+env -u ASC_RELEASE_KEY_PATH NOTARY_PROFILE='your-existing-profile' \
+  FB_DEVELOPMENT_TEAM=YOURTEAMID \
   macos/Scripts/notarize-existing.sh /absolute/path/to/export/fb.app \
-  macos/.build/distribution/fb-0.1.7-arm64
+  macos/.build/distribution/fb-0.1.7-arm64-notarized
 ```
 
-Alternatively, use an existing team API key with file permissions `600`:
-
-```sh
-ASC_RELEASE_KEY_PATH=/absolute/path/to/AuthKey_6B7NTN43DS.p8 \
-  macos/Scripts/notarize-existing.sh /absolute/path/to/export/fb.app \
-  macos/.build/distribution/fb-0.1.7-arm64
-```
-
-Choose one authentication method, and use a fresh output directory. Key ID,
+For API-key authentication, use the preferred command above with the desired
+input path. Choose one authentication method and a fresh output directory. Key ID,
 issuer, team, and timeout overrides are described by `--help`. The script
 preserves the input, submits a staged copy to Apple, and keeps the submission
 result and available developer log. Only after acceptance, stapling, ticket

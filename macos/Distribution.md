@@ -19,38 +19,53 @@ For each public update, increment `MARKETING_VERSION` and
 only the build number or archive checksum does not make a versioned cask
 eligible for ordinary `brew upgrade`.
 
-1. Build and verify a release from the intended committed source. Use the local
-   Developer ID workflow in `Scripts/package.sh`, or export through an authorized
-   Xcode cloud-signing account. The app and its bundled helper must have the
-   expected Developer ID signatures, hardened runtime, and secure timestamps.
-   The [archive example](README.md#cloud-developer-id-signing) requires a clean
-   checkout and sets `FB_BUILD_REVISION` from Git so About File Browser identifies the source.
-2. Notarize the exact release and staple the ticket to the app. Create the final
-   ZIP **after** stapling; `package.sh` does this when `NOTARY_PROFILE` is supplied.
-   For a cloud-signed export or an existing signed app/ZIP, use
-   `notarize-existing.sh` with an existing Keychain profile:
+The preferred route uses a local Developer ID identity and API-key notarization.
+Install the Developer ID Application certificate **and matching private key**
+in the signing keychain once; a certificate alone is insufficient. After that,
+release signing and notarization do not require a recurring Xcode account
+session. See the [local setup instructions](README.md#preferred-local-signing-and-api-key-notarization).
+
+1. Build and sign from the intended clean, committed source:
 
    ```sh
-   NOTARY_PROFILE='your-existing-profile' \
-     macos/Scripts/notarize-existing.sh /absolute/path/to/export/fb.app \
-     macos/.build/distribution/fb-0.1.7-arm64
+   test -z "$(git status --porcelain)" &&
+   env -u NOTARY_PROFILE \
+     DEVELOPER_ID_IDENTITY='Developer ID Application: Your Name (YOURTEAMID)' \
+     macos/Scripts/package.sh
    ```
 
-   Alternatively, replace `NOTARY_PROFILE` with
-   `ASC_RELEASE_KEY_PATH=/absolute/path/to/AuthKey_6B7NTN43DS.p8` for an existing
-   team API key with file permissions `600`. Choose one authentication method
-   and a fresh output directory. The script preserves the input, verifies both
-   Developer ID signatures, submits to Apple, and produces the final stapled ZIP
-   and checksum only after acceptance and validation. Use `--check-only` for
-   local signature/architecture checks without submission. See the
-   [notarization instructions](README.md#notarize-an-existing-signed-export).
+   The app and bundled Pandoc receive Developer ID signatures, hardened runtime,
+   and secure timestamps. The signed output goes to
+   `macos/.build/distribution/fb-0.1.7-arm64`; packaging refuses an existing app
+   there. About File Browser records the source revision.
+2. Notarize that signed app with an existing team API key whose file permissions
+   are `600`. Replace the placeholders with the key settings and signing team.
+   Choose a fresh output directory distinct from the signed input directory:
+
+   ```sh
+   env -u NOTARY_PROFILE \
+     ASC_RELEASE_KEY_PATH=/absolute/path/to/AuthKey_KEYID.p8 \
+     ASC_RELEASE_KEY_ID=YOURKEYID \
+     ASC_RELEASE_ISSUER_ID=YOUR-ISSUER-UUID \
+     FB_DEVELOPMENT_TEAM=YOURTEAMID \
+     macos/Scripts/notarize-existing.sh \
+     macos/.build/distribution/fb-0.1.7-arm64/fb.app \
+     macos/.build/distribution/fb-0.1.7-arm64-notarized
+   ```
+
+   The script preserves the input, verifies both signatures, submits to Apple,
+   and creates the final ZIP **after** acceptance, stapling, ticket validation,
+   and Gatekeeper checks. Use `--check-only` for local checks without submission.
+   An existing Keychain profile is another [notarization option](README.md#notarize-an-existing-signed-export).
+   [Cloud signing](README.md#cloud-developer-id-signing) remains an optional
+   fallback when no local signing identity is available.
 3. Choose the GitHub release tag and exact asset URL. A separate Mac tag namespace,
    such as `mac-v0.1.7`, avoids confusing the earlier server release tags.
 4. Generate the cask from the actual notarized artifact:
 
    ```sh
-   macos/Scripts/generate-cask.sh \
-     macos/.build/distribution/fb-0.1.7-arm64/fb-0.1.7-arm64-notarized.zip \
+   FB_DEVELOPMENT_TEAM=YOURTEAMID macos/Scripts/generate-cask.sh \
+     macos/.build/distribution/fb-0.1.7-arm64-notarized/fb-0.1.7-arm64-notarized.zip \
      https://github.com/xoba/fb/releases/download/mac-v0.1.7/fb-0.1.7-arm64-notarized.zip
    ```
 
