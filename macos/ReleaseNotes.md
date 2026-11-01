@@ -1,17 +1,24 @@
-# fb for macOS 0.1.7
+# fb for macOS 0.1.8
 
 fb is a standalone local file browser for Apple Silicon Macs running macOS 26
 or later. It presents documents, source code, spreadsheets, databases, and
 archives in a readable interface.
 
-Version 0.1.7 (build 9) respects image sizes in rendered documents.
+Version 0.1.8 (build 10) adds built-in documentation and links to specific lines.
 
-- Use non-negative integer `width` and `height` attributes on HTML image tags,
-  such as `<img src="picture.png" alt="Preview" width="300">`, in documents
-  and directory README previews. Pandoc's `{width=300px}` syntax also works.
-- Keep directory README preview images within the available window width.
-- Continue sanitizing embedded HTML: scripts, event handlers, and inline styles
-  remain blocked. Numeric image dimensions are the only newly allowed attributes.
+- Read the full documentation from the Help menu, including a page for every
+  file type with sample files to try. The pages are ordinary Markdown displayed
+  by fb. Type in the Help menu's search field to jump to a topic.
+- Link to a line of a file with `#L42`, or to a range with `#L10-L20`. fb scrolls
+  to the lines and highlights them. Files that normally appear without line
+  numbers, such as Markdown, open in a numbered view with a link back to the
+  rendered page.
+- Open very large text files at a linked line quickly. fb shows 4,000 lines
+  around the target, with links to earlier and later lines.
+- Keep Back and Forward up to date after links within a page, and keep the anchor
+  when a link opens in a new window.
+- Keep the author's layout in formatted JSON, so line numbers match the file. Only
+  minified JSON is reformatted.
 
 **Migrating from the old Homebrew server?** Stop its service and uninstall the
 formula before installing the app:
@@ -40,7 +47,7 @@ brew update
 brew upgrade --cask xoba/tap/fb
 ```
 
-Or download `fb-0.1.7-arm64-notarized.zip` below. `SHA256SUMS` covers the app,
+Or download `fb-0.1.8-arm64-notarized.zip` below. `SHA256SUMS` covers the app,
 dependency notices, and Pandoc source archive.
 
 - Open files and folders from Finder, the Desktop, Open With, or File → Open.
