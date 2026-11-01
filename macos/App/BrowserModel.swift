@@ -23,6 +23,7 @@ final class BrowserModel: NSObject, WKNavigationDelegate, WKUIDelegate {
     private var started = false
     private var activeNavigation: WKNavigation?
     private let preferences: UserDefaults
+    private var historyObservations: [NSKeyValueObservation] = []
     private static let zoomPreferenceKey = "pageZoom"
 
     init(fileURL: URL, engine suppliedEngine: FBEngine? = nil, preferences: UserDefaults = .standard) {
@@ -45,6 +46,16 @@ final class BrowserModel: NSObject, WKNavigationDelegate, WKUIDelegate {
             webView.onFilesDropped = { [weak self] in self?.open($0) }
             webView.onLinkHover = { [weak self] in self?.hoveredLink = $0 }
             webView.registerForDraggedTypes([.fileURL])
+            // Same-page anchors add history without any navigation delegate callback,
+            // so observe WebKit directly or Back stays disabled after following one.
+            historyObservations = [
+                webView.observe(\.canGoBack) { [weak self] _, _ in
+                    MainActor.assumeIsolated { self?.syncHistory() }
+                },
+                webView.observe(\.canGoForward) { [weak self] _, _ in
+                    MainActor.assumeIsolated { self?.syncHistory() }
+                }
+            ]
             self.webView = webView
         } catch { errorMessage = error.localizedDescription }
     }
@@ -71,6 +82,9 @@ final class BrowserModel: NSObject, WKNavigationDelegate, WKUIDelegate {
         title = url.lastPathComponent.isEmpty ? "/" : url.lastPathComponent
         handler?.prepareNavigation(to: destination)
         track(webView?.load(URLRequest(url: destination)))
+        // Reading the bundled documentation is not opening one of the user's files:
+        // it should not appear in Open Recent or be reopened at the next launch.
+        guard !FBHelp.isBundled(url) else { return }
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
         preferences.set(url.path, forKey: "lastOpenedPath")
     }
@@ -82,7 +96,9 @@ final class BrowserModel: NSObject, WKNavigationDelegate, WKUIDelegate {
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
-        panel.directoryURL = currentFileURL?.deletingLastPathComponent()
+        if let current = currentFileURL, !FBHelp.isBundled(current) {
+            panel.directoryURL = current.deletingLastPathComponent()
+        }
         if let window = webView?.window {
             panel.beginSheetModal(for: window) { [weak self] response in
                 if response == .OK { self?.open(panel.urls) }
@@ -91,6 +107,12 @@ final class BrowserModel: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     var currentFileURL: URL? { webView?.url.flatMap(FBLocation.fileURL(webURL:)) ?? initialURL }
+
+    /// True for the documentation and everything it links to inside the app.
+    var isShowingHelp: Bool { currentFileURL.map(FBHelp.isBundled) ?? false }
+
+    /// What the toolbar shows. Bundled pages omit the path into the app.
+    var displayPath: String { FBHelp.displayPath(forPath: path) ?? path }
 
     func goBack() { track(webView?.goBack()) }
     func goForward() { track(webView?.goForward()) }
@@ -208,14 +230,19 @@ final class BrowserModel: NSObject, WKNavigationDelegate, WKUIDelegate {
         else { completion(panel.runModal()) }
     }
 
+    private func syncHistory() {
+        canGoBack = webView?.canGoBack ?? false
+        canGoForward = webView?.canGoForward ?? false
+    }
+
     private func updateLocation(_ webView: WKWebView) {
-        canGoBack = webView.canGoBack
-        canGoForward = webView.canGoForward
+        syncHistory()
         guard let url = webView.url else { return }
         path = url.path
-        title = webView.title.flatMap { $0.isEmpty ? nil : $0 } ?? url.lastPathComponent
+        title = FBHelp.windowTitle(forPath: url.path) ??
+            webView.title.flatMap { $0.isEmpty ? nil : $0 } ?? url.lastPathComponent
         webView.window?.representedURL = FBLocation.fileURL(webURL: url)
-        if let fileURL = FBLocation.fileURL(webURL: url) {
+        if let fileURL = FBLocation.fileURL(webURL: url), !FBHelp.isBundled(fileURL) {
             preferences.set(fileURL.path, forKey: "lastOpenedPath")
         }
     }
@@ -297,8 +324,9 @@ final class BrowserModel: NSObject, WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         guard let url = navigationAction.request.url else { return nil }
-        if let fileURL = FBLocation.fileURL(webURL: url) { openAdditional?(fileURL) }
-        else if ["https", "http", "mailto"].contains(url.scheme ?? "") { NSWorkspace.shared.open(url) }
+        if let fileURL = FBLocation.fileURL(webURL: url) {
+            openAdditional?(FBLocation.fileURL(path: fileURL.path, fragment: url.fragment(percentEncoded: true)))
+        } else if ["https", "http", "mailto"].contains(url.scheme ?? "") { NSWorkspace.shared.open(url) }
         return nil
     }
 

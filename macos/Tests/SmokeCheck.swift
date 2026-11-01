@@ -9,6 +9,7 @@ final class SmokeCheck: NSObject, WKNavigationDelegate {
     let handler: FBSchemeHandler
     let fixtures: URL
     private let pandoc: String
+    private let docs: URL
     private let window: NSWindow
     private var navigation: CheckedContinuation<Void, any Error>?
     private var timeout: Task<Void, Never>?
@@ -16,9 +17,10 @@ final class SmokeCheck: NSObject, WKNavigationDelegate {
     private var responseMIMEType: String?
     private var responseCanDisplay = false
 
-    init(fixtures: URL, pandoc: String) throws {
+    init(fixtures: URL, pandoc: String, docs: URL) throws {
         self.fixtures = fixtures
         self.pandoc = pandoc
+        self.docs = docs
         handler = FBSchemeHandler(engine: try FBEngine(pandoc: pandoc))
         let config = WKWebViewConfiguration()
         handler.configure(config)
@@ -158,6 +160,132 @@ final class SmokeCheck: NSObject, WKNavigationDelegate {
         }
         let details = try? await webView.evaluateJavaScript("JSON.stringify({error:window.fbSmokeError,audio:(()=>{let a=document.querySelector('audio');return a?{src:a.currentSrc,state:a.readyState,network:a.networkState,error:a.error?.message}:null})()})")
         throw FBError.message("Timed out waiting for \(label): \(String(describing: details))")
+    }
+
+    private func followLinkNamed(_ text: String) async throws {
+        let literal = String(decoding: try JSONEncoder().encode(text), as: UTF8.self)
+        let selector = "[...document.querySelectorAll('a')].find(a => a.textContent === \(literal))"
+        guard try await webView.evaluateJavaScript("\(selector) !== undefined") as? Bool == true else {
+            throw FBError.message("No link named \(text)")
+        }
+        try await navigate("link \(text)") {
+            Task {
+                do { _ = try await webView.evaluateJavaScript("\(selector).click(); void 0") }
+                catch { complete(error) }
+            }
+        }
+    }
+
+    /// A target sits well below the top of the window, with the line highlighted.
+    private func targeted(_ id: String) -> String {
+        "(() => { const n = document.getElementById('\(id)'); if (!n || !n.parentElement.classList.contains('line-target')) return false; const top = n.getBoundingClientRect().top; return top > 0.2 * innerHeight && top < 0.4 * innerHeight; })()"
+    }
+
+    private func checkLineAnchors() async throws {
+        let linkedFile = FBLocation.fileURL(path: "/tmp/a b.go", fragment: "L5")
+        guard FBLocation.webURL(fileURL: linkedFile).absoluteString == "fb://local/tmp/a%20b.go#L5",
+              linkedFile.fragment(percentEncoded: true) == "L5" else {
+            throw FBError.message("A location lost its anchor")
+        }
+        passed.append("locations keep their anchors for new windows")
+        print("PASS locations keep their anchors for new windows")
+
+        try await load("lines.md")
+        try await followLinkNamed("go line")
+        try await waitFor("line link scrolls to and highlights a source line", targeted("L150"))
+        try await check("the highlight covers only the target", "document.querySelectorAll('.line-target').length === 1")
+        // Same-document jumps, as when clicking a line number.
+        _ = try await webView.evaluateJavaScript("document.querySelector('#L170 a').click(); void 0")
+        try await waitFor("clicking a line number moves the highlight", "\(targeted("L170")) && document.querySelectorAll('.line-target').length === 1")
+        try await load("lines.md")
+        try await followLinkNamed("go range")
+        try await waitFor("range link highlights every line in it", "document.querySelectorAll('.line-target').length === 11 && \(targeted("L100"))")
+        try await load("lines.md")
+        try await followLinkNamed("go bare")
+        try await waitFor("bare number works on a numbered page", targeted("L120"))
+        try await load("lines.md")
+        try await followLinkNamed("text line")
+        try await waitFor("plain text gets line numbers from a line link", targeted("L200"))
+        try await check("plain text has no rendered link", "document.querySelector('a.raw.alt') === null")
+        try await load("lines.txt")
+        try await check("plain text without a line link stays plain", "document.contentType === 'text/plain'")
+        try await load("lines.md")
+        try await followLinkNamed("markdown line")
+        try await waitFor("Markdown shows numbered source for a line link", "document.querySelector('h1') === null && \(targeted("L5").replacingOccurrences(of: "top > 0.2 * innerHeight && ", with: ""))")
+        try await followLink("other-lines.md?view=rendered")
+        try await check("the rendered link returns to the rendered document", "document.querySelector('h1')?.textContent === 'Other lines' && document.getElementById('L1') === null")
+        try await navigate("back to numbered source") { webView.goBack() }
+        try await check("Back returns to the numbered source", "document.getElementById('L5') !== null")
+        try await load("lines.md")
+        try await followLinkNamed("numeric heading")
+        try await check("a numeric heading anchor stays on the rendered document", "document.querySelector('h1')?.textContent === 'Other lines' && document.querySelector(':target')?.tagName === 'H2'")
+        try await load("lines.md")
+        try await followLinkNamed("csv line")
+        try await waitFor("a table's line link shows file lines", "document.querySelector('table') === null && \(targeted("L50"))")
+        try await load("lines.md")
+        try await followLinkNamed("csv cell")
+        try await waitFor("a table's cell anchor still selects the cell", "document.querySelector('table.data')?.rows[201]?.cells[2]?.style.outline.includes('2px')")
+        try await load("formatted.json")
+        try await check("formatted JSON keeps its own lines", "document.getElementById('L5')?.parentElement.innerText.includes('}') && document.getElementById('L6') === null")
+        try await load("lines.md")
+        try await followLinkNamed("long line")
+        try await waitFor("a long file shows a window around the line", "document.querySelector('.line-window')?.innerText.includes('13000') && document.querySelectorAll('pre [id^=L]').length === 4000 && \(targeted("L15000"))")
+        // Reaching outside the window asks the renderer for another one.
+        try await navigate("later lines in a long file") {
+            Task {
+                do { _ = try await webView.evaluateJavaScript("[...document.querySelectorAll('.line-window a')].find(a => a.textContent === 'Later lines').click(); void 0") }
+                catch { complete(error) }
+            }
+        }
+        try await waitFor("Later lines moves the window", "document.querySelector('.line-window')?.innerText.includes('15000') && \(targeted("L17000"))")
+        try await load("lines.md")
+        try await followLinkNamed("past the end")
+        try await waitFor("a target past the end shows the last lines", "document.querySelector('.line-window')?.innerText.includes('20000') && scrollY > 0")
+    }
+
+    private func checkHelpPages() async throws {
+        let index = FBHelpIndex(root: docs)
+        guard index.topics.count > 30 else { throw FBError.message("Help index found only \(index.topics.count) topics") }
+        guard index.search("parquet", limit: 5).first?.pageTitle == "Parquet",
+              index.search("PARQUET  query", limit: 50).contains(where: { $0.page == "file-types/parquet.md" }),
+              index.search("", limit: 5).isEmpty, index.search("zzzzzz", limit: 5).isEmpty,
+              index.search("a", limit: 3).count == 3 else {
+            throw FBError.message("Help search returned the wrong topics")
+        }
+        passed.append("help search finds topics")
+        print("PASS help search finds topics")
+        // These decide what stays out of Open Recent and the location restored at launch.
+        guard FBHelp.contains(docs.appendingPathComponent("linking.md").path, in: docs.path),
+              FBHelp.contains(docs.path, in: docs.path),
+              !FBHelp.contains(docs.path + "-other/linking.md", in: docs.path),
+              !FBHelp.isBundled(fixtures.appendingPathComponent("sample.md")),
+              FBHelp.displayPath(forPath: fixtures.path) == nil else {
+            throw FBError.message("Help misjudged which locations are bundled")
+        }
+        passed.append("help recognizes bundled locations")
+        print("PASS help recognizes bundled locations")
+        // Every search result must open somewhere real.
+        let pages = Dictionary(grouping: index.topics, by: \.page)
+        for (page, topics) in pages.sorted(by: { $0.key < $1.key }) {
+            let url = FBLocation.webURL(fileURL: docs.appendingPathComponent(page))
+            try await navigate(page) {
+                handler.prepareNavigation(to: url)
+                webView.load(URLRequest(url: url))
+            }
+            let title = topics[0].pageTitle
+            let literal = String(decoding: try JSONEncoder().encode(title), as: UTF8.self)
+            guard try await webView.evaluateJavaScript("document.querySelector('h1')?.textContent === \(literal)") as? Bool == true else {
+                throw FBError.message("Help page \(page) did not render its title \(title)")
+            }
+            for anchor in topics.compactMap(\.anchor) {
+                let id = String(decoding: try JSONEncoder().encode(anchor), as: UTF8.self)
+                guard try await webView.evaluateJavaScript("document.getElementById(\(id)) !== null") as? Bool == true else {
+                    throw FBError.message("Help topic anchor \(anchor) is missing from \(page)")
+                }
+            }
+        }
+        passed.append("help pages render with their titles and every topic anchor exists")
+        print("PASS help pages render with their titles and every topic anchor exists")
     }
 
     private func checkImageDimensions() async throws {
@@ -322,6 +450,8 @@ final class SmokeCheck: NSObject, WKNavigationDelegate {
         print("PASS PDF navigation")
         try await load("payload.txt~", raw: true)
         try await check("raw text backup stays inert", "document.body.innerText.includes('<script>') && window.fbUnsafeScriptExecuted === undefined")
+        try await checkLineAnchors()
+        try await checkHelpPages()
         let navigationCheck = try BrowserNavigationCheck(fixtures: fixtures, pandoc: pandoc)
         passed.append(contentsOf: try await navigationCheck.run())
         let output: [String: Any] = ["passed": passed, "count": passed.count]
@@ -450,6 +580,26 @@ private final class BrowserNavigationCheck: NSObject, WKNavigationDelegate {
         try await hover("a[href^=\"https:\"]")
         try await waitUntil("external link preview") { model.hoveredLink == "https://example.com/reference?from=fb#details" }
         guard webView.url == originalURL else { throw FBError.message("Hovering navigated away from the current document") }
+    }
+
+    /// Same-page anchors add history with no navigation callback at all.
+    private func checkSamePageHistory() async throws {
+        let fresh = BrowserModel(fileURL: fixtures.appendingPathComponent("lines.md"), engine: engine, preferences: preferences)
+        guard let freshView = fresh.webView else { throw FBError.message("No browser view") }
+        window.contentView = freshView
+        defer {
+            freshView.stopLoading()
+            (freshView.configuration.urlSchemeHandler(forURLScheme: "fb") as? FBSchemeHandler)?.cancelAll()
+            window.contentView = webView
+        }
+        fresh.start()
+        try await waitUntil("first page in a window") { !fresh.isLoading && freshView.url != nil }
+        guard !fresh.canGoBack else { throw FBError.message("A new window should have no history") }
+        _ = try await freshView.evaluateJavaScript("[...document.querySelectorAll('a')].find(a => a.textContent === 'jump').click(); void 0")
+        try await waitUntil("same-page anchor enables Back") { fresh.canGoBack }
+        fresh.goBack()
+        try await waitUntil("Back from a same-page anchor") { !fresh.canGoBack }
+        guard fresh.canGoForward else { throw FBError.message("Going back should enable Forward") }
     }
 
     private func checkHTMLLinkPreview() async throws {
@@ -634,6 +784,8 @@ private final class BrowserNavigationCheck: NSObject, WKNavigationDelegate {
         passed.append("actual size persists without changing another open window")
         window.contentView = webView
 
+        try await checkSamePageHistory()
+        passed.append("same-page anchors enable Back and Forward")
         try await checkPrinting()
         passed.append("formatted printing includes every page without changing the document or zoom")
         try await checkHTMLLinkPreview()
@@ -656,14 +808,15 @@ enum SmokeMain {
         setbuf(stdout, nil)
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
-        guard CommandLine.arguments.count == 3 else {
-            fputs("Usage: SmokeCheck FIXTURES PANDOC\n", stderr)
+        guard CommandLine.arguments.count == 4 else {
+            fputs("Usage: SmokeCheck FIXTURES PANDOC DOCS\n", stderr)
             exit(2)
         }
         Task { @MainActor in
             do {
                 let check = try SmokeCheck(fixtures: URL(fileURLWithPath: CommandLine.arguments[1]),
-                                           pandoc: CommandLine.arguments[2])
+                                           pandoc: CommandLine.arguments[2],
+                                           docs: URL(fileURLWithPath: CommandLine.arguments[3]))
                 try await check.run()
                 exit(0)
             } catch {

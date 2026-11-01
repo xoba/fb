@@ -38,6 +38,7 @@ code remains shared with the app; deprecating the server does not remove the
 viewers. Download the [signed and notarized macOS release](https://github.com/xoba/fb/releases/latest)
 or install it through Homebrew Cask.
 
+- **[Full documentation](docs/index.md)**, also in the app under **Help**
 - [Installing](#installing) · [Open from the terminal](#open-from-the-terminal)
 - [Legacy server configuration](#configuration) · [Port fallback](#port-fallback)
 - [The one rule: navigations render, everything else is raw](#the-one-rule-navigations-render-everything-else-is-raw)
@@ -344,8 +345,9 @@ styles, including percentage dimensions, are still stripped.
 
 ### Source code (highlighted by chroma)
 
-About sixty extensions render as GitHub-styled pages with clickable,
-linkable line numbers (`#L42`):
+About seventy extensions render as GitHub-styled pages with clickable,
+linkable line numbers. `#L42` jumps to a line and `#L10-L20` to a range, the same
+forms GitHub uses; see [Linking to files and lines](docs/linking.md):
 
 > `.ada .adb .ads .asm .awk .bash .bat .c .cc .clj .coffee .cpp .cs .css .dart
 > .diff .el .erb .erl .ex .exs .f .f90 .feature .fish .go .gradle .graphql
@@ -367,9 +369,10 @@ accelerator code supports both `#` comments and numeric immediates such as
 converted first with macOS's built-in `plutil` (elsewhere, binary plists
 fall back to download).
 
-`.json` files are pretty-printed (two-space indent) before highlighting;
-files that don't parse as JSON show as-is. Oversized ones display as plain
-text in the browser instead of downloading.
+`.json` files that are all on one line are pretty-printed (two-space indent)
+before highlighting. Files on several lines show as written, so line numbers
+match the file on disk, as do files that don't parse as JSON. Oversized ones
+display as plain text in the browser instead of downloading.
 
 `.typ` files are reformatted with [typstyle](https://typstyle-rs.github.io/typstyle/)
 before highlighting, when it's installed; without it (or for sources typstyle
@@ -380,6 +383,11 @@ Deliberately *not* highlighted: `.html` and `.svg` (the browser renders
 those better — inline, but sandboxed, so any scripts they carry don't
 run), `.txt` (prose reads better plain), and `.md` (pandoc's job). Files
 over 2 MB are served plain.
+
+In the macOS app, a link naming a line still works for those: `notes.txt#L42` or
+`README.md#L42` shows the file's numbered source at that line, and text files
+that are very long or over 2 MB show a window of lines around it. Binary formats
+ignore the anchor. See [Links to lines](docs/linking.md#links-to-lines).
 
 ### Go module files
 
@@ -549,7 +557,7 @@ shows an inline player with file size, format, and modification time
 beneath it — plus whatever tags the file carries (title, artist, album,
 year, genre, track, composer) and its embedded cover art, all read in
 pure Go. Duration fills in from the browser's own decoder, like video.
-(Safari doesn't play `.ogg`; the raw link always downloads.)
+(Playback depends on WebKit's codecs; the raw link always downloads.)
 
 ### Everything else
 

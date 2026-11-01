@@ -4,7 +4,18 @@ import WebKit
 
 struct BrowserWindowLocation: Codable, Hashable {
     var path: String
+    var fragment: String?
     var id = UUID()
+
+    init(path: String, fragment: String? = nil) {
+        self.path = path
+        self.fragment = fragment
+    }
+
+    /// Carries the URL's #anchor, so a line or heading survives into a new window.
+    init(fileURL: URL) {
+        self.init(path: fileURL.path, fragment: fileURL.fragment(percentEncoded: true))
+    }
 }
 
 private struct BrowserFocusKey: FocusedValueKey { typealias Value = BrowserModel }
@@ -21,7 +32,7 @@ struct BrowserView: View {
 
     init(location: BrowserWindowLocation?) {
         let path = location?.path ?? UserDefaults.standard.string(forKey: "lastOpenedPath") ?? NSHomeDirectory()
-        _model = State(initialValue: BrowserModel(fileURL: URL(fileURLWithPath: path)))
+        _model = State(initialValue: BrowserModel(fileURL: FBLocation.fileURL(path: path, fragment: location?.fragment)))
     }
 
     var body: some View {
@@ -75,7 +86,7 @@ struct BrowserView: View {
                 } else {
                     HStack(spacing: 8) {
                         if model.isLoading { ProgressView().controlSize(.small) }
-                        Text(model.path).font(.callout).lineLimit(1).truncationMode(.middle)
+                        Text(model.displayPath).font(.callout).lineLimit(1).truncationMode(.middle)
                             .help(model.path).textSelection(.enabled)
                     }.padding(.horizontal, 12).frame(maxWidth: 600)
                 }
@@ -88,7 +99,7 @@ struct BrowserView: View {
         .onAppear {
             let openWindowAction = openWindow
             model.openAdditional = { url in
-                openWindowAction(value: BrowserWindowLocation(path: url.path))
+                openWindowAction(value: BrowserWindowLocation(fileURL: url))
             }
             ApplicationCoordinator.shared.register(model: model, openWindow: { location in
                 openWindowAction(value: location)

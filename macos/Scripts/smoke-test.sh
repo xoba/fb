@@ -12,7 +12,7 @@ python3 "$mac_dir/Tests/make-fixtures.py" "$test_dir/fixtures"
 xcrun swiftc -swift-version 6 -parse-as-library -target arm64-apple-macosx26.0 \
   -import-objc-header "$mac_dir/App/FB-Bridging-Header.h" -I "$mac_dir/.build/engine" \
   "$mac_dir/App/FBEngine.swift" "$mac_dir/App/FBSchemeHandler.swift" \
-  "$mac_dir/App/BrowserModel.swift" \
+  "$mac_dir/App/FBHelp.swift" "$mac_dir/App/BrowserModel.swift" \
   "$mac_dir/Tests/SmokeCheck.swift" \
   -L "$mac_dir/.build/engine" -lfb -lresolv -lpthread \
   -framework AppKit -framework WebKit -framework PDFKit -framework Security -framework CoreFoundation \
@@ -23,4 +23,4 @@ if [[ ! -x "$pandoc_path" ]]; then
   echo "Pinned Pandoc is missing: $pandoc_path" >&2
   exit 1
 fi
-"$test_dir/SmokeCheck" "$test_dir/fixtures" "$pandoc_path"
+"$test_dir/SmokeCheck" "$test_dir/fixtures" "$pandoc_path" "$repo_dir/docs"

@@ -40,6 +40,9 @@ targets:
       - name: Embed pinned Pandoc
         script: '"${SRCROOT}/Scripts/embed-pandoc.sh"'
         basedOnDependencyAnalysis: false
+      - name: Embed documentation
+        script: '"${SRCROOT}/Scripts/embed-docs.sh"'
+        basedOnDependencyAnalysis: false
 schemes:
   FB:
     build:

@@ -220,4 +220,23 @@ with wave.open(str(root / "sample.wav"), "wb") as audio:
 (root / "mailbox/emails/message.eml").write_bytes((root / "message.eml").read_bytes())
 (root / "mailbox/notes.txt").write_text("Normal folder contents remain visible.\n")
 
+# Line anchors: enough lines that jumping to one has to scroll.
+numbered = "".join(f"line {n}\n" for n in range(1, 301))
+(root / "lines.go").write_text("package main\n\n" + "".join(f"var v{n} = {n}\n" for n in range(3, 301)))
+(root / "lines.txt").write_text(numbered)
+(root / "lines.csv").write_text("name,amount\n" + "".join(f"row{n},{n}\n" for n in range(1, 301)))
+(root / "formatted.json").write_text('{\n  "a": 1, "b": 2,\n\n  "z": 9\n}\n')
+(root / "long.txt").write_text("".join(f"long line {n}\n" for n in range(1, 20001)))
+filler = "\n\n".join(f"Paragraph {n} of filler text." for n in range(1, 200))
+(root / "other-lines.md").write_text(f"# Other lines\n\n{filler}\n\n## 2024\n\nA numeric heading.\n\n{filler}\n")
+(root / "lines.md").write_text(
+    "# Line links\n\n"
+    "[jump](#section-two)\n\n"
+    "[go line](lines.go#L150)\n\n[go range](lines.go#L100-L110)\n\n[go bare](lines.go#120)\n\n"
+    "[text line](lines.txt#L200)\n\n[markdown line](other-lines.md#L5)\n\n"
+    "[numeric heading](other-lines.md#2024)\n\n[csv line](lines.csv#L50)\n\n[csv cell](lines.csv#cell=200,2)\n\n"
+    "[long line](long.txt#L15000)\n\n[past the end](long.txt#L99999)\n\n"
+    f"{filler}\n\n## Section two\n\n{filler}\n"
+)
+
 print(json.dumps({"fixtures": str(root), "files": len(list(root.rglob("*")))}))

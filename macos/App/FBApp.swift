@@ -43,6 +43,17 @@ struct FBApp: App {
                 Button("Zoom Out") { browser?.zoom(-0.1) }.keyboardShortcut("-").disabled(browser == nil)
                 Button("Actual Size") { browser?.resetZoom() }.keyboardShortcut("0").disabled(browser == nil)
             }
+            CommandGroup(replacing: .help) {
+                Button("fb Help") { ApplicationCoordinator.shared.openHelp() }
+                    .keyboardShortcut("?", modifiers: .command)
+                Divider()
+                Button("File Types") { ApplicationCoordinator.shared.openHelp("file-types/index.md") }
+                Button("Linking to Files and Lines") { ApplicationCoordinator.shared.openHelp("linking.md") }
+                Button("Keyboard Shortcuts") { ApplicationCoordinator.shared.openHelp("keyboard-shortcuts.md") }
+                Button("Troubleshooting") { ApplicationCoordinator.shared.openHelp("troubleshooting.md") }
+                Divider()
+                Button("Third-Party Notices") { ApplicationCoordinator.shared.openNotices() }
+            }
         }
     }
 
@@ -85,10 +96,15 @@ final class ApplicationCoordinator {
     private var openWindow: ((BrowserWindowLocation) -> Void)?
     private var pendingURLs: [URL] = []
     private var useInitialBrowser = true
+    private var browsers: [WeakBrowser] = []
+
+    private struct WeakBrowser { weak var model: BrowserModel? }
 
     func register(model: BrowserModel, openWindow: @escaping (BrowserWindowLocation) -> Void) {
         if self.openWindow == nil { initialBrowser = model }
         self.openWindow = openWindow
+        browsers.removeAll { $0.model == nil }
+        browsers.append(WeakBrowser(model: model))
         if !pendingURLs.isEmpty {
             let urls = pendingURLs
             pendingURLs.removeAll()
@@ -104,7 +120,30 @@ final class ApplicationCoordinator {
             useInitialBrowser = false
             initialBrowser.open(urls)
         } else {
-            for url in urls { openWindow(BrowserWindowLocation(path: url.path)) }
+            for url in urls { openWindow(BrowserWindowLocation(fileURL: url)) }
+        }
+        NSApp.activate()
+    }
+
+    /// Shows a page of the bundled documentation, reusing a window already showing
+    /// help so that repeated visits do not accumulate windows.
+    func openHelp(_ page: String = "index.md", fragment: String? = nil) {
+        show(FBHelp.url(forPage: page, fragment: fragment))
+    }
+
+    func openNotices() { show(FBHelp.noticesURL) }
+
+    private func show(_ url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            NSSound.beep()
+            return
+        }
+        if let existing = browsers.lazy.compactMap(\.model).first(where: { $0.isShowingHelp && $0.webView?.window != nil }) {
+            existing.open(url)
+            existing.webView?.window?.deminiaturize(nil)
+            existing.webView?.window?.makeKeyAndOrderFront(nil)
+        } else {
+            openWindow?(BrowserWindowLocation(fileURL: url))
         }
         NSApp.activate()
     }
@@ -134,6 +173,7 @@ final class FBAppDelegate: NSObject, NSApplicationDelegate {
         if let icon = NSImage(contentsOf: Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/AppIcon.icns")) {
             NSApp.applicationIconImage = icon
         }
+        NSApp.registerUserInterfaceItemSearchHandler(FBHelpSearch.shared)
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -149,5 +189,28 @@ final class FBAppDelegate: NSObject, NSApplicationDelegate {
             window.makeKeyAndOrderFront(nil)
         } else { ApplicationCoordinator.shared.reopenWindow() }
         return false
+    }
+}
+
+/// Feeds topics into the search field AppKit puts at the top of the Help menu.
+final class FBHelpSearch: NSObject, NSUserInterfaceItemSearching, Sendable {
+    static let shared = FBHelpSearch()
+
+    func searchForItems(withSearch searchString: String, resultLimit: Int,
+                        matchedItemHandler handleMatchedItems: @escaping ([Any]) -> Void) {
+        handleMatchedItems(FBHelpIndex.shared.search(searchString, limit: resultLimit))
+    }
+
+    func localizedTitles(forItem item: Any) -> [String] {
+        guard let topic = item as? FBHelpTopic else { return [] }
+        return [topic.pageTitle, topic.heading].compactMap { $0 }
+    }
+
+    func performAction(forItem item: Any) {
+        guard let topic = item as? FBHelpTopic else { return }
+        let page = topic.page, anchor = topic.anchor
+        Task { @MainActor in
+            ApplicationCoordinator.shared.openHelp(page, fragment: anchor)
+        }
     }
 }

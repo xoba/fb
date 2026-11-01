@@ -107,11 +107,20 @@ enum FBLocation {
             path += "/"
         }
         components.path = path
+        components.percentEncodedFragment = fileURL.fragment(percentEncoded: true)
         return components.url!
     }
 
     static func fileURL(webURL: URL) -> URL? {
         guard webURL.scheme == "fb", webURL.host == "local" else { return nil }
         return URL(fileURLWithPath: webURL.path)
+    }
+
+    /// A file URL that also names an #anchor, which `webURL(fileURL:)` carries over.
+    static func fileURL(path: String, fragment: String?) -> URL {
+        let url = URL(fileURLWithPath: path)
+        guard let fragment, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        components.percentEncodedFragment = fragment
+        return components.url ?? url
     }
 }

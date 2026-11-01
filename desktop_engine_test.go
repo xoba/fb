@@ -90,6 +90,35 @@ func TestDesktopMarkdownAndAssets(t *testing.T) {
 	}
 }
 
+// The fragment reaches the bridge, and only a line target changes the view.
+func TestDesktopLineTargetSwitchesView(t *testing.T) {
+	id, _, root := desktopTestEngine(t)
+	if err := os.WriteFile(filepath.Join(root, "notes.md"), []byte("# Heading\n\nsecond\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		url      string
+		document bool
+		numbered bool
+	}{
+		{"fb://local/notes.md", true, false},
+		{"fb://local/notes.md#L2", true, true},
+		{"fb://local/notes.md#L2-L3", true, true},
+		{"fb://local/notes.md#heading", true, false},
+		{"fb://local/notes.md#2024", true, false},
+		{"fb://local/notes.md?raw=1#L2", true, false},
+		{"fb://local/notes.md#L2", false, false},
+	} {
+		response, body := desktopTestFetch(t, id, desktopRequestInput{URL: test.url, Document: test.document})
+		if response.Status != http.StatusOK {
+			t.Fatalf("%s: status %d", test.url, response.Status)
+		}
+		if got := bytes.Contains(body, []byte(`id="L2"`)); got != test.numbered {
+			t.Errorf("%s (document=%v): numbered = %v, want %v; body %.200s", test.url, test.document, got, test.numbered, body)
+		}
+	}
+}
+
 func TestDesktopPagesHaveNoServerFooter(t *testing.T) {
 	id, _, root := desktopTestEngine(t)
 	for name, content := range map[string]string{

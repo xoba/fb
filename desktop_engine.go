@@ -266,13 +266,16 @@ func (e *desktopEngine) serve(request *desktopRequest, input desktopRequestInput
 		close(request.done)
 	}()
 	u, _ := url.Parse(input.URL) // Already validated by decodeDesktopRequest.
+	// Unlike a server, the bridge sees the fragment. Keep what it says about
+	// lines; the rest of the renderer works from an ordinary request.
+	ctx := withLineTarget(request.ctx, u.Fragment)
 	// net/http is a request/response API as well as a transport. These values
 	// are synthetic and never reach a network listener or client.
 	u.Scheme, u.Host, u.Fragment = "http", "localhost", ""
 	if u.Path == "" {
 		u.Path = "/"
 	}
-	r, err := http.NewRequestWithContext(request.ctx, input.Method, u.String(), nil)
+	r, err := http.NewRequestWithContext(ctx, input.Method, u.String(), nil)
 	if err != nil {
 		request.publish(desktopResponse{Error: err.Error(), Headers: map[string]string{}})
 		request.writer.CloseWithError(err)

@@ -124,6 +124,9 @@ Symbolic links to files and folders work in directory listings and Markdown
 links, including links with absolute targets. Navigation keeps the symlink's
 path, so relative links and resources continue to resolve through it.
 
+The Help menu opens fb's documentation in an fb window. See
+[Documentation](#documentation).
+
 File → Print prints the active window's rendered page, including Markdown
 formatting, tables, images, and math. Long documents flow across printed pages.
 Use the standard print dialog to select a printer, paper size, or page range,
@@ -138,6 +141,28 @@ This direct-download build uses the current user's filesystem permissions and
 normal macOS privacy prompts. It is not a sandboxed Mac App Store build. Git
 annotations are optional and omitted when Git/developer tools are unavailable;
 ordinary document viewing does not require them.
+
+## Documentation
+
+The Help menu's pages are the Markdown files in [`docs/`](../docs/index.md), and fb
+displays them as it does any other Markdown. `Scripts/embed-docs.sh` copies them
+into `Contents/Resources/docs` at build time, with the tracked sample files beside
+them in `Contents/Resources/examples`. Those keep their relative positions, so a
+link such as `../../examples/formats/library.csv` works in the app, in a checkout,
+and on GitHub.
+
+This is deliberately not an Apple Help Book. A Help Book is HTML opened in a
+separate viewer, which could not follow a link to a line of a source file or open
+a sample. The app still uses the standard surfaces: `FBHelp.swift` builds a small
+search index from the bundled Markdown on first use, and registers it through
+`NSUserInterfaceItemSearching` so that results appear in the Help menu's search
+field. Bundled pages stay out of Open Recent and the location restored at launch.
+
+`go test` holds the pages to the code: every registered extension must be
+documented, every file type page must follow the common outline, and every link,
+heading anchor, and line anchor must resolve to something that ships. To document a
+new format, add it to its table in `docs/file-types/index.md`, give it a page or a
+place on one, and add it to `documentedTypes` in `docs_test.go`.
 
 ## Verification
 
@@ -154,7 +179,8 @@ bridge, and exercises WebKit loading, Pandoc, math, assembly highlighting, relat
 file/folder pasteboard URLs, SQL form submission and script requests, archive
 members, email MIME navigation and decoded attachments, embedded email images,
 inbox listings, HTML script sandboxing, audio metadata, PDF navigation, formatted
-printing to PDF, and native link destination previews. A temporary window is
+printing to PDF, native link destination previews, line anchors in each of their
+forms, and every Help page with its search anchors. A temporary window is
 required because WebKit defers media loading for unattached views.
 
 ## Signing and packaging

@@ -542,6 +542,9 @@ func (s fileServer) route(w http.ResponseWriter, r *http.Request, name string, d
 	ext := strings.ToLower(path.Ext(viewName(name)))
 	raw := r.URL.Query().Get("raw") == "1"
 	browserView := !raw && wantsDocument(r.Header)
+	if browserView && s.serveLineView(w, r, name, info) {
+		return
+	}
 	if ext == ".eml" && !raw && (browserView || r.URL.Query().Has("eml-part")) {
 		s.serveEML(w, r, name, info)
 		return
@@ -3085,10 +3088,12 @@ func (s fileServer) serveSource(w http.ResponseWriter, r *http.Request, name str
 	s.renderSourcePage(w, r, name, info, path.Base(viewName(name)), string(src))
 }
 
-// serveJSON shows a JSON file pretty-printed and highlighted. Content that
-// does not parse as a single JSON value (syntax errors, concatenated values)
-// shows as-is; files too large to highlight display as plain text rather
-// than downloading under their application/json type.
+// serveJSON shows a JSON file highlighted, pretty-printing it only when it is
+// minified onto one line: a formatted file keeps its own line numbers, so #L42
+// matches line 42 on disk. Content that does not parse as a single JSON value
+// (syntax errors, concatenated values) shows as-is; files too large to highlight
+// display as plain text rather than downloading under their application/json
+// type.
 func (s fileServer) serveJSON(w http.ResponseWriter, r *http.Request, name string, info fs.FileInfo) {
 	if info.Size() > maxHighlightBytes {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -3102,9 +3107,11 @@ func (s fileServer) serveJSON(w http.ResponseWriter, r *http.Request, name strin
 		return
 	}
 
-	var pretty bytes.Buffer
-	if err := json.Indent(&pretty, data, "", "  "); err == nil {
-		data = pretty.Bytes()
+	if isMinifiedJSON(data) {
+		var pretty bytes.Buffer
+		if err := json.Indent(&pretty, data, "", "  "); err == nil {
+			data = pretty.Bytes()
+		}
 	}
 
 	s.renderSourcePage(w, r, name, info, path.Base(viewName(name)), string(data))
@@ -3227,6 +3234,7 @@ func (s fileServer) renderSourcePage(w http.ResponseWriter, r *http.Request, nam
 		Title:   path.Base(name),
 		Crumbs:  s.breadcrumbs(path.Dir(name)),
 		RawHref: (&url.URL{Path: path.Base(name), RawQuery: "raw=1"}).String(),
+		AltHref: lineViewAltHref(r, name),
 		Code:    code,
 	}
 
@@ -3266,6 +3274,12 @@ var forcedLexers = map[string]string{
 }
 
 func highlightSource(filename, src string) (template.HTML, error) {
+	return highlightLines(filename, src, 1)
+}
+
+// highlightLines is highlightSource for text starting at line firstLine of its
+// file, so line numbers and anchors stay those of the whole file.
+func highlightLines(filename, src string, firstLine int) (template.HTML, error) {
 	lexer := lexers.Match(filename)
 	if strings.EqualFold(path.Ext(filename), ".asm") {
 		lexer = assemblyLexer
@@ -3288,6 +3302,7 @@ func highlightSource(filename, src string) (template.HTML, error) {
 	formatter := chromahtml.New(
 		chromahtml.WithLineNumbers(true),
 		chromahtml.WithLinkableLineNumbers(true, "L"),
+		chromahtml.BaseLineNumber(firstLine),
 		chromahtml.TabWidth(4),
 	)
 
@@ -3302,7 +3317,15 @@ type sourcePage struct {
 	Title   string
 	Crumbs  []crumb
 	RawHref string
+	AltHref string // the file's rendered view, when this page replaced it
 	Code    template.HTML
+	Window  *sourceWindow // set when Code holds only part of the file
+}
+
+// sourceWindow describes a partial source page. Earlier and Later are the lines
+// just outside it, or zero at either end of the file.
+type sourceWindow struct {
+	From, To, Earlier, Later int
 }
 
 var sourceTemplate = template.Must(template.New("source").Parse(`<!DOCTYPE html>
@@ -3329,6 +3352,7 @@ var sourceTemplate = template.Must(template.New("source").Parse(`<!DOCTYPE html>
   nav span.sep { color: #57606a; }
   nav span.file { font-weight: 600; }
   nav a.raw { float: right; font-weight: 400; font-size: 0.85rem; }
+  nav a.raw.alt { margin-right: 0.75rem; }
   div.source {
     border: 1px solid #d0d7de;
     border-radius: 6px;
@@ -3342,14 +3366,15 @@ var sourceTemplate = template.Must(template.New("source").Parse(`<!DOCTYPE html>
     font-size: 0.85rem;
     line-height: 1.45;
   }
-</style>
+` + lineAnchorCSS + `</style>
 ` + dropJS + freshBackJS + `</head>
 <body>
-<nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
-<div class="source">
+<nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a>{{if .AltHref}}<a class="raw alt" href="{{.AltHref}}">rendered</a>{{end}}</nav>
+{{with .Window}}<p class="line-window">Showing lines {{.From}}&ndash;{{.To}} of this file.{{if .Earlier}}<a href="#L{{.Earlier}}">Earlier lines</a>{{end}}{{if .Later}}<a href="#L{{.Later}}">Later lines</a>{{end}}</p>
+{{end}}<div class="source"{{if .Window}} data-windowed{{end}}>
 {{.Code}}
 </div>
-` + pageFooter + `</body>
+` + lineAnchorJS + pageFooter + `</body>
 </html>
 `))
 
@@ -3704,7 +3729,7 @@ var modTemplate = template.Must(template.New("mod").Parse(`<!DOCTYPE html>
     font-size: 0.85rem;
     line-height: 1.45;
   }
-</style>
+` + lineAnchorCSS + `</style>
 ` + dropJS + freshBackJS + `</head>
 <body>
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
@@ -3720,7 +3745,7 @@ var modTemplate = template.Must(template.New("mod").Parse(`<!DOCTYPE html>
 <div class="source">
 {{.Source}}
 </div>
-{{end}}` + pageFooter + `</body>
+` + lineAnchorJS + `{{end}}` + pageFooter + `</body>
 </html>
 `))
 
@@ -5237,7 +5262,7 @@ var icalTemplate = template.Must(template.New("ical").Parse(`<!DOCTYPE html>
     font-size: 0.85rem;
     line-height: 1.45;
   }
-</style>
+` + lineAnchorCSS + `</style>
 ` + dropJS + freshBackJS + `</head>
 <body>
 <nav>{{range $i, $c := .Crumbs}}{{if gt $i 1}}<span class="sep">/</span>{{end}}<a href="{{$c.Href}}">{{$c.Name}}</a>{{end}}{{if gt (len .Crumbs) 1}}<span class="sep">/</span>{{end}}<span class="file">{{.Title}}</span><a class="raw" href="{{.RawHref}}">raw</a></nav>
@@ -5275,7 +5300,7 @@ var icalTemplate = template.Must(template.New("ical").Parse(`<!DOCTYPE html>
 <div class="source">
 {{.Source}}
 </div></details>
-{{end}}` + pageFooter + `</body>
+` + lineAnchorJS + `{{end}}` + pageFooter + `</body>
 </html>
 `))
 
