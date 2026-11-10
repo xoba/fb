@@ -14,7 +14,7 @@
   "components": [
     {
       "name": "Go toolchain and standard library",
-      "version": "go1.27.3",
+      "version": "go1.27.4",
       "source": "https://go.dev/",
       "notices": [
         {
@@ -75,9 +75,9 @@
     },
     {
       "name": "github.com/andybalholm/brotli",
-      "version": "v1.2.6",
+      "version": "v1.3.0",
       "sourceModule": "github.com/andybalholm/brotli",
-      "sourceVersion": "v1.2.6",
+      "sourceVersion": "v1.3.0",
       "packages": [
         "github.com/andybalholm/brotli",
         "github.com/andybalholm/brotli/matchfinder"
@@ -122,9 +122,9 @@
     },
     {
       "name": "github.com/dlclark/regexp2/v2",
-      "version": "v2.8.4",
+      "version": "v2.13.0",
       "sourceModule": "github.com/dlclark/regexp2/v2",
-      "sourceVersion": "v2.8.4",
+      "sourceVersion": "v2.13.0",
       "packages": [
         "github.com/dlclark/regexp2/v2",
         "github.com/dlclark/regexp2/v2/helpers",
@@ -184,9 +184,9 @@
     },
     {
       "name": "github.com/klauspost/compress",
-      "version": "v1.20.3",
+      "version": "v1.20.4",
       "sourceModule": "github.com/klauspost/compress",
-      "sourceVersion": "v1.20.3",
+      "sourceVersion": "v1.20.4",
       "packages": [
         "github.com/klauspost/compress",
         "github.com/klauspost/compress/flate",
@@ -466,9 +466,9 @@
     },
     {
       "name": "github.com/xuri/efp",
-      "version": "v0.0.2",
+      "version": "v0.0.3-0.20260924042702-217b81952dec",
       "sourceModule": "github.com/xuri/efp",
-      "sourceVersion": "v0.0.2",
+      "sourceVersion": "v0.0.3-0.20260924042702-217b81952dec",
       "packages": [
         "github.com/xuri/efp"
       ],
@@ -481,9 +481,9 @@
     },
     {
       "name": "github.com/xuri/excelize/v2",
-      "version": "v2.11.0",
+      "version": "v2.11.1",
       "sourceModule": "github.com/xuri/excelize/v2",
-      "sourceVersion": "v2.11.0",
+      "sourceVersion": "v2.11.1",
       "packages": [
         "github.com/xuri/excelize/v2"
       ],
@@ -531,9 +531,9 @@
     },
     {
       "name": "golang.org/x/image",
-      "version": "v0.47.0",
+      "version": "v0.48.0",
       "sourceModule": "golang.org/x/image",
-      "sourceVersion": "v0.47.0",
+      "sourceVersion": "v0.48.0",
       "packages": [
         "golang.org/x/image/bmp",
         "golang.org/x/image/ccitt",
@@ -558,9 +558,9 @@
     },
     {
       "name": "golang.org/x/mod",
-      "version": "v0.42.0",
+      "version": "v0.43.0",
       "sourceModule": "golang.org/x/mod",
-      "sourceVersion": "v0.42.0",
+      "sourceVersion": "v0.43.0",
       "packages": [
         "golang.org/x/mod/internal/lazyregexp",
         "golang.org/x/mod/modfile",
@@ -580,9 +580,9 @@
     },
     {
       "name": "golang.org/x/net",
-      "version": "v0.61.0",
+      "version": "v0.62.0",
       "sourceModule": "golang.org/x/net",
-      "sourceVersion": "v0.61.0",
+      "sourceVersion": "v0.62.0",
       "packages": [
         "golang.org/x/net/html",
         "golang.org/x/net/html/atom",
@@ -601,9 +601,9 @@
     },
     {
       "name": "golang.org/x/sys",
-      "version": "v0.49.0",
+      "version": "v0.50.0",
       "sourceModule": "golang.org/x/sys",
-      "sourceVersion": "v0.49.0",
+      "sourceVersion": "v0.50.0",
       "packages": [
         "golang.org/x/sys/cpu",
         "golang.org/x/sys/unix"
@@ -621,9 +621,9 @@
     },
     {
       "name": "golang.org/x/text",
-      "version": "v0.43.0",
+      "version": "v0.44.0",
       "sourceModule": "golang.org/x/text",
-      "sourceVersion": "v0.43.0",
+      "sourceVersion": "v0.44.0",
       "packages": [
         "golang.org/x/text/cases",
         "golang.org/x/text/encoding",
@@ -719,9 +719,9 @@
     },
     {
       "name": "modernc.org/libc",
-      "version": "v1.78.0",
+      "version": "v1.81.0",
       "sourceModule": "modernc.org/libc",
-      "sourceVersion": "v1.78.0",
+      "sourceVersion": "v1.81.0",
       "packages": [
         "modernc.org/libc",
         "modernc.org/libc/errno",
@@ -804,9 +804,9 @@
     },
     {
       "name": "modernc.org/sqlite",
-      "version": "v1.60.1",
+      "version": "v1.62.0",
       "sourceModule": "modernc.org/sqlite",
-      "sourceVersion": "v1.60.1",
+      "sourceVersion": "v1.62.0",
       "packages": [
         "modernc.org/sqlite",
         "modernc.org/sqlite/lib",
@@ -819,7 +819,7 @@
         },
         {
           "path": "LICENSE-3RD-PARTY.md",
-          "sha256": "b4366b9c27a9364633e015011a231913ed19bf1228f335bf617e50a6f7b168a6"
+          "sha256": "f4a00ade8f4057ab0ea49097d9c459df8559fcf10ca78da0c950343fb7428d37"
         },
         {
           "path": "LICENSE-SQLITE",

@@ -1,6 +1,6 @@
 module xoba.com/fb
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/alecthomas/chroma/v2 v2.27.0
@@ -8,21 +8,21 @@ require (
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/parquet-go/parquet-go v0.32.0
 	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
-	github.com/xuri/excelize/v2 v2.11.0
-	golang.org/x/image v0.47.0
-	golang.org/x/mod v0.42.0
-	golang.org/x/net v0.61.0
-	modernc.org/sqlite v1.60.1
+	github.com/xuri/excelize/v2 v2.11.1
+	golang.org/x/image v0.48.0
+	golang.org/x/mod v0.43.0
+	golang.org/x/net v0.62.0
+	modernc.org/sqlite v1.62.0
 )
 
 require (
-	github.com/andybalholm/brotli v1.2.6 // indirect
+	github.com/andybalholm/brotli v1.3.0 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
-	github.com/dlclark/regexp2/v2 v2.8.4 // indirect
+	github.com/dlclark/regexp2/v2 v2.13.0 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
-	github.com/klauspost/compress v1.20.3 // indirect
+	github.com/klauspost/compress v1.20.4 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/parquet-go/bitpack v1.1.0 // indirect
@@ -33,13 +33,13 @@ require (
 	github.com/richardlehane/msoleps v1.0.6 // indirect
 	github.com/tiendc/go-deepcopy v1.7.2 // indirect
 	github.com/twpayne/go-geom v1.7.0 // indirect
-	github.com/xuri/efp v0.0.2 // indirect
+	github.com/xuri/efp v0.0.3-0.20260924042702-217b81952dec // indirect
 	github.com/xuri/nfp v0.0.2-0.20250530014748-2ddeb826f9a9 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
-	modernc.org/libc v1.78.0 // indirect
+	modernc.org/libc v1.81.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
