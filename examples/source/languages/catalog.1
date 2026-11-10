@@ -1,0 +1,23 @@
+.\" Manual page for the catalog example command.
+.TH CATALOG 1 2026-11-10 "fb examples" "User Commands"
+.SH NAME
+catalog \- print labels for an in-memory file catalog
+.SH SYNOPSIS
+.B catalog
+.RB [ \-s ]
+.RI [ name ...]
+.SH DESCRIPTION
+.B catalog
+prints one label per entry, such as
+.IR notes.md ,
+followed by its size in bytes.
+.SH OPTIONS
+.TP
+.B \-s
+Sort entries by size instead of by name.
+.SH EXAMPLES
+.EX
+$ catalog
+notes.md: 120 bytes
+letter.eml: 240 bytes
+.EE

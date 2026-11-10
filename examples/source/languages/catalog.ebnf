@@ -1,0 +1,9 @@
+(* Grammar for catalog lines such as: notes.md 120 *)
+catalog = { entry } ;
+entry   = name , " " , bytes , newline ;
+name    = word , "." , word ;
+word    = letter , { letter | digit | "-" } ;
+bytes   = digit , { digit } ;
+letter  = "a" | "b" | "c" | "d" | "e" | "l" | "m" | "n" | "o" | "r" | "s" | "t" ;
+digit   = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+newline = ? line feed character ? ;

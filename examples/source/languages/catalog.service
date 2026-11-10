@@ -1,0 +1,16 @@
+# Rebuild the example catalog index once the network is up.
+[Unit]
+Description=Example catalog indexer
+Documentation=https://example.com/catalog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/catalog-index --root /srv/catalog
+User=catalog
+Environment=CATALOG_LIMIT=240
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

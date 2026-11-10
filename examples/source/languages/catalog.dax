@@ -1,0 +1,12 @@
+-- Size measures for a table of catalog files.
+DEFINE
+    MEASURE Files[Total Bytes] = SUM ( Files[Bytes] )
+    MEASURE Files[Average Bytes] =
+        DIVIDE ( [Total Bytes], COUNTROWS ( Files ) )
+EVALUATE
+    ADDCOLUMNS (
+        VALUES ( Files[Name] ),
+        "Bytes", [Total Bytes],
+        "Label", Files[Name] & ": " & FORMAT ( [Total Bytes], "0" ) & " bytes"
+    )
+ORDER BY Files[Name]

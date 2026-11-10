@@ -1,0 +1,15 @@
+-- Turn a file catalog model into a list of labels.
+module Catalog2Labels;
+create OUT : Labels from IN : Catalog;
+
+helper context Catalog!Entry def : label : String =
+	self.name + ': ' + self.bytes.toString() + ' bytes';
+
+rule Entry2Label {
+	from
+		e : Catalog!Entry (e.bytes > 0)
+	to
+		l : Labels!Label (
+			text <- e.label
+		)
+}

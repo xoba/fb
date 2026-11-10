@@ -1,0 +1,9 @@
+// List catalog files larger than 100 bytes, smallest first.
+FOR file IN catalog
+  FILTER file.bytes > 100
+  SORT file.bytes ASC
+  LET parts = SPLIT(file.name, ".")
+  RETURN {
+    label: CONCAT(file.name, ": ", file.bytes, " bytes"),
+    kind: LOWER(LAST(parts))
+  }

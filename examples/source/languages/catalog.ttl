@@ -1,0 +1,15 @@
+# A tiny catalog of example files.
+@prefix cat: <https://example.com/catalog#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<https://example.com/catalog/notes.md>
+    a cat:File ;
+    cat:name "notes.md" ;
+    cat:bytes "120"^^xsd:integer ;
+    rdfs:comment "Plain notes"@en .
+
+<https://example.com/catalog/letter.eml>
+    a cat:File ;
+    cat:name "letter.eml" ;
+    cat:bytes 240 .

@@ -1,0 +1,6 @@
+// An in-memory file catalog.
+catalog title="Examples" read-only=true {
+    file "notes.md" bytes=120 type="text/markdown"
+    file "letter.eml" bytes=240 type="message/rfc822"
+    /- file "draft.txt" bytes=0
+}

@@ -1,0 +1,18 @@
+	// Print labels for an in-memory file catalog.
+	quit
+
+public void main()
+	type String names(), label
+	type Number bytes(), total = 0
+	type Number i
+
+	set names(1) = "notes.md", bytes(1) = 120
+	set names(2) = "letter.eml", bytes(2) = 240
+
+	for i = 1:1:2 do {
+		set label = names(i) _ ": " _ bytes(i) _ " bytes"
+		write label, !
+		set total = total + bytes(i)
+	}
+	write "total: ", total, " bytes", !
+	quit

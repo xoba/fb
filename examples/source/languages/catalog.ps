@@ -1,0 +1,22 @@
+%!PS-Adobe-3.0
+%%Title: Catalog labels
+%%Pages: 1
+%%EndComments
+
+% Print one label per catalog entry, top to bottom.
+/Helvetica findfont 14 scalefont setfont
+/y 720 def
+/label {            % name bytes -> -
+  exch
+  72 y moveto show
+  (: ) show
+  10 string cvs show
+  ( bytes) show
+  /y y 20 sub def
+} bind def
+
+%%Page: 1 1
+(notes.md) 120 label
+(letter.eml) 240 label
+showpage
+%%EOF

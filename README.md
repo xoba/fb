@@ -345,20 +345,24 @@ styles, including percentage dimensions, are still stripped.
 
 ### Source code (highlighted by chroma)
 
-About seventy extensions render as GitHub-styled pages with clickable,
-linkable line numbers. `#L42` jumps to a line and `#L10-L20` to a range, the same
-forms GitHub uses; see [Linking to files and lines](docs/linking.md):
+Every language [chroma](https://github.com/alecthomas/chroma) recognizes by
+filename (over 250, from ABAP to Zig, Lean included) renders as a GitHub-styled
+page with clickable, linkable line numbers. `#L42` jumps to a line and
+`#L10-L20` to a range, the same forms GitHub uses; see
+[Linking to files and lines](docs/linking.md). The full list of languages,
+extensions, and exact filenames (`Makefile`, `Dockerfile`, `CMakeLists.txt`,
+`.zshrc`, ...) is generated into
+[docs/file-types/source-code.md](docs/file-types/source-code.md#languages), and
+[examples/source/](examples/source/) has a sample of each.
 
-> `.ada .adb .ads .asm .awk .bash .bat .c .cc .clj .coffee .cpp .cs .css .dart
-> .diff .el .erb .erl .ex .exs .f .f90 .feature .fish .go .gradle .graphql
-> .groovy .h .hcl .hpp .hs .ini .java .jl .js .json .jsx .kt .lisp .lua
-> .mjs .nix .patch .php .pl .properties .proto .ps1 .py .r .rb .rs .s
-> .scala .scss .sh .sql .svelte .swift .tex .tf .toml .ts .tsx .typ .vue
-> .xml .yaml .yml .zig .zsh`
-
-Plus exact filenames without useful extensions: `Makefile`, `makefile`,
-`GNUmakefile`, `Dockerfile`, `CMakeLists.txt`, `.bashrc`, `.zshrc` — and
-`.mf` jar manifests, colored as key/value properties.
+Types with a viewer of their own keep it even where chroma has a lexer
+(`.md`, `.rst`, `.csv`, `.json`, `.typ`, `.html`, `.svg`, `.txt`, ...), while
+chroma's exact filenames win over an extension, so `CMakeLists.txt` is still
+CMake. Extensions match regardless of case. Where chroma's choice among
+languages sharing an extension is arbitrary, fb pins the Mac meaning: `.m` is
+Objective-C and `.fs` is F#. `.mf` jar manifests are colored as key/value
+properties. A file whose contents are not text (invalid UTF-8 or NUL bytes),
+such as a compiled `.mo` catalog, is served as the original file.
 
 `.asm` assembly files show comments, labels, directives, instructions, registers,
 and numeric operands with the original spacing preserved. Mixed RISC-V and
@@ -574,8 +578,7 @@ extensionless files that sniff as markup display as plain text.
 | Treatment | Types |
 |-----------|-------|
 | Rendered as a document (pandoc) | `.md` `.rst` `.ipynb` `.doc` `.docx` `.odt` `.rtf` `.epub` |
-| Syntax-highlighted source | `.ada` `.adb` `.ads` `.asm` `.awk` `.bash` `.bat` `.c` `.cc` `.clj` `.coffee` `.cpp` `.cs` `.css` `.dart` `.diff` `.el` `.erb` `.erl` `.ex` `.exs` `.f` `.f90` `.feature` `.fish` `.go` `.gradle` `.graphql` `.groovy` `.h` `.hcl` `.hpp` `.hs` `.ini` `.java` `.jl` `.js` `.json` `.jsx` `.kt` `.lisp` `.lua` `.mf` `.mjs` `.nix` `.patch` `.php` `.pl` `.properties` `.proto` `.ps1` `.py` `.r` `.rb` `.rs` `.s` `.scala` `.scss` `.sh` `.sql` `.svelte` `.swift` `.tex` `.tf` `.toml` `.ts` `.tsx` `.typ` `.vue` `.xml` `.yaml` `.yml` `.zig` `.zsh` |
-| Syntax-highlighted by exact filename | `Makefile` `makefile` `GNUmakefile` `Dockerfile` `CMakeLists.txt` `.bashrc` `.zshrc` |
+| Syntax-highlighted source | Every language chroma knows by filename, over 250 ([full list](docs/file-types/source-code.md#languages)), plus `.json` and `.typ` |
 | Highlighted as XML (binary converted via plutil) | `.plist` |
 | Structured module pages | `go.mod` `go.work` `go.sum` `go.work.sum` |
 | Email reader and hierarchical MIME browser | `.eml` |

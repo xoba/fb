@@ -1,0 +1,12 @@
+// Settings for the in-memory file catalog example.
+{
+  "title": "File catalog",
+  "files": [
+    { "name": "notes.md", "bytes": 120 },
+    { "name": "letter.eml", "bytes": 240 }
+  ],
+  // Labels only; nothing on disk is changed.
+  "readOnly": true,
+  "sortBy": null,
+  "scale": 1.5
+}

@@ -1,0 +1,17 @@
+// Print labels for an in-memory file catalog.
+mod catalog
+
+import core.io.println
+
+class Entry(name: String, bytes: Int64)
+
+let files = Array(
+  Entry("notes.md", 120),
+  Entry("letter.eml", 240))
+
+fun label(entry: Entry): String =
+  entry.name + ": " + entry.bytes.toString + " bytes"
+
+fun main(): Unit =
+  for entry in files do
+    println(label(entry))

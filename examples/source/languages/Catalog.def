@@ -1,0 +1,17 @@
+(* Interface to an in-memory file catalog. *)
+DEFINITION MODULE Catalog;
+
+CONST
+  MaxEntries = 16;
+
+TYPE
+  Entry = RECORD
+    name: ARRAY [0..31] OF CHAR;
+    bytes: CARDINAL
+  END;
+
+PROCEDURE Add (name: ARRAY OF CHAR; bytes: CARDINAL);
+PROCEDURE Count (): CARDINAL;
+PROCEDURE Get (index: CARDINAL; VAR entry: Entry);
+
+END Catalog.

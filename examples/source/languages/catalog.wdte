@@ -1,0 +1,18 @@
+# Print a label for each entry of a tiny in-memory catalog.
+let io => import 'io';
+let a => import 'arrays';
+let s => import 'stream';
+let str => import 'strings';
+
+let label entry => str.format '{}: {} bytes' (at entry 0) (at entry 1);
+
+let files => [
+	['notes.md'; 120];
+	['letter.eml'; 240];
+];
+
+a.stream files
+-> s.map label
+-> s.map (io.writeln io.stdout)
+-> s.drain
+;

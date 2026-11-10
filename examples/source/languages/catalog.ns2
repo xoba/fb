@@ -1,0 +1,13 @@
+class Catalog usingPlatform: platform = (
+"Print labels for an in-memory file catalog."
+|
+  private entries = {{'notes.md'. 120}. {'letter.eml'. 240}}.
+|
+) (
+public label: entry = (
+  ^(entry at: 1), ': ', (entry at: 2) printString, ' bytes'
+)
+public main: args = (
+  entries do: [:entry | Transcript show: (label: entry); cr].
+)
+)

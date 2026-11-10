@@ -1,0 +1,14 @@
+<?php /* Render an in-memory file catalog as a list. */ ?>
+<?php
+$files = [
+    ['name' => 'notes.md', 'bytes' => 120],
+    ['name' => 'letter.eml', 'bytes' => 240],
+];
+?>
+<h1>Example folder</h1>
+<ul>
+<?php foreach ($files as $file): ?>
+    <li><?= htmlspecialchars($file['name']) ?>: <?= $file['bytes'] ?> bytes</li>
+<?php endforeach; ?>
+</ul>
+<p>Total: <?= array_sum(array_column($files, 'bytes')) ?> bytes</p>

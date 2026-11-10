@@ -368,6 +368,8 @@ final class SmokeCheck: NSObject, WKNavigationDelegate {
         try await checkImageDimensions()
         try await load("example.go")
         try await check("source highlighting", "document.body.innerText.includes('func main()') && document.querySelector('pre') !== null")
+        try await load("Example.lean")
+        try await check("Lean source highlighting", "document.querySelector('#L1') !== null && [...document.querySelectorAll('pre span')].some(s => s.textContent === 'theorem' && getComputedStyle(s).color !== getComputedStyle(document.querySelector('pre')).color)")
         try await load("example.asm")
         try await check("assembly source highlighting", "document.querySelector('#L1') !== null && document.body.innerText.includes('entry:') && [...document.querySelectorAll('pre span')].some(s => s.textContent === '#1.25e-06') && document.querySelector('a[href=\"example.asm?raw=1\"]') !== null")
         try await load("sample.csv")

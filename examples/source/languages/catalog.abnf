@@ -1,0 +1,7 @@
+; Grammar for one catalog line, such as "notes.md 120".
+catalog      = 1*catalog-line
+catalog-line = file-name SP byte-count CRLF
+file-name    = 1*name-char "." extension
+name-char    = ALPHA / DIGIT / "-" / "_"
+extension    = 1*8ALPHA
+byte-count   = 1*DIGIT

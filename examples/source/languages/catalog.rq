@@ -1,0 +1,13 @@
+# List catalog files with their sizes, largest first.
+PREFIX cat: <https://example.com/catalog#>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+SELECT ?name ?bytes
+WHERE {
+  ?file a cat:File ;
+        cat:name ?name ;
+        cat:bytes ?bytes .
+  FILTER (?bytes >= "100"^^xsd:integer)
+}
+ORDER BY DESC(?bytes)
+LIMIT 10

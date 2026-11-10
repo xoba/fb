@@ -1,0 +1,15 @@
+# File catalog
+; A tiny in-memory catalog of example files.
+
+The catalog lists **two** files and changes //nothing// on disk.
+
+## Entries
+- ``notes.md``: 120 bytes
+- ``letter.eml``: 240 bytes
+
+~ fb examples
+| Labels are printed, never written back.
+
+See https://example.com/catalog for more.[1]
+
+[1] The sizes are made up.

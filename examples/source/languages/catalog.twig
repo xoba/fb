@@ -1,0 +1,13 @@
+{# Catalog listing: one row per file, with its size. #}
+{% extends "base.html.twig" %}
+
+{% block content %}
+  <ul class="catalog">
+  {% for file in files %}
+    <li>{{ file.name|e }}: {{ file.bytes }} bytes{% if file.bytes > 200 %} (large){% endif %}</li>
+  {% else %}
+    <li>No files.</li>
+  {% endfor %}
+  </ul>
+  <p>Total: {{ total|number_format }} bytes</p>
+{% endblock %}

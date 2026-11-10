@@ -1,0 +1,14 @@
+Windows Registry Editor Version 5.00
+
+; Settings for the example catalog: its window and the files it shows.
+[HKEY_CURRENT_USER\Software\Example\Catalog]
+"Title"="Example folder"
+"Root"="C:\\Users\\Public\\Catalog"
+"ShowHidden"=dword:00000000
+"Columns"=hex(7):4e,00,61,00,6d,00,65,00,00,00,00,00
+
+[HKEY_CURRENT_USER\Software\Example\Catalog\Files]
+"notes.md"=dword:00000078
+"letter.eml"=dword:000000f0
+
+[-HKEY_CURRENT_USER\Software\Example\Catalog\Cache]

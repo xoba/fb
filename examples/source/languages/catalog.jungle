@@ -1,0 +1,9 @@
+# Build settings for the catalog watch app.
+project.manifest = manifest.xml
+
+base.sourcePath = source
+base.resourcePath = resources
+
+# Round screens get their own layouts.
+round.resourcePath = $(base.resourcePath);resources-round
+fenix7.excludeAnnotations = rectangle

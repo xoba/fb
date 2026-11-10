@@ -1,0 +1,13 @@
+# pkg-config metadata for the example catalog library.
+prefix=/usr/local
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: catalog
+Description: In-memory catalog of example files
+URL: https://example.com/catalog
+Version: 0.1.9
+Requires: glib-2.0 >= 2.70
+Libs: -L${libdir} -lcatalog
+Cflags: -I${includedir}/catalog

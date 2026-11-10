@@ -1,0 +1,21 @@
+; Print two catalog labels with DOS services (Turbo Assembler, MASM mode).
+        .model small
+        .stack 100h
+
+        .data
+label1  db 'notes.md: 120 bytes', 13, 10, '$'
+label2  db 'letter.eml: 240 bytes', 13, 10, '$'
+
+        .code
+start:
+        mov ax, @data
+        mov ds, ax
+        mov ah, 09h
+        mov dx, offset label1
+        int 21h
+        mov ah, 09h
+        mov dx, offset label2
+        int 21h
+        mov ax, 4C00h
+        int 21h
+        end start

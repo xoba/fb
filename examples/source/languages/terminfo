@@ -1,0 +1,9 @@
+# Entry for a small catalog display terminal (example).
+catalog|ct80|example catalog terminal,
+	am, xenl,
+	cols#80, lines#24, it#8,
+	bel=^G, clear=\E[H\E[2J, cr=\r,
+	cup=\E[%i%p1%d;%p2%dH, el=\E[K,
+	cuu1=\E[A, cuf1=\E[C, cud1=^J,
+	smso=\E[7m, rmso=\E[m, smul=\E[4m, rmul=\E[m,
+	kcuu1=\EOA, kcud1=\EOB, kcuf1=\EOC, kcub1=\EOD,

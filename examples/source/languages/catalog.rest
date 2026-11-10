@@ -1,0 +1,25 @@
+Example catalog
+===============
+
+.. This page describes a tiny in-memory catalog of example files.
+
+The catalog holds two files. Each entry has a *name* and a size in
+**bytes**; see `the online copy <https://example.com/catalog>`_.
+
+==============  =====
+Name            Bytes
+==============  =====
+``notes.md``      120
+``letter.eml``    240
+==============  =====
+
+.. note::
+   Sizes are counted before line endings are converted.
+
+Printing labels
+---------------
+
+.. code-block:: python
+
+   for name, size in [("notes.md", 120), ("letter.eml", 240)]:
+       print(f"{name}: {size} bytes")

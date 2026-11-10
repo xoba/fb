@@ -1,0 +1,7 @@
+# Entry for a small catalog display terminal (example).
+catalog|ct80|example catalog terminal:\
+	:am:bs:co#80:li#24:\
+	:cl=\E[H\E[2J:cm=\E[%i%d;%dH:ce=\E[K:\
+	:up=\E[A:nd=\E[C:do=^J:\
+	:so=\E[7m:se=\E[m:us=\E[4m:ue=\E[m:\
+	:ku=\EOA:kd=\EOB:kr=\EOC:kl=\EOD:

@@ -60,7 +60,7 @@ func sortedKeys[V any](m map[string]V) []string {
 // check that the code still handles them, so a removed format fails here as well.
 func documentedTypes() map[string][]string {
 	byPage := map[string][]string{
-		"file-types/source-code.md": append(sortedKeys(highlightExts), sortedKeys(highlightNames)...),
+		"file-types/source-code.md": sourceDocLabels(),
 		"file-types/csv-tsv.md":     sortedKeys(tableDelims),
 		"file-types/images.md":      sortedKeys(imageExts),
 		"file-types/video.md":       sortedKeys(videoExts),
@@ -119,6 +119,10 @@ func documentedTypes() map[string][]string {
 	return byPage
 }
 
+// summarizedInIndex names pages whose types are too many to list in the
+// file type index, which links to the page's own complete list instead.
+var summarizedInIndex = map[string]bool{"file-types/source-code.md": true}
+
 func TestDocsCoverEveryFileType(t *testing.T) {
 	pages := readDocs(t)
 	index := pages[docsRoot+"/file-types/index.md"]
@@ -136,7 +140,7 @@ func TestDocsCoverEveryFileType(t *testing.T) {
 			if !strings.Contains(content, "`"+name+"`") {
 				t.Errorf("%s does not mention `%s`", page, name)
 			}
-			if !strings.Contains(index, "`"+name+"`") {
+			if !strings.Contains(index, "`"+name+"`") && !summarizedInIndex[page] {
 				t.Errorf("file-types/index.md does not mention `%s`", name)
 			}
 		}

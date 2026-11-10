@@ -1,0 +1,20 @@
+# French translations for the file catalog example.
+msgid ""
+msgstr ""
+"Project-Id-Version: catalog 1.0\n"
+"Language: fr\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+#: catalog.py:9
+#, python-format
+msgid "%(name)s: %(bytes)d bytes"
+msgstr "%(name)s : %(bytes)d octets"
+
+#: catalog.py:12
+msgid "%d file"
+msgid_plural "%d files"
+msgstr[0] "%d fichier"
+msgstr[1] "%d fichiers"

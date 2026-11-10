@@ -1,0 +1,12 @@
+# Launcher for a small file catalog browser.
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Catalog
+GenericName=File Catalog
+Comment=Browse notes.md, letter.eml and other example files
+Exec=catalog %F
+Icon=folder
+Terminal=false
+Categories=Utility;FileTools;
+MimeType=text/markdown;message/rfc822;

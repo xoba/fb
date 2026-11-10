@@ -1,0 +1,17 @@
+// Print labels for an in-memory file catalog.
+Function Label(Entry)
+	Return Entry.Name + ": " + Format(Entry.Bytes, "NG=0") + " bytes";
+EndFunction
+
+Procedure PrintCatalog() Export
+	Files = New Array;
+	Files.Add(New Structure("Name, Bytes", "notes.md", 120));
+	Files.Add(New Structure("Name, Bytes", "letter.eml", 240));
+
+	Total = 0;
+	For Each Entry In Files Do
+		Message(Label(Entry));
+		Total = Total + Entry.Bytes;
+	EndDo;
+	Message("total: " + Total + " bytes");
+EndProcedure

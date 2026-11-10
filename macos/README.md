@@ -186,9 +186,9 @@ required because WebKit defers media loading for unattached views.
 ## Signing and packaging
 
 The public channels are a notarized GitHub Release download and
-`brew install --cask xoba/tap/fb`. Version 0.1.9 (build 10) adds built-in
-documentation and links to lines, and uses the release tag
-[`mac-v0.1.9`](https://github.com/xoba/fb/releases/tag/mac-v0.1.9). Public packages
+`brew install --cask xoba/tap/fb`. Version 0.1.10 (build 12) highlights every
+language Chroma knows by filename, Lean included, and uses the release tag
+[`mac-v0.1.10`](https://github.com/xoba/fb/releases/tag/mac-v0.1.10). Public packages
 require Developer ID signing and notarization before publication. See
 [Distribution.md](Distribution.md) for the concrete release workflow and
 legacy-server migration. Local redeployment is separate from publication.
@@ -235,7 +235,7 @@ env -u NOTARY_PROFILE \
 
 This builds Release, signs Pandoc before signing the containing app, verifies
 the signatures, and writes the signed app, ZIP, and checksum under
-`.build/distribution/fb-0.1.9-arm64`. Packaging refuses an existing staged app;
+`.build/distribution/fb-0.1.10-arm64`. Packaging refuses an existing staged app;
 preserve earlier output before preparing another package for the same version.
 The ZIP is explicitly named `signed` until notarization succeeds.
 
@@ -250,8 +250,8 @@ env -u NOTARY_PROFILE \
   ASC_RELEASE_ISSUER_ID=YOUR-ISSUER-UUID \
   FB_DEVELOPMENT_TEAM=YOURTEAMID \
   macos/Scripts/notarize-existing.sh \
-  macos/.build/distribution/fb-0.1.9-arm64/fb.app \
-  macos/.build/distribution/fb-0.1.9-arm64-notarized
+  macos/.build/distribution/fb-0.1.10-arm64/fb.app \
+  macos/.build/distribution/fb-0.1.10-arm64-notarized
 ```
 
 The notarization script preserves the signed input, submits a staged copy,
@@ -335,7 +335,7 @@ Submit using an existing Keychain profile:
 env -u ASC_RELEASE_KEY_PATH NOTARY_PROFILE='your-existing-profile' \
   FB_DEVELOPMENT_TEAM=YOURTEAMID \
   macos/Scripts/notarize-existing.sh /absolute/path/to/export/fb.app \
-  macos/.build/distribution/fb-0.1.9-arm64-notarized
+  macos/.build/distribution/fb-0.1.10-arm64-notarized
 ```
 
 For API-key authentication, use the preferred command above with the desired

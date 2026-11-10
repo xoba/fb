@@ -1,0 +1,21 @@
+// Sum the sizes in an in-memory file catalog.
+class Entry {
+  init(name, bytes, next) {
+    this.name = name;
+    this.bytes = bytes;
+    this.next = next;
+  }
+}
+
+fun total(entry) {
+  var sum = 0;
+  while (entry != nil) {
+    print entry.name;
+    sum = sum + entry.bytes;
+    entry = entry.next;
+  }
+  return sum;
+}
+
+var files = Entry("notes.md", 120, Entry("letter.eml", 240, nil));
+print total(files); // 360

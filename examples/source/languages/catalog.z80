@@ -1,0 +1,16 @@
+; Print two catalog labels through the CP/M BDOS console call.
+        org 0100h
+
+BDOS    equ 0005h
+PRINT   equ 9
+
+start:  ld de, label1
+        ld c, PRINT
+        call BDOS
+        ld de, label2
+        ld c, PRINT
+        call BDOS
+        ret
+
+label1: db "notes.md: 120 bytes", 13, 10, "$"
+label2: db "letter.eml: 240 bytes", 13, 10, "$"

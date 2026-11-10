@@ -1,0 +1,15 @@
+WEBVTT - Catalog walkthrough
+
+NOTE Captions for a short tour of the example catalog.
+
+1
+00:00:00.000 --> 00:00:02.500
+Welcome to the example catalog.
+
+2
+00:00:02.500 --> 00:00:05.000 align:start line:90%
+<v Narrator>Open notes.md to see its 120 bytes.
+
+3
+00:00:05.000 --> 00:00:08.000
+Then letter.eml, at <b>240 bytes</b>.

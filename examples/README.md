@@ -32,7 +32,7 @@ Both messages were created from scratch as local fixtures, use only
 | Try | Examples |
 |-----|----------|
 | Documents and notebooks | [Markdown](documents/sample.md), [notebook](documents/sample.ipynb), [reStructuredText](documents/sample.rst), [Word](documents/sample.docx), [legacy Word](documents/sample.doc), [OpenDocument](documents/sample.odt), [RTF](documents/sample.rtf), [EPUB](documents/sample.epub) |
-| Source highlighting | [source/](source/) covers every listed extension and exact filename, including Typst, shell configuration, Makefiles, and CMake |
+| Source highlighting | [source/](source/) has a sample for every highlighted language, including Typst, shell configuration, Makefiles, and CMake; the less common ones, from ABAP to Zed (and [Lean](source/languages/Catalog.lean)), are in [source/languages/](source/languages/) |
 | Structured Go files | [go.mod](source/go.mod), [go.work](source/go.work), [go.sum](source/go.sum), [go.work.sum](source/go.work.sum) |
 | Calendar cards | [sample.ics](documents/sample.ics) |
 | Tables and spreadsheets | [CSV](formats/library.csv), [TSV](formats/library.tsv), [Parquet](formats/library.parquet), [XLSX](formats/library.xlsx) |

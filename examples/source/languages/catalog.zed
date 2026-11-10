@@ -1,0 +1,17 @@
+// Access rules for a tiny catalog of example files.
+definition user {}
+
+definition folder {
+    relation owner: user
+    relation viewer: user | user:*
+
+    permission view = viewer + owner
+}
+
+definition file {
+    relation parent: folder
+    relation editor: user
+
+    permission edit = editor + parent->owner
+    permission view = edit + parent->view
+}

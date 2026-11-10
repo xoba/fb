@@ -1,0 +1,11 @@
+# Build an image that holds labels for an in-memory file catalog.
+fs default() {
+	labels
+}
+
+fs labels() {
+	image "alpine:3.20"
+	mkdir "/catalog" 0o755
+	run "echo 'notes.md: 120 bytes' >> /catalog/labels.txt"
+	run "echo 'letter.eml: 240 bytes' >> /catalog/labels.txt"
+}

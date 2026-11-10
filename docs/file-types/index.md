@@ -21,8 +21,8 @@ backup is ignored, so `README.md~` renders like `README.md`.
 
 | Format | Extensions and names |
 |--------|----------------------|
-| [Source code](source-code.md) | `.ada` `.adb` `.ads` `.asm` `.awk` `.bash` `.bat` `.c` `.cc` `.clj` `.coffee` `.cpp` `.cs` `.css` `.dart` `.diff` `.el` `.erb` `.erl` `.ex` `.exs` `.f` `.f90` `.feature` `.fish` `.go` `.gradle` `.graphql` `.groovy` `.h` `.hcl` `.hpp` `.hs` `.ini` `.java` `.jl` `.js` `.jsx` `.kt` `.lisp` `.lua` `.mf` `.mjs` `.nix` `.patch` `.php` `.pl` `.properties` `.proto` `.ps1` `.py` `.r` `.rb` `.rs` `.s` `.scala` `.scss` `.sh` `.sql` `.svelte` `.swift` `.tex` `.tf` `.toml` `.ts` `.tsx` `.vue` `.xml` `.yaml` `.yml` `.zig` `.zsh` |
-| [Source code](source-code.md), by exact name | `Makefile` `makefile` `GNUmakefile` `Dockerfile` `CMakeLists.txt` `.bashrc` `.zshrc` |
+| [Source code](source-code.md) | Every language Chroma knows by filename, over 250, such as `.c` `.go` `.lean` `.py` `.rs` `.swift` `.ts`; see [the full list](source-code.md#languages) |
+| [Source code](source-code.md), by exact name | `Makefile` `Dockerfile` `CMakeLists.txt` `.zshrc`, and [more](source-code.md#languages) |
 | [JSON](json.md) | `.json` |
 | [Typst](typst.md) | `.typ` |
 | [Property lists](property-lists.md) | `.plist` |

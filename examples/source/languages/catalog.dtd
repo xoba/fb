@@ -1,0 +1,11 @@
+<!-- Document type for an in-memory file catalog. -->
+<!ELEMENT catalog (file+)>
+<!ATTLIST catalog
+  version CDATA #FIXED "1">
+<!ELEMENT file (name, bytes)>
+<!ATTLIST file
+  kind (note | letter | other) "other">
+<!ELEMENT name (#PCDATA)>
+<!ELEMENT bytes (#PCDATA)>
+<!ENTITY notes "notes.md">
+<!ENTITY letter "letter.eml">

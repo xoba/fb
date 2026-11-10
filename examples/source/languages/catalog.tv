@@ -1,0 +1,15 @@
+//@version=5
+// Plot a moving average with a percentage band around it.
+indicator("SMA band", overlay = true)
+
+length = input.int(20, "Length", minval = 1)
+width = input.float(2.0, "Band width %", step = 0.5)
+
+basis = ta.sma(close, length)
+upper = basis * (1 + width / 100)
+lower = basis * (1 - width / 100)
+
+plot(basis, "Basis", color = color.blue)
+p1 = plot(upper, "Upper", color = color.gray)
+p2 = plot(lower, "Lower", color = color.gray)
+fill(p1, p2, color = color.new(color.blue, 90))

@@ -1,0 +1,14 @@
+// A shelf tag for the example file catalog, with a hole to hang it by.
+use std::geo2d::*;
+use std::ops::*;
+
+const THICKNESS = 1.6mm;
+const CLEARANCE = 200µm;
+
+/// A flat tag with a round hole near its left edge.
+sketch Tag(width: Length, height: Length) {
+    hole = Circle(radius = 2mm + CLEARANCE).translate(x = 4mm - width / 2);
+    Rect(width, height) - hole;
+}
+
+Tag(width = 40mm, height = 16mm).extrude(THICKNESS);

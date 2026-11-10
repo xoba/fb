@@ -1,0 +1,23 @@
+package catalog
+
+import "fmt"
+
+// Entry is one file in the catalog listing.
+type Entry struct {
+	Name  string
+	Bytes int
+}
+
+// List renders the catalog as an HTML list.
+templ List(entries []Entry) {
+	<ul class="catalog">
+		for _, e := range entries {
+			<li>
+				{ e.Name }: { fmt.Sprintf("%d bytes", e.Bytes) }
+				if e.Bytes > 200 {
+					<em>large</em>
+				}
+			</li>
+		}
+	</ul>
+}

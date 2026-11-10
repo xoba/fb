@@ -2970,103 +2970,94 @@ var imageTemplate = template.Must(template.New("image").Parse(`<!DOCTYPE html>
 </html>
 `))
 
-// highlightExts lists source-file extensions served as syntax-highlighted HTML
-// pages when a browser navigates to them. Subresource fetches and non-browser
-// clients (see wantsDocument), plus anything requested with ?raw=1, get the
-// file verbatim — so .fb.css and stylesheets referenced by served HTML
-// keep working as real stylesheets. Deliberately absent: .md (pandoc), .html
-// and .svg (the browser renders those), and .txt (prose reads better plain).
-var highlightExts = map[string]bool{
-	".ada":        true,
-	".adb":        true,
-	".ads":        true,
-	".asm":        true,
-	".awk":        true,
-	".bash":       true,
-	".bat":        true,
-	".c":          true,
-	".coffee":     true,
-	".erb":        true,
-	".f":          true,
-	".f90":        true,
-	".feature":    true,
-	".properties": true,
-	".s":          true,
-	".cc":         true,
-	".clj":        true,
-	".cpp":        true,
-	".cs":         true,
-	".css":        true,
-	".dart":       true,
-	".diff":       true,
-	".el":         true,
-	".erl":        true,
-	".ex":         true,
-	".exs":        true,
-	".fish":       true,
-	".go":         true,
-	".gradle":     true,
-	".graphql":    true,
-	".groovy":     true,
-	".h":          true,
-	".hcl":        true,
-	".hpp":        true,
-	".hs":         true,
-	".ini":        true,
-	".java":       true,
-	".jl":         true,
-	".js":         true,
-	".jsx":        true,
-	".kt":         true,
-	".lisp":       true,
-	".lua":        true,
-	".mf":         true,
-	".mjs":        true,
-	".nix":        true,
-	".patch":      true,
-	".php":        true,
-	".pl":         true,
-	".proto":      true,
-	".ps1":        true,
-	".py":         true,
-	".r":          true,
-	".rb":         true,
-	".rs":         true,
-	".scala":      true,
-	".scss":       true,
-	".sh":         true,
-	".sql":        true,
-	".svelte":     true,
-	".swift":      true,
-	".tex":        true,
-	".tf":         true,
-	".toml":       true,
-	".ts":         true,
-	".tsx":        true,
-	".vue":        true,
-	".xml":        true,
-	".yaml":       true,
-	".yml":        true,
-	".zig":        true,
-	".zsh":        true,
-}
-
-// highlightNames lists exact basenames without a useful extension that also
-// get the highlighted treatment. (go.mod is absent: it and the other module
-// files have their own viewer, serveGoMod, dispatched ahead of this one.)
-var highlightNames = map[string]bool{
-	".bashrc":        true,
-	".zshrc":         true,
-	"CMakeLists.txt": true,
-	"Dockerfile":     true,
-	"GNUmakefile":    true,
-	"Makefile":       true,
-	"makefile":       true,
-}
-
+// highlightable reports whether a browser navigation to name gets the
+// highlighted source view: any file Chroma has a lexer for, unless another
+// viewer owns its type (see ownedElsewhere). Subresource fetches and
+// non-browser clients (see wantsDocument), plus anything requested with
+// ?raw=1, get the file verbatim, so .fb.css and stylesheets referenced by
+// served HTML keep working as real stylesheets. A name Chroma claims exactly,
+// such as CMakeLists.txt, is source even when its extension belongs elsewhere.
 func highlightable(name string) bool {
 	base := path.Base(viewName(name))
-	return highlightNames[base] || highlightExts[strings.ToLower(path.Ext(base))]
+	if chromaExactNames[base] {
+		return true
+	}
+	return !ownedElsewhere(name) && sourceLexer(base) != nil
+}
+
+// ownedElsewhere reports whether name's type has a viewer other than the
+// source view, or is deliberately shown some other way: .html and .svg render
+// in the browser, and .txt reads better as plain prose. Chroma has lexers for
+// several of these (.md, .csv, .json, .html, .typ, ...), but they keep their
+// own viewers.
+func ownedElsewhere(name string) bool {
+	ext := strings.ToLower(path.Ext(viewName(name)))
+	if _, ok := pandocFormats[ext]; ok {
+		return true
+	}
+	switch ext {
+	case ".eml", ".plist", ".json", ".typ", ".html", ".htm", ".svg", ".txt":
+		return true
+	}
+	return tableDelims[ext] != 0 || isBinaryFormat(name) || isGoModFile(name) || isICalendar(name)
+}
+
+// chromaExactNames holds the literal filenames (globs without wildcards) that
+// Chroma's lexers claim, such as Dockerfile, CMakeLists.txt, and .zshrc.
+var chromaExactNames = func() map[string]bool {
+	names := map[string]bool{}
+	for _, lexer := range lexers.GlobalLexerRegistry.Lexers {
+		for _, glob := range lexer.Config().Filenames {
+			if !strings.ContainsAny(glob, `*?[\`) {
+				names[glob] = true
+			}
+		}
+	}
+	return names
+}()
+
+// sourceLexer picks the lexer for a file name, or nil when there is none.
+// Chroma tells some languages apart by case (.C is C++, .c is C), so the name
+// is matched as written before lowercased, since fb ignores case elsewhere.
+// Chroma's Match tries every pattern of every lexer, a few milliseconds a
+// call, so answers are remembered by name; the cache is emptied rather than
+// allowed to grow without bound.
+func sourceLexer(name string) chroma.Lexer {
+	base := path.Base(viewName(name))
+	if cached, ok := lexerCache.Load(base); ok {
+		lexer, _ := cached.(chroma.Lexer)
+		return lexer
+	}
+	lexer := matchLexer(base)
+	if lexerCacheSize.Add(1) > maxLexerCache {
+		lexerCache.Clear()
+		lexerCacheSize.Store(1)
+	}
+	lexerCache.Store(base, lexer)
+	return lexer
+}
+
+var (
+	lexerCache     sync.Map // base name → chroma.Lexer, or nil for none
+	lexerCacheSize atomic.Int64
+)
+
+const maxLexerCache = 4096
+
+func matchLexer(base string) chroma.Lexer {
+	ext := strings.ToLower(path.Ext(base))
+	if ext == ".asm" {
+		return assemblyLexer
+	}
+	if alias, ok := forcedLexers[ext]; ok {
+		if forced := lexers.Get(alias); forced != nil {
+			return forced
+		}
+	}
+	if lexer := lexers.Match(base); lexer != nil {
+		return lexer
+	}
+	return lexers.Match(strings.ToLower(base))
 }
 
 // maxHighlightBytes caps how large a file gets the highlighted treatment;
@@ -3082,6 +3073,12 @@ func (s fileServer) serveSource(w http.ResponseWriter, r *http.Request, name str
 	src, err := fs.ReadFile(s.fsys, name)
 	if err != nil {
 		http.Error(w, "cannot read file", http.StatusInternalServerError)
+		return
+	}
+	// Extensions are not proof of text: Chroma claims .mo, .sig, and .core,
+	// which are just as often compiled catalogs, signatures, and core dumps.
+	if !isNumberableText(src) {
+		s.serveRaw(w, r, name, info)
 		return
 	}
 
@@ -3267,8 +3264,14 @@ var codeStyle = func() *chroma.Style {
 // forcedLexers overrides chroma's filename matching where its default guess
 // fits poorly (.s spans many assembler dialects, and the generic GAS lexer
 // degrades better than ArmAsm) or where chroma has no match at all (.mf jar
-// manifests are key: value pairs the properties lexer colors well).
+// manifests are key: value pairs the properties lexer colors well). Chroma
+// breaks ties between lexers sharing an extension arbitrarily, and its content
+// analysers do not tell these apart, so the common meaning on a Mac is pinned:
+// .m is Objective-C rather than Mathematica, and .fs is F# rather than Forth
+// (which keeps .fth and .frt).
 var forcedLexers = map[string]string{
+	".fs": "fsharp",
+	".m":  "objective-c",
 	".mf": "properties",
 	".s":  "gas",
 }
@@ -3280,15 +3283,7 @@ func highlightSource(filename, src string) (template.HTML, error) {
 // highlightLines is highlightSource for text starting at line firstLine of its
 // file, so line numbers and anchors stay those of the whole file.
 func highlightLines(filename, src string, firstLine int) (template.HTML, error) {
-	lexer := lexers.Match(filename)
-	if strings.EqualFold(path.Ext(filename), ".asm") {
-		lexer = assemblyLexer
-	}
-	if alias, ok := forcedLexers[strings.ToLower(path.Ext(filename))]; ok {
-		if forced := lexers.Get(alias); forced != nil {
-			lexer = forced
-		}
-	}
+	lexer := sourceLexer(filename)
 	if lexer == nil {
 		lexer = lexers.Fallback
 	}

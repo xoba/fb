@@ -1,0 +1,11 @@
+# Label each catalog entry, largest first.
+from [
+  {name = "notes.md", bytes = 120},
+  {name = "letter.eml", bytes = 240},
+]
+filter bytes > 0
+derive {
+  label = f"{name}: {bytes} bytes",
+}
+sort {-bytes}
+select {name, label}

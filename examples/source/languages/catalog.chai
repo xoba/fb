@@ -1,0 +1,13 @@
+// Print labels for an in-memory file catalog.
+var files = [
+  ["name": "notes.md", "bytes": 120],
+  ["name": "letter.eml", "bytes": 240]
+]
+
+def label(entry) {
+  return entry["name"] + ": " + to_string(entry["bytes"]) + " bytes"
+}
+
+for (entry : files) {
+  print(label(entry))
+}

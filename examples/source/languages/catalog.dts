@@ -1,0 +1,29 @@
+// A small board with a GPIO controller and one status LED.
+/dts-v1/;
+
+/ {
+	model = "Example Catalog Board";
+	compatible = "example,catalog-board";
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x10000000>;
+	};
+
+	gpio0: gpio@10000000 {
+		compatible = "example,gpio";
+		reg = <0x10000000 0x1000>;
+		gpio-controller;
+		#gpio-cells = <2>;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		status-led {
+			label = "catalog:green:status";
+			gpios = <&gpio0 12 0>;
+		};
+	};
+};

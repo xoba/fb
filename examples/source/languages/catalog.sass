@@ -1,0 +1,25 @@
+// Styles for the example catalog's file list.
+$accent: #3366cc
+$row-gap: 4px
+
+=label
+  color: $accent
+  font-weight: 600
+
+.catalog
+  font-family: -apple-system, sans-serif
+
+  ul
+    list-style: none
+    padding: 0
+
+  li
+    margin-bottom: $row-gap
+    +label
+    &.mail
+      color: darken($accent, 15%)
+
+  .size
+    color: gray
+    &::after
+      content: " bytes"

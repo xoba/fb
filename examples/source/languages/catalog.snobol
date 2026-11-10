@@ -1,0 +1,11 @@
+*       Print a label for each entry of a tiny in-memory catalog.
+        NAMES = ARRAY(2)
+        SIZES = ARRAY(2)
+        NAMES<1> = 'notes.md'
+        SIZES<1> = 120
+        NAMES<2> = 'letter.eml'
+        SIZES<2> = 240
+        I = 0
+LOOP    I = I + 1
+        OUTPUT = NAMES<I> ': ' SIZES<I> ' bytes'    :S(LOOP)
+END

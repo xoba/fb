@@ -1,0 +1,24 @@
+# Keep the example catalog files in place.
+body common control
+{
+      bundlesequence => { "catalog" };
+      inputs => { "$(sys.libdir)/stdlib.cf" };
+}
+
+bundle agent catalog
+{
+  vars:
+      "dir" string => "/srv/catalog";
+      "names" slist => { "notes.md", "letter.eml" };
+
+  files:
+      "$(dir)/."
+        create => "true";
+
+      "$(dir)/$(names)"
+        create => "true",
+        perms => m("0644");
+
+  reports:
+      "Catalog file: $(dir)/$(names)";
+}

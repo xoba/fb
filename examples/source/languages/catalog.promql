@@ -1,0 +1,7 @@
+# Share of catalog bytes served by each example file
+# over the last five minutes.
+sum by (file) (
+  rate(catalog_bytes_served_total{job="catalog", file=~"notes\\.md|letter\\.eml"}[5m])
+)
+/ on() group_left
+sum(rate(catalog_bytes_served_total{job="catalog"}[5m]))

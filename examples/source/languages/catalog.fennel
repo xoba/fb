@@ -1,0 +1,9 @@
+;; Print labels for an in-memory file catalog.
+(local files [{:name "notes.md" :bytes 120}
+              {:name "letter.eml" :bytes 240}])
+
+(fn label [entry]
+  (string.format "%s: %d bytes" entry.name entry.bytes))
+
+(each [_ entry (ipairs files)]
+  (print (label entry)))

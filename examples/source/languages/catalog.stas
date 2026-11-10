@@ -1,0 +1,18 @@
+; Print a label for each entry of a tiny in-memory catalog.
+include 'std.stas'
+
+const NOTES.bytes  { 120 }
+const LETTER.bytes { 240 }
+
+; (str len bytes -- )
+fn print_label 3 0 {
+	rot rot puts
+	": " puts
+	putu
+	" bytes\n" puts
+}
+
+fn main 0 0 {
+	"notes.md"   NOTES.bytes  print_label
+	"letter.eml" LETTER.bytes print_label
+}

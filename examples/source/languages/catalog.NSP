@@ -1,0 +1,20 @@
+* Print labels for an in-memory file catalog.
+DEFINE DATA LOCAL
+1 #FILES (1:2)
+  2 #NAME  (A20)
+  2 #BYTES (N5)
+1 #I     (I2)
+1 #TOTAL (N7)
+END-DEFINE
+*
+MOVE 'notes.md'   TO #NAME (1)
+MOVE 120          TO #BYTES (1)
+MOVE 'letter.eml' TO #NAME (2)
+MOVE 240          TO #BYTES (2)
+*
+FOR #I = 1 TO 2
+  WRITE #NAME (#I) #BYTES (#I) 'bytes'
+  ADD #BYTES (#I) TO #TOTAL
+END-FOR
+WRITE 'total' #TOTAL 'bytes'
+END

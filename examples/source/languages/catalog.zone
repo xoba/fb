@@ -1,0 +1,15 @@
+; Zone for the catalog service.
+$ORIGIN example.com.
+$TTL 3600
+@        IN SOA  ns1.example.com. hostmaster.example.com. (
+                 2026111001 ; serial
+                 7200       ; refresh
+                 900        ; retry
+                 1209600    ; expire
+                 300 )      ; minimum
+         IN NS   ns1.example.com.
+         IN MX   10 catalog.example.com.
+ns1      IN A    192.0.2.1
+catalog  IN A    192.0.2.10
+         IN AAAA 2001:db8::10
+files    IN CNAME catalog.example.com.

@@ -1,0 +1,22 @@
+// Print a label for each entry of a tiny in-memory catalog.
+struct Entry {
+	name  string
+	bytes int
+}
+
+fn (e Entry) label() string {
+	return '${e.name}: ${e.bytes} bytes'
+}
+
+fn main() {
+	files := [
+		Entry{name: 'notes.md', bytes: 120},
+		Entry{name: 'letter.eml', bytes: 240},
+	]
+	mut total := 0
+	for file in files {
+		println(file.label())
+		total += file.bytes
+	}
+	println('total: ${total} bytes')
+}

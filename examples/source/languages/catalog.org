@@ -1,0 +1,24 @@
+#+TITLE: Example catalog
+#+STARTUP: overview
+# A tiny in-memory catalog of example files.
+
+* Files
+| Name       | Bytes |
+|------------+-------|
+| notes.md   |   120 |
+| letter.eml |   240 |
+
+* DONE Count the bytes in each file
+  CLOSED: [2026-11-09 Mon]
+
+* Next steps
+  DEADLINE: <2026-11-20 Fri>
+  - [X] Print a label for each entry
+  - [ ] Give each label a *bold* name and an /italic/ note
+  - [ ] Link the [[https://example.com/catalog][online copy]]
+
+* Printing labels
+#+BEGIN_SRC python
+for name, size in [("notes.md", 120), ("letter.eml", 240)]:
+    print(f"{name}: {size} bytes")
+#+END_SRC

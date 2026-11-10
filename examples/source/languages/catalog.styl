@@ -1,0 +1,18 @@
+$accent = #3366cc
+$muted = #888888
+
+row-layout()
+  display flex
+  justify-content space-between
+
+.catalog
+  list-style none
+  li
+    row-layout()
+    color $muted
+    &.large
+      color $accent
+      text-decoration underline
+  .size
+    text-align right
+    color mix($accent, $muted)

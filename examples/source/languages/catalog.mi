@@ -1,0 +1,12 @@
+<%doc>Lists the entries of an in-memory file catalog.</%doc>
+% my @files = ( [ 'notes.md', 120 ], [ 'letter.eml', 240 ] );
+% my $total = 0;
+<h1>File catalog</h1>
+<ul>
+% foreach my $file (@files) {
+%   $total += $file->[1];
+  <li><% $file->[0] %>: <% $file->[1] %> bytes</li>
+% }
+</ul>
+<p><% scalar @files %> files, <% $total %> bytes</p>
+<& /footer.mi, total => $total &>

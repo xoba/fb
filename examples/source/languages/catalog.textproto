@@ -1,0 +1,15 @@
+# proto-file: folder.proto
+# proto-message: example.catalog.Folder
+
+title: "Example folder"
+entries {
+  name: "notes.md"
+  bytes: 120
+  kind: DOCUMENT
+}
+entries {
+  name: "letter.eml"
+  bytes: 240
+  kind: MESSAGE
+}
+show_hidden: false

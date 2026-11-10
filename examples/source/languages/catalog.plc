@@ -1,0 +1,14 @@
+(program 1.1.0
+  [
+    (lam name (con string)
+      [
+        [ (builtin appendString) name ]
+        [
+          [ (builtin appendString) (con string ": ") ]
+          [ [ (builtin appendString) (con string "120") ] (con string " bytes") ]
+        ]
+      ]
+    )
+    (con string "notes.md")
+  ]
+)

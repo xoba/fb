@@ -1,0 +1,16 @@
+( Print a catalog label to the console. )
+
+|10 @Console &vector $2 &read $1 &pad $4 &type $1 &write $1 &error $1
+
+|0100 ( -> )
+	;label print-str
+	BRK
+
+@print-str ( str* -- )
+	&while
+		LDAk .Console/write DEO
+		INC2 LDAk ?&while
+	POP2
+	JMP2r
+
+@label "notes.md: 20 "120 20 "bytes 0a 00

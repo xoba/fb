@@ -1,0 +1,15 @@
+/* Label each entry of an in-memory file catalog. */
+(
+  $files := [
+    {"name": "notes.md", "bytes": 120},
+    {"name": "letter.eml", "bytes": 240}
+  ];
+  $label := function($entry) {
+    $entry.name & ": " & $string($entry.bytes) & " bytes"
+  };
+  {
+    "labels": $files.$label($),
+    "large": $files[bytes > 200].name,
+    "total": $sum($files.bytes)
+  }
+)

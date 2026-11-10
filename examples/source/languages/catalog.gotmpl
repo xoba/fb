@@ -1,0 +1,12 @@
+{{- /* Print labels for an in-memory file catalog. */ -}}
+{{- define "label" -}}
+{{ .Name }}: {{ .Bytes }} bytes
+{{- end -}}
+<ul>
+{{- range .Files }}
+  <li>{{ template "label" . }}</li>
+{{- else }}
+  <li>No files</li>
+{{- end }}
+</ul>
+<p>{{ len .Files }} files</p>

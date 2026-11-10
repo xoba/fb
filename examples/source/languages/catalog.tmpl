@@ -1,0 +1,9 @@
+## Render a label for each file in the catalog.
+#set files = [{'name': 'notes.md', 'bytes': 120}, {'name': 'letter.eml', 'bytes': 240}]
+<ul class="catalog">
+#for entry in files
+  <li>$entry.name: $entry.bytes bytes</li>
+#end for
+</ul>
+#set total = sum([f['bytes'] for f in files])
+<p>Total: $total bytes</p>

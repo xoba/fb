@@ -1,0 +1,27 @@
+// Print labels for an in-memory file catalog.
+module examples.catalog
+
+import io
+
+struct Entry {
+    name: str,
+    bytes: int,
+}
+
+fn label(entry: Entry) -> str {
+    return entry.name + ": " + entry.bytes as str + " bytes"
+}
+
+fn main() {
+    let files = [
+        Entry { name: "notes.md", bytes: 120 },
+        Entry { name: "letter.eml", bytes: 240 },
+    ]
+    for entry in files {
+        io.println(label(entry))
+    }
+    let total = files |> map(fn(e) e.bytes) |> sum
+    io.println("total: {total} bytes")
+}
+
+main()

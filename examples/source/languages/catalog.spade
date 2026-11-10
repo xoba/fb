@@ -1,0 +1,14 @@
+// Blink an LED: toggle it each time a free-running counter wraps.
+fn next_count(count: uint<24>, limit: uint<24>) -> uint<24> {
+    if count == limit {
+        0
+    } else {
+        trunc(count + 1)
+    }
+}
+
+entity blinker(clk: clock, rst: bool) -> bool {
+    reg(clk) count reset(rst: 0) = next_count(count, 12000000);
+    reg(clk) led reset(rst: false) = if count == 0 { !led } else { led };
+    led
+}

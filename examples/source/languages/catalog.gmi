@@ -1,0 +1,17 @@
+# File catalog
+
+A tiny in-memory catalog of example files.
+
+## Entries
+* notes.md (120 bytes)
+* letter.eml (240 bytes)
+
+=> gemini://example.com/files/ Browse all files
+=> notes.md Read the notes
+
+> Labels are printed; nothing on disk changes.
+
+```labels
+notes.md: 120 bytes
+letter.eml: 240 bytes
+```

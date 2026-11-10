@@ -1,0 +1,11 @@
+{{!-- Lists the entries of an in-memory file catalog. --}}
+<ul class="catalog">
+  {{#each files}}
+    <li>{{name}}: {{bytes}} bytes</li>
+  {{else}}
+    <li>No files</li>
+  {{/each}}
+</ul>
+{{#if note}}
+  <p>{{note}}</p>
+{{/if}}

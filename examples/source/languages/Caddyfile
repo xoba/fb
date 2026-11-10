@@ -1,0 +1,13 @@
+# Serve the file catalog read-only with a browsable listing.
+catalog.example.com {
+	root * /srv/catalog
+	encode gzip
+	file_server browse
+
+	@notes path *.md
+	header @notes Content-Type "text/markdown; charset=utf-8"
+
+	log {
+		output file /var/log/caddy/catalog.log
+	}
+}
