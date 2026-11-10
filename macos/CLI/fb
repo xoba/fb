@@ -1,0 +1,27 @@
+#!/bin/sh
+# Opens files and folders in the fb app that contains this script. Homebrew
+# links it onto the PATH, so symlinks are resolved to find the app.
+set -eu
+
+case "${1:-}" in
+-h | --help)
+    cat <<'USAGE'
+Usage: fb [PATH...]
+
+Open files and folders in fb. With no PATH, open the current folder.
+Additional paths open in separate windows.
+USAGE
+    exit 0
+    ;;
+esac
+
+if [ "$#" -eq 0 ]; then
+    set -- .
+fi
+
+self=$(/usr/bin/readlink -f -- "$0")
+app=${self%/Contents/Resources/bin/fb}
+if [ "$app" != "$self" ] && [ -d "$app/Contents" ]; then
+    exec /usr/bin/open -a "$app" -- "$@"
+fi
+exec /usr/bin/open -b com.xoba.fb.app -- "$@"

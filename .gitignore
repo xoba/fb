@@ -3,6 +3,7 @@
 examples
 .DS_Store
 fb
+!macos/CLI/fb
 
 # Local credentials never belong in source control. Forced additions are still
 # rejected by scan.sh's publishable-file check.
