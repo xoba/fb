@@ -123,43 +123,37 @@ checksums, dependency notices, and Pandoc source materials. See the
 
 ### Open from the terminal
 
-macOS's `open` command sends files and folders directly to the installed app:
+The cask installs an `fb` command that opens files and folders in the app:
 
 ```sh
-open -b com.xoba.fb.app -- README.md
-open -b com.xoba.fb.app -- .
-open -b com.xoba.fb.app -- "My notes.md" "/path/to/folder"
+fb                                   # the current folder
+fb README.md
+fb "My notes.md" /path/to/folder
 ```
 
 Relative paths work, and multiple items open in separate windows. Quote paths
-containing spaces. Pass paths directly, without `--args`, so macOS delivers
-file-open events to the app.
+containing spaces. The command opens the copy of fb it belongs to, so it works
+with several installed copies. The deprecated formula's `fb` executable starts
+the HTTP server and occupies the same name, so follow the migration steps above
+first.
 
-For a shorter `fb` command in macOS's default zsh shell, add this function to
-`~/.zshrc`, then open a new terminal or paste the function into your current
-shell:
+If you downloaded the app directly, link the command onto your `PATH` yourself:
 
 ```sh
-fb() {
-  if [ "$#" -eq 0 ]; then
-    set -- .
-  fi
-  /usr/bin/open -b com.xoba.fb.app -- "$@"
-}
+sudo mkdir -p /usr/local/bin
+sudo ln -sf /Applications/fb.app/Contents/Resources/bin/fb /usr/local/bin/fb
 ```
 
-Then use `fb README.md`, `fb "My notes.md" /path/to/folder`, or just `fb` to open
-the current directory. This is an optional shell shortcut; the cask does not
-currently install an `fb` executable. The deprecated formula's `fb` executable
-starts the HTTP server, so follow the migration steps above first.
-
-No public URL scheme is registered. The `fb://` addresses used inside the app
-are private to its web view; use filesystem paths with `open` instead. If you
-have several development copies installed, select a specific app explicitly:
+macOS's `open` command also works without the `fb` command:
 
 ```sh
+open -b com.xoba.fb.app -- README.md
 open -a "$HOME/Applications/fb.app" -- .
 ```
+
+Pass paths directly, without `--args`, so macOS delivers file-open events to the
+app. No public URL scheme is registered. The `fb://` addresses used inside the
+app are private to its web view; use filesystem paths instead.
 
 ### Command-line browser and service (deprecated)
 

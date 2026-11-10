@@ -37,30 +37,26 @@ See [Navigating](navigating.md) for everything else in the toolbar and menus.
 
 ## Opening from the terminal
 
-macOS's `open` command sends files and folders to the app:
+The Homebrew installation includes an `fb` command:
 
 ```sh
-open -b com.xoba.fb.app -- README.md
-open -b com.xoba.fb.app -- .
-open -b com.xoba.fb.app -- "My notes.md" /path/to/folder
+fb                                   # the current folder
+fb README.md
+fb "My notes.md" /path/to/folder
 ```
 
 Relative paths work, and several items open in separate windows. Quote paths that contain
 spaces.
 
-For a shorter command in zsh, add this function to `~/.zshrc`:
+If you downloaded the app directly, link the command onto your `PATH`:
 
 ```sh
-fb() {
-  if [ "$#" -eq 0 ]; then
-    set -- .
-  fi
-  /usr/bin/open -b com.xoba.fb.app -- "$@"
-}
+sudo mkdir -p /usr/local/bin
+sudo ln -sf /Applications/fb.app/Contents/Resources/bin/fb /usr/local/bin/fb
 ```
 
-Then `fb README.md` opens a file, and `fb` alone opens the current folder. The app has no
-public URL scheme: its `fb://` addresses are private to its own windows.
+macOS's `open` command works too, as in `open -b com.xoba.fb.app -- README.md`. The app
+has no public URL scheme: its `fb://` addresses are private to its own windows.
 
 ## Installing and updating
 

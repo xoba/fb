@@ -90,17 +90,18 @@ new icon. Removing the shortcut does not remove the app or documents.
 
 ## Opening files and folders
 
-From a terminal, pass files or directories to the app through macOS:
+From a terminal, use the `fb` command the cask installs:
 
 ```sh
-open -b com.xoba.fb.app -- README.md
-open -b com.xoba.fb.app -- .
+fb README.md
+fb .
 ```
 
-Multiple paths and paths containing spaces are supported. See
-[Open from the terminal](../README.md#open-from-the-terminal) for an optional
-`fb` shell shortcut and how to select a particular installed app. The cask does
-not ship a CLI executable, and the app has no public URL scheme.
+The command is a shell script at `fb.app/Contents/Resources/bin/fb`. It resolves
+symlinks to find the app that contains it and opens the paths there with
+`open -a`, so each installed copy opens its own files. See
+[Open from the terminal](../README.md#open-from-the-terminal) for linking it
+after a direct download. The app has no public URL scheme.
 
 Use File → Open (⌘O), Finder's Open With, or drop files and folders directly
 onto the document view. Dropping items is navigation: the first opens in the

@@ -130,6 +130,7 @@ cask "fb" do
   depends_on macos: :tahoe
 
   app "fb.app"
+  binary "#{appdir}/fb.app/Contents/Resources/bin/fb"
 end
 CASK
 /bin/mv "$inspection_dir/fb.rb" "$cask_path"

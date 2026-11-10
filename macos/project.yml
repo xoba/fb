@@ -43,6 +43,9 @@ targets:
       - name: Embed documentation
         script: '"${SRCROOT}/Scripts/embed-docs.sh"'
         basedOnDependencyAnalysis: false
+      - name: Embed fb command
+        script: '/usr/bin/install -d "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/bin" && /usr/bin/install -m 755 "${SRCROOT}/CLI/fb" "${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/bin/fb"'
+        basedOnDependencyAnalysis: false
 schemes:
   FB:
     build:

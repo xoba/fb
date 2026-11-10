@@ -43,4 +43,8 @@ xcodebuild -project FB.xcodeproj -scheme FB -configuration "$configuration" \
 
 app_path="$mac_dir/.build/xcode/Build/Products/$configuration/fb.app"
 /usr/bin/codesign --verify --deep --strict "$app_path"
+if [[ ! -x "$app_path/Contents/Resources/bin/fb" ]]; then
+  echo "The fb command is missing from the bundle." >&2
+  exit 1
+fi
 echo "Built: $app_path"
