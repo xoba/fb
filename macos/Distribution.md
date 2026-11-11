@@ -3,8 +3,8 @@
 The direct-download package is the signed, notarized ZIP containing the
 standalone app. The cask in `xoba/homebrew-tap/Casks/fb.rb` installs that app. It
 has no Homebrew Go, Pandoc, or server dependency. The current release version is
-0.1.10 (build 12), using the tag
-[mac-v0.1.10](https://github.com/xoba/fb/releases/tag/mac-v0.1.10). Each release
+0.1.11 (build 13), using the tag
+[mac-v0.1.11](https://github.com/xoba/fb/releases/tag/mac-v0.1.11). Each release
 includes checksums, dependency notices, and the Pandoc source distribution.
 
 The workflow below requires Developer ID signing, notarization, verification
@@ -14,7 +14,7 @@ of uploaded bytes, Homebrew style and audit checks, and an installation test.
 
 For each public update, increment `MARKETING_VERSION` and
 `CURRENT_PROJECT_VERSION` in `project.yml` before building. This release uses
-`0.1.10` and `12`. The cask generator uses the app's marketing version; changing
+`0.1.11` and `13`. The cask generator uses the app's marketing version; changing
 only the build number or archive checksum does not make a versioned cask
 eligible for ordinary `brew upgrade`.
 
@@ -35,7 +35,7 @@ session. See the [local setup instructions](README.md#preferred-local-signing-an
 
    The app and bundled Pandoc receive Developer ID signatures, hardened runtime,
    and secure timestamps. The signed output goes to
-   `macos/.build/distribution/fb-0.1.10-arm64`; packaging refuses an existing app
+   `macos/.build/distribution/fb-0.1.11-arm64`; packaging refuses an existing app
    there. About File Browser records the source revision.
 2. Notarize that signed app with an existing team API key whose file permissions
    are `600`. Replace the placeholders with the key settings and signing team.
@@ -48,8 +48,8 @@ session. See the [local setup instructions](README.md#preferred-local-signing-an
      ASC_RELEASE_ISSUER_ID=YOUR-ISSUER-UUID \
      FB_DEVELOPMENT_TEAM=YOURTEAMID \
      macos/Scripts/notarize-existing.sh \
-     macos/.build/distribution/fb-0.1.10-arm64/fb.app \
-     macos/.build/distribution/fb-0.1.10-arm64-notarized
+     macos/.build/distribution/fb-0.1.11-arm64/fb.app \
+     macos/.build/distribution/fb-0.1.11-arm64-notarized
    ```
 
    The script preserves the input, verifies both signatures, submits to Apple,
@@ -59,13 +59,13 @@ session. See the [local setup instructions](README.md#preferred-local-signing-an
    [Cloud signing](README.md#cloud-developer-id-signing) remains an optional
    fallback when no local signing identity is available.
 3. Choose the GitHub release tag and exact asset URL. A separate Mac tag namespace,
-   such as `mac-v0.1.10`, avoids confusing the earlier server release tags.
+   such as `mac-v0.1.11`, avoids confusing the earlier server release tags.
 4. Generate the cask from the actual notarized artifact:
 
    ```sh
    FB_DEVELOPMENT_TEAM=YOURTEAMID macos/Scripts/generate-cask.sh \
-     macos/.build/distribution/fb-0.1.10-arm64-notarized/fb-0.1.10-arm64-notarized.zip \
-     https://github.com/xoba/fb/releases/download/mac-v0.1.10/fb-0.1.10-arm64-notarized.zip
+     macos/.build/distribution/fb-0.1.11-arm64-notarized/fb-0.1.11-arm64-notarized.zip \
+     https://github.com/xoba/fb/releases/download/mac-v0.1.11/fb-0.1.11-arm64-notarized.zip
    ```
 
 The script reads the version and macOS minimum from the ZIP's app, checks both
