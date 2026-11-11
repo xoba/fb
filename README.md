@@ -135,13 +135,17 @@ Relative paths work, and multiple items open in separate windows. Quote paths
 containing spaces. The command opens the copy of fb it belongs to, so it works
 with several installed copies. The deprecated formula's `fb` executable starts
 the HTTP server and occupies the same name, so follow the migration steps above
-first.
+first. If a formula's `fb` was still installed when you updated the app, Homebrew
+skipped the link with a warning; once that formula is removed, run
+`brew reinstall --cask xoba/tap/fb` to add the command. Other formulae that
+install an `fb` executable, such as `spotbugs` and `fb-client`, have the same
+effect.
 
 If you downloaded the app directly, link the command onto your `PATH` yourself:
 
 ```sh
 sudo mkdir -p /usr/local/bin
-sudo ln -sf /Applications/fb.app/Contents/Resources/bin/fb /usr/local/bin/fb
+sudo ln -s /Applications/fb.app/Contents/Resources/bin/fb /usr/local/bin/fb
 ```
 
 macOS's `open` command also works without the `fb` command:
@@ -158,7 +162,9 @@ app are private to its web view; use filesystem paths instead.
 ### Command-line browser and service (deprecated)
 
 These instructions are for existing server users. New macOS installations
-should use the native app above.
+should use the native app above. In this section, `fb` is the server executable
+the formula installs, not the app's `fb` command, which only opens files and
+folders.
 
 ```
 brew install xoba/tap/fb    # installs pandoc alongside

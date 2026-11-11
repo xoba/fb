@@ -122,6 +122,11 @@ Use explicit `--cask` for installs/upgrades and `--formula` when removing the
 legacy command-line package. Retiring its launch agent/service is a separate
 migration step; the cask should not silently run service-changing shell hooks.
 
+Both packages also provide an `fb` executable. While the formula is installed,
+the cask skips linking its `fb` command and Homebrew prints a warning; the install
+or upgrade still succeeds. After the formula is removed, `brew reinstall --cask
+xoba/tap/fb` (or the next cask upgrade) links the command.
+
 ## Distribution requirements
 
 Developer ID signing and notarization must succeed before a cask is generated.

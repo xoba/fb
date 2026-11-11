@@ -52,7 +52,7 @@ If you downloaded the app directly, link the command onto your `PATH`:
 
 ```sh
 sudo mkdir -p /usr/local/bin
-sudo ln -sf /Applications/fb.app/Contents/Resources/bin/fb /usr/local/bin/fb
+sudo ln -s /Applications/fb.app/Contents/Resources/bin/fb /usr/local/bin/fb
 ```
 
 macOS's `open` command works too, as in `open -b com.xoba.fb.app -- README.md`. The app
