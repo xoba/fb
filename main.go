@@ -1807,6 +1807,11 @@ func (s fileServer) renderDocument(ctx context.Context, name string, opts render
 	// and these pages run on fb's origin, where script could read every
 	// served file — so the output is sanitized before serving.
 	out = sanitizeRendered(out, opts.standalone)
+	// A repository's docs write /path for a file at the repository root, as
+	// GitHub resolves it; point those links into the repository.
+	out = mapBody(out, opts.standalone, func(body []byte) []byte {
+		return s.resolveRootRelativeLinks(body, name)
+	})
 
 	// Markdown pages render clean, without the healthz/version footer that
 	// closes every other page.
@@ -2124,18 +2129,24 @@ var bodyTagRE = regexp.MustCompile(`(?i)<body[^>]*>`)
 // drag-and-drop script) that must survive. Output without a recognizable
 // body is sanitized whole, as a fragment.
 func sanitizeRendered(out []byte, standalone bool) []byte {
+	return mapBody(out, standalone, documentPolicy.SanitizeBytes)
+}
+
+// mapBody applies fn to the content between a standalone page's body tags,
+// or to the whole of a fragment or of a page without a recognizable body.
+func mapBody(out []byte, standalone bool, fn func([]byte) []byte) []byte {
 	if !standalone {
-		return documentPolicy.SanitizeBytes(out)
+		return fn(out)
 	}
 	open := bodyTagRE.FindIndex(out)
 	closing := bytes.LastIndex(out, []byte("</body>"))
 	if open == nil || closing < open[1] {
-		return documentPolicy.SanitizeBytes(out)
+		return fn(out)
 	}
-	sanitized := make([]byte, 0, len(out))
-	sanitized = append(sanitized, out[:open[1]]...)
-	sanitized = append(sanitized, documentPolicy.SanitizeBytes(out[open[1]:closing])...)
-	return append(sanitized, out[closing:]...)
+	mapped := make([]byte, 0, len(out))
+	mapped = append(mapped, out[:open[1]]...)
+	mapped = append(mapped, fn(out[open[1]:closing])...)
+	return append(mapped, out[closing:]...)
 }
 
 var (

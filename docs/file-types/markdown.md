@@ -16,6 +16,10 @@ supports:
 - **Bare URLs** that become links without any extra markup.
 - **Wiki links:** `[[name.md]]` links like `[name.md](name.md)`, and `[[name.md|Title]]`
   sets the link text.
+- **Repository-root links** as GitHub reads them. In a file inside a git repository,
+  `/img/logo.svg` and `[guide](/docs/guide.md)` point to files at the repository's top
+  level, in documents and in README previews alike. A path that doesn't exist in the
+  repository keeps its ordinary meaning, so a note can still link an absolute path such as `/Volumes/…`.
 - **Emoji** written as `:smile:`.
 - **Math** with TeX, through a copy of MathJax inside the app, so no connection is needed.
 - **Images** at their natural size, or at a size you choose. Both of these make an image
