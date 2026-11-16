@@ -511,9 +511,9 @@
     },
     {
       "name": "golang.org/x/crypto",
-      "version": "v0.58.0",
+      "version": "v0.59.0",
       "sourceModule": "golang.org/x/crypto",
-      "sourceVersion": "v0.58.0",
+      "sourceVersion": "v0.59.0",
       "packages": [
         "golang.org/x/crypto/md4",
         "golang.org/x/crypto/ripemd160"
@@ -719,9 +719,9 @@
     },
     {
       "name": "modernc.org/libc",
-      "version": "v1.81.0",
+      "version": "v1.81.2",
       "sourceModule": "modernc.org/libc",
-      "sourceVersion": "v1.81.0",
+      "sourceVersion": "v1.81.2",
       "packages": [
         "modernc.org/libc",
         "modernc.org/libc/errno",
@@ -777,9 +777,9 @@
     },
     {
       "name": "modernc.org/memory",
-      "version": "v1.12.1",
+      "version": "v1.13.0",
       "sourceModule": "modernc.org/memory",
-      "sourceVersion": "v1.12.1",
+      "sourceVersion": "v1.13.0",
       "packages": [
         "modernc.org/memory"
       ],

@@ -2532,7 +2532,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ==============================================================================
-golang.org/x/crypto v0.58.0
+golang.org/x/crypto v0.59.0
 Upstream file: LICENSE
 ==============================================================================
 
@@ -2566,7 +2566,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 ==============================================================================
-golang.org/x/crypto v0.58.0
+golang.org/x/crypto v0.59.0
 Upstream file: PATENTS
 ==============================================================================
 
@@ -2973,7 +2973,7 @@ shall terminate as of the date such litigation is filed.
 
 
 ==============================================================================
-modernc.org/libc v1.81.0
+modernc.org/libc v1.81.2
 Upstream file: LICENSE
 ==============================================================================
 
@@ -3007,7 +3007,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 ==============================================================================
-modernc.org/libc v1.81.0
+modernc.org/libc v1.81.2
 Upstream file: LICENSE-3RD-PARTY.md
 ==============================================================================
 
@@ -3353,7 +3353,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 ==============================================================================
-modernc.org/memory v1.12.1
+modernc.org/memory v1.13.0
 Upstream file: LICENSE
 ==============================================================================
 
@@ -3387,7 +3387,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 ==============================================================================
-modernc.org/memory v1.12.1
+modernc.org/memory v1.13.0
 Upstream file: LICENSE-GO
 ==============================================================================
 
@@ -3421,7 +3421,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 ==============================================================================
-modernc.org/memory v1.12.1
+modernc.org/memory v1.13.0
 Upstream file: LICENSE-LOGO
 ==============================================================================
 
@@ -3429,7 +3429,7 @@ https://commons.wikimedia.org/wiki/File:Memory_infra_logo.png
 
 
 ==============================================================================
-modernc.org/memory v1.12.1
+modernc.org/memory v1.13.0
 Upstream file: LICENSE-MMAP-GO
 ==============================================================================
 
